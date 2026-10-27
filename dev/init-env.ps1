@@ -14,6 +14,7 @@ function New-LocalSecret {
 $taskHttpPort = @{ dev = 18080; test = 18081; load = 18082 }[$Environment]
 $taskProfile = @{ dev = 'local'; test = 'test'; load = 'load' }[$Environment]
 $taskDemoEnabled = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
+$taskMockPayment = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskValues = @(
     "COMPOSE_PROJECT_NAME=ai-creation-$Environment"
     "MYSQL_DATABASE=ai_creation_$Environment"
@@ -32,6 +33,11 @@ $taskValues = @(
     "APP_MESSAGING_REDRIVE_FAILED_SECONDS=300"
     "APP_MESSAGING_RETRY_BASE_SECONDS=1"
     "APP_MESSAGING_MAX_CONSUME_ATTEMPTS=5"
+    "APP_TRADE_ORDER_TIMEOUT_MINUTES=15"
+    "APP_TRADE_MOCK_PAYMENT_ENABLED=$taskMockPayment"
+    "APP_TRADE_EXPIRY_SCAN_ENABLED=true"
+    "APP_TRADE_EXPIRY_SCAN_MS=5000"
+    "APP_TRADE_EXPIRY_SCAN_BATCH=50"
     "MYSQL_ROOT_PASSWORD=$(New-LocalSecret)"
     "APP_DB_PASSWORD=$(New-LocalSecret)"
     "SCHEMA_DB_PASSWORD=$(New-LocalSecret)"

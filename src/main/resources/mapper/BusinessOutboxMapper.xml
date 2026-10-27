@@ -7,6 +7,13 @@
     VALUES (#{kind}, #{aggregateId}, #{userId}, 'PENDING', NOW(3))
   </insert>
 
+  <insert id="insertEventAt">
+    INSERT INTO business_outbox(
+      kind, aggregate_id, user_id, state, next_attempt_at, deliver_at
+    )
+    VALUES (#{kind}, #{aggregateId}, #{userId}, 'PENDING', #{deliverAt}, #{deliverAt})
+  </insert>
+
   <select id="selectEvent" resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
     SELECT * FROM business_outbox WHERE id = #{id}
   </select>
@@ -58,10 +65,12 @@
     WHERE id = #{id} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
   </update>
 
+  <!-- Broker 可能在发送确认前就完成消费；此时补记发送事实，本地传输仍保持 NULL。 -->
   <update id="markConsumed">
     UPDATE business_outbox
-    SET state = 'DONE', consumed_at = NOW(3), lease_owner = NULL, lease_until = NULL,
-        last_error = NULL
+    SET state = 'DONE', consumed_at = NOW(3),
+        sent_at = CASE WHEN #{markSent} AND sent_at IS NULL THEN NOW(3) ELSE sent_at END,
+        lease_owner = NULL, lease_until = NULL, last_error = NULL
     WHERE id = #{id} AND state &lt;&gt; 'DONE'
   </update>
 

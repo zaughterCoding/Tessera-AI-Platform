@@ -16,6 +16,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -31,6 +32,7 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
   private final DeliveryRetryPolicy retryPolicy;
   private final MeterRegistry metrics;
   private final TransactionTemplate transaction;
+  private final boolean brokerTransport;
 
   public BusinessEventServiceImpl(
       BusinessOutboxMapper outbox,
@@ -38,13 +40,15 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
       IBusinessProjectionService projection,
       DeliveryRetryPolicy retryPolicy,
       MeterRegistry metrics,
-      PlatformTransactionManager transactionManager) {
+      PlatformTransactionManager transactionManager,
+      @Value("${app.messaging.transport:local}") String transport) {
     this.outbox = outbox;
     this.messages = messages;
     this.projection = projection;
     this.retryPolicy = retryPolicy;
     this.metrics = metrics;
     this.transaction = new TransactionTemplate(transactionManager);
+    this.brokerTransport = "rocketmq".equals(transport);
   }
 
   @Override
@@ -67,7 +71,7 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
       }
       projection.project(task);
       messages.insertInboxEvent(consumerGroup, event.getEventId());
-      outbox.markConsumed(task.getId());
+      outbox.markConsumed(task.getId(), brokerTransport);
       metrics.counter("aiplatform.messaging.events",
           "consumer", consumerGroup, "outcome", "consumed").increment();
     });

@@ -62,6 +62,12 @@ app:
     demo-code-enabled: ${APP_DEMO_CODE_ENABLED:false}
     session-ttl-seconds: 1800
     monitor-token: ${APP_MONITOR_TOKEN:}
+  trade:
+    order-timeout-minutes: ${APP_TRADE_ORDER_TIMEOUT_MINUTES:15}
+    mock-payment-enabled: ${APP_TRADE_MOCK_PAYMENT_ENABLED:false}
+    expiry-scan-enabled: ${APP_TRADE_EXPIRY_SCAN_ENABLED:true}
+    expiry-scan-ms: ${APP_TRADE_EXPIRY_SCAN_MS:5000}
+    expiry-scan-batch: ${APP_TRADE_EXPIRY_SCAN_BATCH:50}
   messaging:
     transport: ${APP_MESSAGING_TRANSPORT:local}
     name-server: ${APP_MQ_NAMESERVER:}

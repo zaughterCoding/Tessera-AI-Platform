@@ -14,5 +14,8 @@ public interface UsageProductMapper extends BaseMapper<UsageProduct> {
       + " ORDER BY id")
   List<Long> selectActiveIds(@Param("applicationId") Long applicationId);
 
+  @Select("SELECT application_id FROM usage_product WHERE id=#{id}")
+  Long selectApplicationId(@Param("id") Long id);
+
   List<ProductAvailability> selectAvailability(@Param("ids") List<Long> ids);
 }

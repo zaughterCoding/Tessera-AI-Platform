@@ -109,6 +109,11 @@ public class RocketMqTransport implements EventPublisher, SmartLifecycle {
       BusinessEvent event = null;
       try {
         event = json.readValue(payload, BusinessEvent.class);
+        // 每个逻辑消费组都订阅 Topic；仅由事件类型对应的组处理，避免其他组把
+        // 合法消息误记为伪造消息。未知类型仍按当前组隔离，保留伪造排查能力。
+        if (belongsToOtherGroup(event, subscribedGroup)) {
+          continue;
+        }
         consumer.consume(event, subscribedGroup);
       } catch (Exception failure) {
         try {
@@ -126,6 +131,17 @@ public class RocketMqTransport implements EventPublisher, SmartLifecycle {
       }
     }
     return ConsumeConcurrentlyStatus.CONSUME_SUCCESS;
+  }
+
+  private boolean belongsToOtherGroup(BusinessEvent event, String subscribedGroup) {
+    if (event == null || event.getKind() == null) {
+      return false;
+    }
+    try {
+      return !BusinessEventType.from(event.getKind()).consumerGroup().equals(subscribedGroup);
+    } catch (IllegalArgumentException unknownKind) {
+      return false;
+    }
   }
 
   @Override

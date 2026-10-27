@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.trade.mapper.PurchaseOrderMapper">
+  <!-- 共享锁阻止商品在本次短事务内被调价或下架，同时允许多个购买者并行读取。 -->
+  <select id="selectOrderProduct"
+      resultType="com.aiplatform.trade.dto.OrderProductSnapshot">
+    SELECT p.id AS product_id,
+           p.application_id AS application_id,
+           p.title AS product_title,
+           p.subtitle AS product_subtitle,
+           p.rules AS product_rules,
+           p.price AS price,
+           p.credits AS credits,
+           p.valid_days AS valid_days,
+           p.sale_mode AS sale_mode,
+           p.application_version AS application_version,
+           p.model_version AS model_version,
+           p.image_size AS image_size,
+           p.output_count AS output_count,
+           p.status AS product_status,
+           a.name AS application_name,
+           a.status AS application_status
+    FROM usage_product p
+    JOIN ai_application a ON a.id = p.application_id
+    WHERE p.id = #{productId}
+    FOR SHARE
+  </select>
+
+  <!-- 唯一键负责并发竞争；返回后必须用锁定读查看竞争者已提交的结果。 -->
+  <insert id="insertRequestIfAbsent">
+    INSERT INTO purchase_request(user_id, request_key, request_digest)
+    VALUES (#{userId}, #{requestKey}, #{requestDigest})
+    ON DUPLICATE KEY UPDATE user_id = user_id
+  </insert>
+
+  <select id="selectRequestForUpdate"
+      resultType="com.aiplatform.trade.entity.PurchaseRequest">
+    SELECT * FROM purchase_request
+    WHERE user_id = #{userId} AND request_key = #{requestKey}
+    FOR UPDATE
+  </select>
+
+  <update id="bindRequestOrder">
+    UPDATE purchase_request SET order_id = #{orderId}
+    WHERE id = #{requestId} AND order_id IS NULL
+  </update>
+
+  <!-- 到期时间和领取完成时间由数据库时钟确定，避免应用与数据库时钟偏差。 -->
+  <insert id="insertOrder" useGeneratedKeys="true" keyProperty="order.id">
+    INSERT INTO purchase_order(
+      user_id, request_id, product_id, application_id, application_name,
+      application_version, product_title, product_subtitle, product_rules,
+      model_version, image_size, output_count, credits, valid_days, sale_mode,
+      currency, unit_price, amount, status, funding, expire_at, paid_at
+    ) VALUES (
+      #{order.userId}, #{order.requestId}, #{order.productId}, #{order.applicationId},
+      #{order.applicationName}, #{order.applicationVersion}, #{order.productTitle},
+      #{order.productSubtitle}, #{order.productRules}, #{order.modelVersion},
+      #{order.imageSize}, #{order.outputCount}, #{order.credits}, #{order.validDays},
+      #{order.saleMode}, #{order.currency}, #{order.unitPrice}, #{order.amount},
+      CASE WHEN #{free} THEN 'PAID' ELSE 'UNPAID' END,
+      CASE WHEN #{free} THEN 'FREE' ELSE NULL END,
+      CASE WHEN #{free} THEN NULL
+        ELSE DATE_ADD(NOW(3), INTERVAL #{timeoutMinutes} MINUTE) END,
+      CASE WHEN #{free} THEN NOW(3) ELSE NULL END
+    )
+  </insert>
+
+  <select id="selectOrderForUpdate" resultType="com.aiplatform.trade.entity.PurchaseOrder">
+    SELECT * FROM purchase_order WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <update id="markPaid">
+    UPDATE purchase_order
+    SET status = 'PAID', funding = 'MOCK', paid_at = NOW(3)
+    WHERE id = #{id} AND user_id = #{userId} AND status = 'UNPAID'
+      AND amount = #{amount} AND expire_at &gt; NOW(3)
+  </update>
+
+  <update id="closeExpired">
+    UPDATE purchase_order
+    SET status = 'CANCELLED', closed_at = NOW(3)
+    WHERE id = #{id} AND status = 'UNPAID' AND expire_at &lt;= NOW(3)
+  </update>
+
+  <select id="selectExpiredOrderIds" resultType="long">
+    SELECT id FROM purchase_order
+    WHERE status = 'UNPAID' AND expire_at &lt;= NOW(3)
+    ORDER BY expire_at, id
+    LIMIT #{limit}
+  </select>
+
+  <insert id="insertOrderEvent">
+    INSERT IGNORE INTO purchase_order_event(event_id, order_id, event_type, occurred_at)
+    VALUES (#{eventId}, #{orderId}, #{eventType}, #{occurredAt})
+  </insert>
+</mapper>

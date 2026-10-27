@@ -1,6 +1,7 @@
 package com.aiplatform.catalog.service.impl;
 
 import com.aiplatform.cache.CacheClient;
+import com.aiplatform.catalog.dto.ProductAdminUpdateForm;
 import com.aiplatform.catalog.dto.ProductAvailability;
 import com.aiplatform.catalog.dto.ProductCatalog;
 import com.aiplatform.catalog.dto.UsageProductDTO;
@@ -13,6 +14,8 @@ import com.aiplatform.catalog.service.IUsageProductService;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
+import com.aiplatform.messaging.BusinessEventType;
+import com.aiplatform.messaging.service.IBusinessOutboxService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -23,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class UsageProductServiceImpl
@@ -33,14 +37,17 @@ public class UsageProductServiceImpl
   private static final long METADATA_MINUTES = 10;
   private final CacheClient cache;
   private final AiApplicationMapper applications;
+  private final IBusinessOutboxService outbox;
   private final String prefix;
 
   public UsageProductServiceImpl(
       CacheClient cache,
       AiApplicationMapper applications,
+      IBusinessOutboxService outbox,
       @Value("${app.redis.key-prefix}") String prefix) {
     this.cache = cache;
     this.applications = applications;
+    this.outbox = outbox;
     this.prefix = prefix;
   }
 
@@ -89,6 +96,84 @@ public class UsageProductServiceImpl
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
     return Result.ok(view(meta, true));
+  }
+
+  @Override
+  @Transactional
+  public void updateProduct(Long id, ProductAdminUpdateForm form, Long actorId) {
+    if (baseMapper.selectById(id) == null) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    UsageProduct patch = new UsageProduct();
+    patch.setId(id);
+    boolean changed = false;
+    if (form.getTitle() != null) {
+      String title = form.getTitle().trim();
+      if (title.isEmpty()) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setTitle(title);
+      changed = true;
+    }
+    changed |= apply(patch::setSubtitle, form.getSubtitle());
+    changed |= apply(patch::setRules, form.getRules());
+    changed |= apply(patch::setImageSize, form.getImageSize());
+    if (form.getPrice() != null) {
+      if (form.getPrice() < 0) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setPrice(form.getPrice());
+      changed = true;
+    }
+    if (form.getCredits() != null) {
+      if (form.getCredits() < 1) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setCredits(form.getCredits());
+      changed = true;
+    }
+    if (form.getValidDays() != null) {
+      if (form.getValidDays() < 1) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setValidDays(form.getValidDays());
+      changed = true;
+    }
+    if (form.getSaleMode() != null) {
+      if (form.getSaleMode() < 0 || form.getSaleMode() > 1) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setSaleMode(form.getSaleMode());
+      changed = true;
+    }
+    if (form.getOutputCount() != null) {
+      if (form.getOutputCount() < 1) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setOutputCount(form.getOutputCount());
+      changed = true;
+    }
+    if (form.getStatus() != null) {
+      if (form.getStatus() < 1 || form.getStatus() > 2) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setStatus(form.getStatus());
+      changed = true;
+    }
+    if (!changed) {
+      throw new ApiException(ErrorCode.INVALID_REQUEST);
+    }
+    // 商品更新与失效任务同事务；回滚时缓存不会被推进，也不会留下任务。
+    baseMapper.updateById(patch);
+    outbox.appendEvent(BusinessEventType.PRODUCT_INVALIDATE.name(), id, actorId);
+  }
+
+  private boolean apply(java.util.function.Consumer<String> setter, String value) {
+    if (value == null) {
+      return false;
+    }
+    setter.accept(value.trim());
+    return true;
   }
 
   private UsageProductDTO view(UsageProductMeta meta, boolean live) {

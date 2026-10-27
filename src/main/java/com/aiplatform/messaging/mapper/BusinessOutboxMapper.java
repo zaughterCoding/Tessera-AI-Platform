@@ -1,6 +1,7 @@
 package com.aiplatform.messaging.mapper;
 
 import com.aiplatform.messaging.entity.BusinessOutboxTask;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -10,6 +11,11 @@ public interface BusinessOutboxMapper {
   int insertEvent(@Param("kind") String kind,
       @Param("aggregateId") long aggregateId,
       @Param("userId") Long userId);
+
+  int insertEventAt(@Param("kind") String kind,
+      @Param("aggregateId") long aggregateId,
+      @Param("userId") Long userId,
+      @Param("deliverAt") LocalDateTime deliverAt);
 
   BusinessOutboxTask selectEvent(@Param("id") long id);
 
@@ -31,7 +37,7 @@ public interface BusinessOutboxMapper {
 
   int markSent(@Param("id") long id, @Param("leaseOwner") String leaseOwner);
 
-  int markConsumed(@Param("id") long id);
+  int markConsumed(@Param("id") long id, @Param("markSent") boolean markSent);
 
   int markDuplicateDone(@Param("id") long id);
 
