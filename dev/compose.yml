@@ -1,0 +1,63 @@
+services:
+  mysql:
+    image: mysql:8.0@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b
+    command: --default-authentication-plugin=mysql_native_password --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --default-time-zone=+00:00
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?}
+      MYSQL_ROOT_HOST: localhost
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?}
+      SCHEMA_DB_PASSWORD: ${SCHEMA_DB_PASSWORD:?}
+      TZ: UTC
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./mysql/01-accounts.sh:/docker-entrypoint-initdb.d/01-accounts.sh:ro
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 --silent']
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  redis:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    command: [sh, -c, 'exec redis-server --appendonly yes --appendfsync always --requirepass "$$REDIS_PASSWORD"']
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  app:
+    image: ${COMPOSE_PROJECT_NAME:?}-app:local
+    build:
+      context: ..
+      dockerfile: dev/Dockerfile
+    environment:
+      APP_NAMESPACE: ${APP_NAMESPACE:?}
+      APP_REDIS_PREFIX: ${APP_REDIS_PREFIX:?}
+      DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:?}?useSSL=false&serverTimezone=UTC&characterEncoding=utf8
+      APP_DB_USERNAME: ai_app
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?}
+      SCHEMA_DB_USERNAME: ai_schema
+      SCHEMA_DB_PASSWORD: ${SCHEMA_DB_PASSWORD:?}
+      REDIS_HOST: redis
+      REDIS_PORT: '6379'
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+    ports:
+      - '127.0.0.1:${APP_HTTP_PORT:?}:8080'
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, --max-time, '3', http://127.0.0.1:8080/actuator/health/readiness]
+      interval: 3s
+      timeout: 4s
+      start_period: 20s
+      retries: 20
+volumes:
+  mysql-data:
+  redis-data:

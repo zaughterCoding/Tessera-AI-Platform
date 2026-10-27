@@ -1,0 +1,7 @@
+**
+!target/
+target/*
+!target/ai-creation-platform.jar
+!dev/
+dev/*
+!dev/Dockerfile
