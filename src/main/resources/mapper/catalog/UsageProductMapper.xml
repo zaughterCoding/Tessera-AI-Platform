@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.catalog.mapper.UsageProductMapper">
+  <select id="selectAvailability" resultType="com.aiplatform.catalog.dto.ProductAvailability">
+    SELECT p.id AS id, p.status AS status, a.status AS applicationStatus
+    FROM usage_product p
+    JOIN ai_application a ON a.id = p.application_id
+    WHERE p.id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+    ORDER BY p.id
+  </select>
+</mapper>

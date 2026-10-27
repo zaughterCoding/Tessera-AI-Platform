@@ -1,5 +1,6 @@
 package com.aiplatform.common.api;
 
+import com.aiplatform.cache.CacheUnavailableException;
 import javax.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -38,6 +39,11 @@ public class WebExceptionAdvice {
 
   @ExceptionHandler(DataAccessException.class)
   public ResponseEntity<Result<Void>> unavailable() {
+    return reject(ErrorCode.UNAVAILABLE);
+  }
+
+  @ExceptionHandler(CacheUnavailableException.class)
+  public ResponseEntity<Result<Void>> cacheUnavailable() {
     return reject(ErrorCode.UNAVAILABLE);
   }
 

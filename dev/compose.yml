@@ -29,6 +29,9 @@ services:
       interval: 2s
       timeout: 2s
       retries: 30
+  memcached:
+    image: memcached:1.6-alpine@sha256:9e4de012dc607573052061c0bcb38abc775e1dd59b24e7ac38d1892842094aaf
+    command: [memcached, -m, '64', -I, 2m]
   app:
     image: ${COMPOSE_PROJECT_NAME:?}-app:local
     build:
@@ -48,6 +51,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: '6379'
       REDIS_PASSWORD: ${REDIS_PASSWORD:?}
+      APP_CACHE_ENABLED: ${APP_CACHE_ENABLED:-true}
+      APP_CACHE_FALLBACK_CONCURRENCY: ${APP_CACHE_FALLBACK_CONCURRENCY:-4}
+      APP_MEMCACHE_ENABLED: ${APP_MEMCACHE_ENABLED:-true}
+      APP_MEMCACHE_HOST: memcached
+      APP_MEMCACHE_PORT: '11211'
+      APP_MEMCACHE_TIMEOUT_MS: '100'
     ports:
       - '127.0.0.1:${APP_HTTP_PORT:?}:8080'
     depends_on:
@@ -55,6 +64,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      memcached:
+        condition: service_started
     healthcheck:
       test: [CMD, curl, --fail, --silent, --max-time, '3', http://127.0.0.1:8080/actuator/health/readiness]
       interval: 3s

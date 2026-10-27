@@ -44,10 +44,26 @@ app:
   namespace: ${APP_NAMESPACE}
   redis:
     key-prefix: ${APP_REDIS_PREFIX}
+  cache:
+    enabled: ${APP_CACHE_ENABLED:true}
+    local-ttl-seconds: ${APP_CACHE_LOCAL_TTL_SECONDS:5}
+    rebuild-wait-seconds: ${APP_CACHE_REBUILD_WAIT_SECONDS:2}
+    rebuild-lock-seconds: ${APP_CACHE_REBUILD_LOCK_SECONDS:10}
+    redis-backoff-ms: ${APP_CACHE_REDIS_BACKOFF_MS:1000}
+    fallback:
+      max-concurrent: ${APP_CACHE_FALLBACK_CONCURRENCY:4}
+      acquire-timeout-ms: ${APP_CACHE_FALLBACK_ACQUIRE_TIMEOUT_MS:50}
+    memcache:
+      enabled: ${APP_MEMCACHE_ENABLED:false}
+      host: ${APP_MEMCACHE_HOST:127.0.0.1}
+      port: ${APP_MEMCACHE_PORT:11211}
+      timeout-ms: ${APP_MEMCACHE_TIMEOUT_MS:100}
   identity:
     demo-code-enabled: ${APP_DEMO_CODE_ENABLED:false}
     session-ttl-seconds: 1800
     monitor-token: ${APP_MONITOR_TOKEN:}
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
 management:
   endpoints:
     web:
