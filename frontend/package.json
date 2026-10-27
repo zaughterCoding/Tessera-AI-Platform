@@ -1,0 +1,8 @@
+{
+  "name": "ai-creation-platform-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check scripts/api.js"
+  }
+}

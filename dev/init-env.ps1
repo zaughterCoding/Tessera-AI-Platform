@@ -12,12 +12,17 @@ function New-LocalSecret {
     return -join ($taskBytes | ForEach-Object { $_.ToString('x2') })
 }
 $taskHttpPort = @{ dev = 18080; test = 18081; load = 18082 }[$Environment]
+$taskProfile = @{ dev = 'local'; test = 'test'; load = 'load' }[$Environment]
+$taskDemoEnabled = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskValues = @(
     "COMPOSE_PROJECT_NAME=ai-creation-$Environment"
     "MYSQL_DATABASE=ai_creation_$Environment"
     "APP_NAMESPACE=ai-platform:$Environment"
     "APP_REDIS_PREFIX=ai-platform:${Environment}:"
     "APP_HTTP_PORT=$taskHttpPort"
+    "APP_PROFILE=$taskProfile"
+    "APP_DEMO_CODE_ENABLED=$taskDemoEnabled"
+    "APP_MONITOR_TOKEN=$(New-LocalSecret)"
     "MYSQL_ROOT_PASSWORD=$(New-LocalSecret)"
     "APP_DB_PASSWORD=$(New-LocalSecret)"
     "SCHEMA_DB_PASSWORD=$(New-LocalSecret)"

@@ -1,5 +1,6 @@
 server:
   port: ${APP_PORT:8080}
+  forward-headers-strategy: none
   servlet:
     encoding:
       charset: UTF-8
@@ -37,15 +38,21 @@ spring:
   jackson:
     time-zone: UTC
     default-property-inclusion: non_null
+    deserialization:
+      fail-on-unknown-properties: true
 app:
   namespace: ${APP_NAMESPACE}
   redis:
     key-prefix: ${APP_REDIS_PREFIX}
+  identity:
+    demo-code-enabled: ${APP_DEMO_CODE_ENABLED:false}
+    session-ttl-seconds: 1800
+    monitor-token: ${APP_MONITOR_TOKEN:}
 management:
   endpoints:
     web:
       exposure:
-        include: health
+        include: health,prometheus
   endpoint:
     health:
       show-details: never

@@ -35,6 +35,9 @@ services:
       context: ..
       dockerfile: dev/Dockerfile
     environment:
+      SPRING_PROFILES_ACTIVE: ${APP_PROFILE:-local}
+      APP_DEMO_CODE_ENABLED: ${APP_DEMO_CODE_ENABLED:-false}
+      APP_MONITOR_TOKEN: ${APP_MONITOR_TOKEN:-}
       APP_NAMESPACE: ${APP_NAMESPACE:?}
       APP_REDIS_PREFIX: ${APP_REDIS_PREFIX:?}
       DB_URL: jdbc:mysql://mysql:3306/${MYSQL_DATABASE:?}?useSSL=false&serverTimezone=UTC&characterEncoding=utf8
