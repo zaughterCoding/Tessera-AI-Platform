@@ -2,6 +2,7 @@ package com.aiplatform.catalog.service.impl;
 
 import cn.hutool.crypto.digest.DigestUtil;
 import com.aiplatform.cache.CacheClient;
+import com.aiplatform.catalog.dto.ApplicationAdminUpdateForm;
 import com.aiplatform.catalog.dto.ApplicationDetailDTO;
 import com.aiplatform.catalog.dto.ApplicationPage;
 import com.aiplatform.catalog.dto.ApplicationSearchForm;
@@ -9,11 +10,16 @@ import com.aiplatform.catalog.dto.ApplicationSummaryDTO;
 import com.aiplatform.catalog.dto.CategoryDTO;
 import com.aiplatform.catalog.entity.AiApplication;
 import com.aiplatform.catalog.mapper.AiApplicationMapper;
+import com.aiplatform.catalog.mapper.ApplicationCategoryMapper;
 import com.aiplatform.catalog.service.IApplicationService;
 import com.aiplatform.catalog.service.ICategoryService;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
+import com.aiplatform.identity.dto.UserDTO;
+import com.aiplatform.identity.security.UserHolder;
+import com.aiplatform.messaging.BusinessEventType;
+import com.aiplatform.messaging.service.IBusinessOutboxService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -26,7 +32,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class ApplicationServiceImpl
@@ -37,14 +45,20 @@ public class ApplicationServiceImpl
   private static final long SEARCH_SECONDS = 30;
   private final CacheClient cache;
   private final ICategoryService categories;
+  private final ApplicationCategoryMapper categoryMapper;
+  private final IBusinessOutboxService outbox;
   private final String prefix;
 
   public ApplicationServiceImpl(
       CacheClient cache,
       ICategoryService categories,
+      ApplicationCategoryMapper categoryMapper,
+      IBusinessOutboxService outbox,
       @Value("${app.redis.key-prefix}") String prefix) {
     this.cache = cache;
     this.categories = categories;
+    this.categoryMapper = categoryMapper;
+    this.outbox = outbox;
     this.prefix = prefix;
   }
 
@@ -74,6 +88,70 @@ public class ApplicationServiceImpl
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
     return Result.ok(detail);
+  }
+
+  @Override
+  @Transactional
+  public void updateMetadata(Long id, ApplicationAdminUpdateForm form) {
+    AiApplication existing = baseMapper.selectById(id);
+    if (existing == null) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    AiApplication patch = new AiApplication();
+    patch.setId(id);
+    boolean changed = false;
+    if (form.getCategoryId() != null) {
+      if (categoryMapper.selectById(form.getCategoryId()) == null) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      patch.setCategoryId(form.getCategoryId());
+      changed = true;
+    }
+    if (form.getName() != null) {
+      String name = form.getName().trim();
+      if (name.isEmpty()) {
+        throw new ApiException(ErrorCode.INVALID_REQUEST);
+      }
+      if (baseMapper.countOtherByName(name, id) > 0) {
+        throw new ApiException(ErrorCode.CONFLICT);
+      }
+      patch.setName(name);
+      changed = true;
+    }
+    changed |= apply(patch::setSummary, form.getSummary());
+    changed |= apply(patch::setDescription, form.getDescription());
+    changed |= apply(patch::setCapabilities, form.getCapabilities());
+    changed |= apply(patch::setCoverUrl, form.getCoverUrl());
+    changed |= apply(patch::setModelName, form.getModelName());
+    changed |= apply(patch::setModelVersion, form.getModelVersion());
+    if (form.getPriceFrom() != null) {
+      patch.setPriceFrom(form.getPriceFrom());
+      changed = true;
+    }
+    if (form.getStatus() != null) {
+      patch.setStatus(form.getStatus());
+      changed = true;
+    }
+    if (!changed) {
+      throw new ApiException(ErrorCode.INVALID_REQUEST);
+    }
+    try {
+      baseMapper.updateById(patch);
+    } catch (DuplicateKeyException conflict) {
+      throw new ApiException(ErrorCode.CONFLICT);
+    }
+    UserDTO actor = UserHolder.getUser();
+    // 管理写与任务同事务提交；回滚时任务和缓存失效都不会发生。
+    outbox.appendEvent(BusinessEventType.APPLICATION_INVALIDATE.name(), id,
+        actor == null ? null : actor.getId());
+  }
+
+  private boolean apply(java.util.function.Consumer<String> setter, String value) {
+    if (value == null) {
+      return false;
+    }
+    setter.accept(value.trim());
+    return true;
   }
 
   private ApplicationPage loadSearch(

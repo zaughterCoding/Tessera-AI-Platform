@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+    "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.messaging.mapper.MessageMapper">
+  <select id="countInboxEvent" resultType="int">
+    SELECT COUNT(*) FROM message_inbox
+    WHERE consumer_group = #{consumerGroup} AND event_id = #{eventId}
+  </select>
+
+  <insert id="insertInboxEvent">
+    INSERT INTO message_inbox(consumer_group, event_id)
+    VALUES (#{consumerGroup}, #{eventId})
+  </insert>
+
+  <insert id="insertFailure">
+    INSERT IGNORE INTO message_failure(
+      consumer_group, event_key, event_id, broker_message_id, payload, reason)
+    VALUES (#{consumerGroup}, #{eventKey}, #{eventId}, #{brokerMessageId}, #{payload}, #{reason})
+  </insert>
+
+  <select id="listFailures" resultType="com.aiplatform.messaging.entity.MessageFailure">
+    SELECT * FROM message_failure
+    <where>
+      <if test="consumerGroup != null and consumerGroup != ''">
+        consumer_group = #{consumerGroup}
+      </if>
+    </where>
+    ORDER BY created_at DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+</mapper>

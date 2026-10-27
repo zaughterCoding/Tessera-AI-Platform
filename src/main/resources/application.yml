@@ -62,6 +62,21 @@ app:
     demo-code-enabled: ${APP_DEMO_CODE_ENABLED:false}
     session-ttl-seconds: 1800
     monitor-token: ${APP_MONITOR_TOKEN:}
+  messaging:
+    transport: ${APP_MESSAGING_TRANSPORT:local}
+    name-server: ${APP_MQ_NAMESERVER:}
+    topic: ${APP_MQ_TOPIC:}
+    consumer-group-prefix: ${APP_MQ_GROUP_PREFIX:}
+    relay-enabled: ${APP_MESSAGING_RELAY_ENABLED:true}
+    poll-delay-ms: ${APP_MESSAGING_POLL_DELAY_MS:1000}
+    batch-size: ${APP_MESSAGING_BATCH_SIZE:50}
+    lease-seconds: ${APP_MESSAGING_LEASE_SECONDS:30}
+    redrive-sent-seconds: ${APP_MESSAGING_REDRIVE_SENT_SECONDS:30}
+    redrive-failed-seconds: ${APP_MESSAGING_REDRIVE_FAILED_SECONDS:300}
+    retry-base-seconds: ${APP_MESSAGING_RETRY_BASE_SECONDS:1}
+    retry-max-seconds: ${APP_MESSAGING_RETRY_MAX_SECONDS:300}
+    max-send-attempts: ${APP_MESSAGING_MAX_SEND_ATTEMPTS:10}
+    max-consume-attempts: ${APP_MESSAGING_MAX_CONSUME_ATTEMPTS:5}
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
 management:

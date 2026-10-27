@@ -32,6 +32,47 @@ services:
   memcached:
     image: memcached:1.6-alpine@sha256:9e4de012dc607573052061c0bcb38abc775e1dd59b24e7ac38d1892842094aaf
     command: [memcached, -m, '64', -I, 2m]
+  mq-store-init:
+    image: apache/rocketmq:5.3.2@sha256:4a80ff5cd4b0a3d3ef6dc338ce2028a85bd995648cb3aa5c3e753746d2dbc587
+    user: '0'
+    entrypoint: [sh, -c]
+    command: ['mkdir -p /home/rocketmq/store && chown -R 3000:3000 /home/rocketmq/store']
+    volumes:
+      - rocketmq-store:/home/rocketmq/store
+  mq-nameserver:
+    image: apache/rocketmq:5.3.2@sha256:4a80ff5cd4b0a3d3ef6dc338ce2028a85bd995648cb3aa5c3e753746d2dbc587
+    command: [nameserver]
+    environment:
+      JAVA_OPT_EXT: '-Xms128m -Xmx128m -Xmn64m'
+  rocketmq:
+    image: apache/rocketmq:5.3.2@sha256:4a80ff5cd4b0a3d3ef6dc338ce2028a85bd995648cb3aa5c3e753746d2dbc587
+    command: [broker, -c, /home/rocketmq/broker.conf]
+    environment:
+      JAVA_OPT_EXT: '-Xms256m -Xmx256m -Xmn128m'
+    volumes:
+      - rocketmq-store:/home/rocketmq/store
+      - ./rocketmq/broker.conf:/home/rocketmq/broker.conf:ro
+    depends_on:
+      mq-store-init:
+        condition: service_completed_successfully
+      mq-nameserver:
+        condition: service_started
+    healthcheck:
+      test: [CMD-SHELL, 'sh mqadmin clusterList -n mq-nameserver:9876 2>/dev/null | grep -q ai-platform-broker']
+      interval: 3s
+      timeout: 5s
+      start_period: 20s
+      retries: 30
+  mq-init:
+    image: apache/rocketmq:5.3.2@sha256:4a80ff5cd4b0a3d3ef6dc338ce2028a85bd995648cb3aa5c3e753746d2dbc587
+    command: [sh, /home/rocketmq/init.sh]
+    environment:
+      APP_MQ_TOPIC: ${APP_MQ_TOPIC:?}
+    volumes:
+      - ./rocketmq/init.sh:/home/rocketmq/init.sh:ro
+    depends_on:
+      rocketmq:
+        condition: service_healthy
   app:
     image: ${COMPOSE_PROJECT_NAME:?}-app:local
     build:
@@ -57,6 +98,17 @@ services:
       APP_MEMCACHE_HOST: memcached
       APP_MEMCACHE_PORT: '11211'
       APP_MEMCACHE_TIMEOUT_MS: '100'
+      APP_MESSAGING_TRANSPORT: ${APP_MESSAGING_TRANSPORT:-local}
+      APP_MQ_NAMESERVER: mq-nameserver:9876
+      APP_MQ_TOPIC: ${APP_MQ_TOPIC:?}
+      APP_MQ_GROUP_PREFIX: ${APP_MQ_GROUP_PREFIX:?}
+      APP_MESSAGING_RELAY_ENABLED: ${APP_MESSAGING_RELAY_ENABLED:-true}
+      APP_MESSAGING_WAKEUP_ENABLED: ${APP_MESSAGING_WAKEUP_ENABLED:-true}
+      APP_MESSAGING_POLL_DELAY_MS: ${APP_MESSAGING_POLL_DELAY_MS:-1000}
+      APP_MESSAGING_REDRIVE_SENT_SECONDS: ${APP_MESSAGING_REDRIVE_SENT_SECONDS:-30}
+      APP_MESSAGING_REDRIVE_FAILED_SECONDS: ${APP_MESSAGING_REDRIVE_FAILED_SECONDS:-300}
+      APP_MESSAGING_RETRY_BASE_SECONDS: ${APP_MESSAGING_RETRY_BASE_SECONDS:-1}
+      APP_MESSAGING_MAX_CONSUME_ATTEMPTS: ${APP_MESSAGING_MAX_CONSUME_ATTEMPTS:-5}
     ports:
       - '127.0.0.1:${APP_HTTP_PORT:?}:8080'
     depends_on:
@@ -66,6 +118,8 @@ services:
         condition: service_healthy
       memcached:
         condition: service_started
+      mq-init:
+        condition: service_completed_successfully
     healthcheck:
       test: [CMD, curl, --fail, --silent, --max-time, '3', http://127.0.0.1:8080/actuator/health/readiness]
       interval: 3s
@@ -75,3 +129,4 @@ services:
 volumes:
   mysql-data:
   redis-data:
+  rocketmq-store:

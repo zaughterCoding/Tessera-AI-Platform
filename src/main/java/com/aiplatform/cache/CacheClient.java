@@ -221,12 +221,15 @@ public class CacheClient {
           ? key.substring(0, key.length() - ":version".length()) : key);
     }
     int invalidated = 0;
+    boolean failed = false;
     for (String key : bases) {
       if (invalidate(key)) {
         invalidated++;
+      } else {
+        failed = true;
       }
     }
-    return invalidated;
+    return failed ? -1 : invalidated;
   }
 
   /** 只驱逐当前实例的目标 key，供 Redis 失效通知监听器调用。 */

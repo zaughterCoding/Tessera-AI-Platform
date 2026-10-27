@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+    "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.messaging.mapper.BusinessOutboxMapper">
+  <insert id="insertEvent">
+    INSERT INTO business_outbox(kind, aggregate_id, user_id, state, next_attempt_at)
+    VALUES (#{kind}, #{aggregateId}, #{userId}, 'PENDING', NOW(3))
+  </insert>
+
+  <select id="selectEvent" resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
+    SELECT * FROM business_outbox WHERE id = #{id}
+  </select>
+
+  <select id="selectEventForUpdate"
+      resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
+    SELECT * FROM business_outbox WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="selectClaimableEvents"
+      resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
+    SELECT * FROM business_outbox
+    WHERE (state = 'PENDING' AND next_attempt_at &lt;= NOW(3))
+       OR (state = 'SENDING' AND lease_until &lt; NOW(3))
+    ORDER BY id
+    LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <select id="selectEvents" resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
+    SELECT * FROM business_outbox
+    <where>
+      <if test="state != null and state != ''">
+        state = #{state}
+      </if>
+    </where>
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <update id="claimEvent">
+    UPDATE business_outbox
+    SET state = 'SENDING', lease_owner = #{leaseOwner},
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{seconds} SECOND)
+    WHERE id = #{id}
+      AND ((state = 'PENDING' AND next_attempt_at &lt;= NOW(3))
+        OR (state = 'SENDING' AND lease_until &lt; NOW(3)))
+  </update>
+
+  <update id="renewLease">
+    UPDATE business_outbox
+    SET lease_until = DATE_ADD(NOW(3), INTERVAL #{seconds} SECOND)
+    WHERE id = #{id} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="markSent">
+    UPDATE business_outbox
+    SET state = 'SENT', sent_at = NOW(3), lease_owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="markConsumed">
+    UPDATE business_outbox
+    SET state = 'DONE', consumed_at = NOW(3), lease_owner = NULL, lease_until = NULL,
+        last_error = NULL
+    WHERE id = #{id} AND state &lt;&gt; 'DONE'
+  </update>
+
+  <!-- 已由其他实例完成时也要清除本实例可能残留的租约，避免后续误接管。 -->
+  <update id="markDuplicateDone">
+    UPDATE business_outbox
+    SET state = 'DONE', consumed_at = NOW(3), lease_owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND state &lt;&gt; 'DONE'
+  </update>
+
+  <update id="deferDeadline">
+    UPDATE business_outbox
+    SET state = 'PENDING', next_attempt_at = deliver_at,
+        lease_owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="recordSendFailure">
+    UPDATE business_outbox
+    SET attempts = attempts + 1,
+        state = IF(attempts + 1 &gt;= #{maxAttempts}, 'REVIEW', 'PENDING'),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        lease_owner = NULL, lease_until = NULL, last_error = #{error}
+    WHERE id = #{id} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="recordConsumeFailure">
+    UPDATE business_outbox
+    SET consume_attempts = consume_attempts + 1, last_error = #{error}
+    WHERE id = #{id} AND state &lt;&gt; 'DONE'
+  </update>
+
+  <update id="markReview">
+    UPDATE business_outbox
+    SET state = 'REVIEW', lease_owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND state &lt;&gt; 'DONE'
+  </update>
+
+  <update id="redriveSentEvents">
+    UPDATE business_outbox
+    SET state = 'PENDING', next_attempt_at = NOW(3), lease_owner = NULL, lease_until = NULL
+    WHERE state = 'SENT' AND sent_at &lt;= DATE_SUB(NOW(3), INTERVAL #{ageSeconds} SECOND)
+  </update>
+
+  <update id="redriveFailedEvents">
+    UPDATE business_outbox
+    SET state = 'PENDING', next_attempt_at = NOW(3), lease_owner = NULL, lease_until = NULL
+    WHERE state = 'PENDING' AND attempts &gt; 0 AND next_attempt_at &lt;= NOW(3)
+      AND next_attempt_at &lt;= DATE_SUB(NOW(3), INTERVAL #{ageSeconds} SECOND)
+  </update>
+
+  <update id="retryReview">
+    UPDATE business_outbox
+    SET state = 'PENDING', attempts = 0, consume_attempts = 0, next_attempt_at = NOW(3),
+        sent_at = NULL, consumed_at = NULL, lease_owner = NULL, lease_until = NULL,
+        last_error = NULL
+    WHERE id = #{id} AND state = 'REVIEW'
+  </update>
+
+  <select id="countByState" resultType="long">
+    SELECT COUNT(*) FROM business_outbox WHERE state = #{state}
+  </select>
+</mapper>
