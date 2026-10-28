@@ -7,10 +7,10 @@ import com.aiplatform.campaign.CampaignStreamSnapshot;
 import com.aiplatform.campaign.entity.CampaignReservation;
 import com.aiplatform.campaign.entity.LimitedCampaign;
 import com.aiplatform.campaign.service.ICampaignRedisService;
-import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,8 +19,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.RecordId;
-import org.springframework.data.redis.connection.stream.StreamInfo;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Service;
@@ -33,8 +31,11 @@ public class CampaignRedisServiceImpl implements ICampaignRedisService {
       CacheScripts.number("campaign-release.lua");
   private static final DefaultRedisScript<Long> REBUILD =
       CacheScripts.number("campaign-rebuild.lua");
-  private static final DefaultRedisScript<Long> STREAM_LAG =
-      CacheScripts.number("campaign-stream-lag.lua");
+  private static final DefaultRedisScript<Long> STREAM_TRIM =
+      CacheScripts.number("campaign-stream-trim.lua");
+  @SuppressWarnings("rawtypes")
+  private static final DefaultRedisScript<List> STREAM_GROUPS =
+      CacheScripts.list("campaign-stream-groups.lua");
   private final StringRedisTemplate redis;
   private final CampaignKeys keys;
   private final int requestTtlSeconds;
@@ -49,7 +50,8 @@ public class CampaignRedisServiceImpl implements ICampaignRedisService {
   }
 
   @Override
-  public long admit(long orderId, long userId, long campaignId, String requestKey) {
+  public long admit(long orderId, long userId, long campaignId, String requestKey,
+      int expectedGeneration, int initialStock) {
     Long result = redis.execute(ADMIT,
         Arrays.asList(
             keys.stock(campaignId),
@@ -60,7 +62,8 @@ public class CampaignRedisServiceImpl implements ICampaignRedisService {
             keys.request(orderId),
             keys.requestKey(campaignId, userId, requestKey)),
         String.valueOf(orderId), String.valueOf(userId), String.valueOf(campaignId),
-        requestKey, String.valueOf(requestTtlSeconds));
+        requestKey, String.valueOf(requestTtlSeconds),
+        String.valueOf(expectedGeneration), String.valueOf(initialStock));
     return result == null ? -1L : result;
   }
 
@@ -74,6 +77,12 @@ public class CampaignRedisServiceImpl implements ICampaignRedisService {
   public String existingOrderForUser(long campaignId, long userId) {
     Object value = redis.opsForHash().get(keys.requests(campaignId), String.valueOf(userId));
     return value == null ? null : String.valueOf(value);
+  }
+
+  @Override
+  public boolean isBuyer(long campaignId, long userId) {
+    return Boolean.TRUE.equals(
+        redis.opsForSet().isMember(keys.buyers(campaignId), String.valueOf(userId)));
   }
 
   @Override
@@ -200,43 +209,124 @@ public class CampaignRedisServiceImpl implements ICampaignRedisService {
     if (!snapshot.isStreamExists()) {
       return snapshot;
     }
-    Long length = redis.opsForStream().size(keys.stream());
-    snapshot.setLength(length == null ? 0 : length);
-    StreamInfo.XInfoGroups groups = redis.opsForStream().groups(keys.stream());
-    if (groups != null) {
-      for (int index = 0; index < groups.size(); index++) {
-        StreamInfo.XInfoGroup group = groups.get(index);
-        if (keys.group().equals(group.groupName())) {
-          snapshot.setGroupExists(true);
-          snapshot.setPending(group.pendingCount() == null ? 0 : group.pendingCount());
-          snapshot.setLastDeliveredId(group.lastDeliveredId());
-          break;
-        }
-      }
-    }
-    if (!snapshot.isGroupExists()) {
+    try {
+      Long length = redis.opsForStream().size(keys.stream());
+      snapshot.setLength(length == null ? 0 : length);
+    } catch (RuntimeException failure) {
+      // Stream 类型损坏时无法给出安全水位，按未知处理并阻止裁剪。
+      snapshot.setUnknownLagGroups(1);
+      snapshot.setAllGroupsCaughtUp(false);
       return snapshot;
     }
-    Long lag = redis.execute(STREAM_LAG, Arrays.asList(keys.stream()), keys.group());
-    snapshot.setLag(lag == null ? -1 : lag);
-    PendingMessages oldest = redis.opsForStream().pending(
-        keys.stream(), keys.group(), Range.unbounded(), 1L);
-    if (oldest != null && !oldest.isEmpty()) {
-      snapshot.setOldestPendingAgeMillis(
-          oldest.get(0).getElapsedTimeSinceLastDelivery().toMillis());
+    List<?> groups;
+    try {
+      groups = redis.execute(STREAM_GROUPS, Collections.singletonList(keys.stream()));
+    } catch (RuntimeException failure) {
+      // 无法枚举全部消费组时不能给出安全水位。
+      snapshot.setUnknownLagGroups(1);
+      snapshot.setAllGroupsCaughtUp(false);
+      return snapshot;
+    }
+    if (groups == null) {
+      snapshot.setUnknownLagGroups(1);
+      snapshot.setAllGroupsCaughtUp(false);
+      return snapshot;
+    }
+    for (int index = 0; index + 3 < groups.size(); index += 4) {
+      String name = text(groups.get(index));
+      long pending = number(groups.get(index + 1), 0);
+      long lag = number(groups.get(index + 2), -1);
+      String last = text(groups.get(index + 3));
+      snapshot.setGroupCount(snapshot.getGroupCount() + 1);
+      snapshot.setTotalPending(snapshot.getTotalPending() + pending);
+      if (lag < 0) {
+        snapshot.setUnknownLagGroups(snapshot.getUnknownLagGroups() + 1);
+      } else if (lag > snapshot.getMaxGroupLag()) {
+        snapshot.setMaxGroupLag(lag);
+      }
+      if (keys.group().equals(name)) {
+        snapshot.setGroupExists(true);
+        snapshot.setPending(pending);
+        snapshot.setLag(lag);
+        snapshot.setLastDeliveredId(last);
+      } else {
+        snapshot.setOtherPending(snapshot.getOtherPending() + pending);
+      }
+      if (last != null && !last.isEmpty()
+          && (snapshot.getTrimWatermark() == null
+              || compareIds(last, snapshot.getTrimWatermark()) < 0)) {
+        snapshot.setTrimWatermark(last);
+      }
+    }
+    // 默认消费组缺失时不能把“其余组已追平”当成安全水位。
+    snapshot.setAllGroupsCaughtUp(snapshot.isGroupExists()
+        && snapshot.getGroupCount() > 0
+        && snapshot.getUnknownLagGroups() == 0
+        && snapshot.getMaxGroupLag() == 0
+        && snapshot.getTotalPending() == 0);
+    if (snapshot.isGroupExists()) {
+      PendingMessages oldest = redis.opsForStream().pending(
+          keys.stream(), keys.group(), Range.unbounded(), 1L);
+      if (oldest != null && !oldest.isEmpty()) {
+        snapshot.setOldestPendingAgeMillis(
+            oldest.get(0).getElapsedTimeSinceLastDelivery().toMillis());
+      }
     }
     return snapshot;
   }
 
   @Override
-  public long trimBelow(String minId) {
-    Long removed = redis.execute((RedisCallback<Long>) connection -> {
-      Object result = connection.execute("XTRIM",
-          keys.stream().getBytes(StandardCharsets.UTF_8),
-          "MINID".getBytes(StandardCharsets.UTF_8),
-          minId.getBytes(StandardCharsets.UTF_8));
-      return result instanceof Long ? (Long) result : 0L;
-    });
-    return removed == null ? 0L : removed;
+  public long trimIfAllSafe() {
+    Long result = redis.execute(STREAM_TRIM, Collections.singletonList(keys.stream()),
+        keys.group());
+    if (result == null || result <= 0) {
+      return -1L;
+    }
+    return result - 1L;
+  }
+
+  private String text(Object value) {
+    if (value == null) {
+      return null;
+    }
+    if (value instanceof byte[]) {
+      return new String((byte[]) value, java.nio.charset.StandardCharsets.UTF_8);
+    }
+    return String.valueOf(value);
+  }
+
+  private long number(Object value, long fallback) {
+    if (value instanceof Number) {
+      return ((Number) value).longValue();
+    }
+    String text = text(value);
+    if (text == null || text.isEmpty()) {
+      return fallback;
+    }
+    try {
+      return Long.parseLong(text);
+    } catch (NumberFormatException failure) {
+      return fallback;
+    }
+  }
+
+  private int compareIds(String left, String right) {
+    int leftDash = left.indexOf('-');
+    int rightDash = right.indexOf('-');
+    if (leftDash <= 0 || rightDash <= 0) {
+      return left.compareTo(right);
+    }
+    try {
+      long leftMillis = Long.parseLong(left.substring(0, leftDash));
+      long rightMillis = Long.parseLong(right.substring(0, rightDash));
+      if (leftMillis != rightMillis) {
+        return leftMillis < rightMillis ? -1 : 1;
+      }
+      long leftSequence = Long.parseLong(left.substring(leftDash + 1));
+      long rightSequence = Long.parseLong(right.substring(rightDash + 1));
+      return Long.compare(leftSequence, rightSequence);
+    } catch (NumberFormatException failure) {
+      return left.compareTo(right);
+    }
   }
 }

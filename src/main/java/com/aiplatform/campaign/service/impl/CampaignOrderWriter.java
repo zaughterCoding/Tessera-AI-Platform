@@ -1,5 +1,6 @@
 package com.aiplatform.campaign.service.impl;
 
+import com.aiplatform.campaign.CampaignSellability;
 import com.aiplatform.campaign.entity.CampaignReservation;
 import com.aiplatform.campaign.entity.LimitedCampaign;
 import com.aiplatform.campaign.enums.ReservationState;
@@ -27,7 +28,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 @Slf4j
 @Service
 public class CampaignOrderWriter implements ICampaignOrderWriter {
-  private static final int LIMITED_SALE_MODE = 1;
   private static final String CURRENCY = "CNY";
   private final PurchaseOrderMapper orders;
   private final PurchasePaymentMapper payments;
@@ -35,6 +35,7 @@ public class CampaignOrderWriter implements ICampaignOrderWriter {
   private final LimitedCampaignMapper campaigns;
   private final IBusinessOutboxService outbox;
   private final ICampaignRedisService redis;
+  private final CampaignSellability sellability;
   private final int timeoutMinutes;
 
   public CampaignOrderWriter(
@@ -44,6 +45,7 @@ public class CampaignOrderWriter implements ICampaignOrderWriter {
       LimitedCampaignMapper campaigns,
       IBusinessOutboxService outbox,
       ICampaignRedisService redis,
+      CampaignSellability sellability,
       @Value("${app.trade.order-timeout-minutes:15}") int timeoutMinutes) {
     this.orders = orders;
     this.payments = payments;
@@ -51,6 +53,7 @@ public class CampaignOrderWriter implements ICampaignOrderWriter {
     this.campaigns = campaigns;
     this.outbox = outbox;
     this.redis = redis;
+    this.sellability = sellability;
     this.timeoutMinutes = timeoutMinutes;
   }
 
@@ -74,9 +77,9 @@ public class CampaignOrderWriter implements ICampaignOrderWriter {
     if (!Objects.equals(reservation.getGeneration(), campaign.getGeneration())) {
       throw new IllegalArgumentException("预约代次已过期");
     }
-    OrderProductSnapshot product = orders.selectOrderProduct(campaign.getProductId());
-    if (product == null
-        || !Integer.valueOf(LIMITED_SALE_MODE).equals(product.getSaleMode())) {
+    // 事务内以商品与应用实时状态复核，不能只依赖受理时的页面判断。
+    OrderProductSnapshot product = sellability.load(campaign.getProductId());
+    if (!sellability.isSellable(product)) {
       throw new IllegalArgumentException("活动商品不可建单");
     }
     PurchaseOrder existing = orders.selectById(orderId);

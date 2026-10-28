@@ -30,6 +30,7 @@
     JOIN usage_product p ON p.id = c.product_id
     JOIN ai_application a ON a.id = p.application_id
     WHERE c.published_at IS NOT NULL
+      AND p.status = 1 AND a.status = 1 AND p.sale_mode = 1
     ORDER BY c.begin_at DESC, c.id DESC
   </select>
 
@@ -56,6 +57,7 @@
     JOIN usage_product p ON p.id = c.product_id
     JOIN ai_application a ON a.id = p.application_id
     WHERE c.id = #{id} AND c.published_at IS NOT NULL
+      AND p.status = 1 AND a.status = 1 AND p.sale_mode = 1
   </select>
 
   <select id="selectAdminOffers"

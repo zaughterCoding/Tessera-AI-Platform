@@ -2,6 +2,8 @@ package com.aiplatform.campaign.service.impl;
 
 import com.aiplatform.cache.ILock;
 import com.aiplatform.cache.SimpleRedisLock;
+import com.aiplatform.campaign.CampaignEntryGuard;
+import com.aiplatform.campaign.CampaignSellability;
 import com.aiplatform.campaign.CampaignStreamSnapshot;
 import com.aiplatform.campaign.dto.AdminCampaignDTO;
 import com.aiplatform.campaign.dto.CampaignAdminCreateForm;
@@ -49,9 +51,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Slf4j
 @Service
 public class CampaignAdminServiceImpl implements ICampaignAdminService {
-  private static final int LIMITED_SALE_MODE = 1;
-  private static final int PRODUCT_ACTIVE = 1;
-  private static final int APPLICATION_PUBLISHED = 1;
   private static final int REASON_LIMIT = 255;
   private static final int LOCK_SECONDS = 10;
   private static final int MAX_REVIEW_LIMIT = 200;
@@ -65,6 +64,8 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
   private final IBusinessOutboxService outbox;
   private final BusinessOutboxMapper outboxMapper;
   private final ICampaignReconciliationService reconciliation;
+  private final CampaignSellability sellability;
+  private final CampaignEntryGuard entryGuard;
   private final StringRedisTemplate redisTemplate;
   private final TransactionTemplate transaction;
   private final String namespace;
@@ -78,6 +79,8 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
       IBusinessOutboxService outbox,
       BusinessOutboxMapper outboxMapper,
       ICampaignReconciliationService reconciliation,
+      CampaignSellability sellability,
+      CampaignEntryGuard entryGuard,
       StringRedisTemplate redisTemplate,
       PlatformTransactionManager transactionManager,
       @Value("${app.namespace}") String namespace) {
@@ -89,6 +92,8 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
     this.outbox = outbox;
     this.outboxMapper = outboxMapper;
     this.reconciliation = reconciliation;
+    this.sellability = sellability;
+    this.entryGuard = entryGuard;
     this.redisTemplate = redisTemplate;
     this.transaction = new TransactionTemplate(transactionManager);
     this.namespace = namespace;
@@ -97,8 +102,8 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
   @Override
   @Transactional
   public AdminCampaignDTO create(CampaignAdminCreateForm form) {
-    OrderProductSnapshot product = orders.selectOrderProduct(form.getProductId());
-    if (!limitedProduct(product)) {
+    OrderProductSnapshot product = sellability.load(form.getProductId());
+    if (!sellability.isSellable(product)) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
     LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
@@ -131,6 +136,10 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
     if (!CampaignState.DRAFT.name().equals(campaign.getPublishState())) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
+    // 发布时再次核对商品与应用实时状态，避免把已失效商品开放出去。
+    if (!sellability.isSellable(sellability.load(campaign.getProductId()))) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
     if (campaigns.markPublished(id) != 1
         || campaigns.activateDraftGeneration(id, campaign.getGeneration()) != 1) {
       throw new ApiException(ErrorCode.CONFLICT);
@@ -140,6 +149,7 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
     if (written < 0) {
       throw new ApiException(ErrorCode.UNAVAILABLE);
     }
+    entryGuard.unblock(id);
     return detail(id);
   }
 
@@ -188,26 +198,45 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
     }
     if (CampaignState.ACTIVE.name().equals(campaign.getPublishState())) {
       String redisState = redis.activityState(id);
-      if (CampaignState.ACTIVE.name().equals(redisState)) {
+      Integer redisGeneration = readableGeneration(id);
+      Long redisStock = readableStock(id);
+      // 在途预约会让 Redis 库存低于数据库剩余；低库存可解释，高于剩余才是不可信。
+      boolean stockUsable = redisStock != null && redisStock >= 0
+          && redisStock <= campaign.getRemainingStock();
+      boolean aligned = CampaignState.ACTIVE.name().equals(redisState)
+          && Objects.equals(campaign.getGeneration(), redisGeneration)
+          && stockUsable;
+      if (aligned) {
+        entryGuard.unblock(id);
         return detail(id);
       }
-      if (PREPARING.equals(redisState)) {
-        // 数据库代次已推进但入口未开启，补做最后一步即可。
+      if (PREPARING.equals(redisState)
+          && Objects.equals(campaign.getGeneration(), redisGeneration)
+          && stockUsable) {
+        // 数据库代次已推进但最后一步未开启：核对后再放行，不重复推进代次。
         if (!redis.setActivityState(id, CampaignState.ACTIVE.name())) {
           throw new ApiException(ErrorCode.UNAVAILABLE);
         }
+        entryGuard.unblock(id);
         return detail(id);
       }
-      throw new ApiException(ErrorCode.CONFLICT);
+      // 代次、库存或状态不一致时按数据库事实重建；未完成的重建同样重新执行。
+      return rebuild(id, campaign);
     }
     if (!CampaignState.PAUSED.name().equals(campaign.getPublishState())) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
+    return rebuild(id, campaign);
+  }
+
+  /** 恢复先关闭入口并按数据库事实重建新代次，覆盖确认后才替换旧代次。 */
+  private AdminCampaignDTO rebuild(long id, LimitedCampaign campaign) {
+    entryGuard.block(id, "活动恢复重建中");
     if (reservations.countProcessingOrReview(id) > 0) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
     CampaignStreamSnapshot stream = redis.snapshot();
-    if (stream.getPending() > 0 || stream.getLag() > 0) {
+    if (stream.isStreamExists() && !stream.isAllGroupsCaughtUp()) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
     if (outboxMapper.countPendingCampaignEvents(id) > 0) {
@@ -244,7 +273,24 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
           id, nextGeneration, CampaignState.PAUSED.name()));
       throw new ApiException(ErrorCode.UNAVAILABLE);
     }
+    entryGuard.unblock(id);
     return detail(id);
+  }
+
+  private Integer readableGeneration(long id) {
+    try {
+      return redis.redisGeneration(id);
+    } catch (RuntimeException failure) {
+      return null;
+    }
+  }
+
+  private Long readableStock(long id) {
+    try {
+      return redis.redisStock(id);
+    } catch (RuntimeException failure) {
+      return null;
+    }
   }
 
   @Override
@@ -435,13 +481,6 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
         }
       }
     });
-  }
-
-  private boolean limitedProduct(OrderProductSnapshot product) {
-    return product != null
-        && Integer.valueOf(PRODUCT_ACTIVE).equals(product.getProductStatus())
-        && Integer.valueOf(APPLICATION_PUBLISHED).equals(product.getApplicationStatus())
-        && Integer.valueOf(LIMITED_SALE_MODE).equals(product.getSaleMode());
   }
 
   private void derive(AdminCampaignDTO view) {

@@ -16,4 +16,8 @@ public class CampaignStreamMetricsDTO {
   private String blockedReason;
   private long pendingHandoffs;
   private long reviewReservations;
+  /** 消费组聚合视图；Pending 与 lag 从未知组不会被当成安全。 */
+  private int consumerGroups;
+  private long otherPendingCount;
+  private int unknownLagGroups;
 }

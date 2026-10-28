@@ -1,7 +1,8 @@
 -- 入口判定、预占库存、登记资格与写入 Stream 在同一脚本内原子完成。
 -- KEYS: 库存, 参与者集合, Stream, 活动哈希, 用户->订单哈希, 订单哈希, 请求键映射。
--- ARGV: 订单号, 用户 ID, 活动 ID, 请求键, 订单哈希有效期秒数。
--- 返回：0 已受理；1 售罄；2 已有资格；3 不在可参与状态；4 类型冲突；5 代次不完整；6 重复请求。
+-- ARGV: 订单号, 用户 ID, 活动 ID, 请求键, 订单哈希有效期秒数, 可信代次, 初始库存。
+-- 返回：0 已受理；1 售罄；2 已有资格；3 不在可参与状态；4 类型冲突；
+--       5 代次、库存或活动状态不可信；6 重复请求。
 local types = {'string', 'set', 'stream', 'hash', 'hash', 'hash', 'string'}
 for i = 1, 7 do
   local kind = redis.call('TYPE', KEYS[i]).ok
@@ -9,14 +10,19 @@ for i = 1, 7 do
 end
 local replay = redis.call('GET', KEYS[7])
 if replay then return 6 end
+local state = redis.call('HGET', KEYS[4], 'state')
+if state ~= 'ACTIVE' then return 3 end
 local stock = tonumber(redis.call('GET', KEYS[1]))
 local beginAt = tonumber(redis.call('HGET', KEYS[4], 'begin'))
 local endAt = tonumber(redis.call('HGET', KEYS[4], 'end'))
-local state = redis.call('HGET', KEYS[4], 'state')
 local generation = tonumber(redis.call('HGET', KEYS[4], 'generation'))
-if not stock or not beginAt or not endAt or not generation or state ~= 'ACTIVE' then
-  return 3
-end
+local expectedGeneration = tonumber(ARGV[6])
+local initialStock = tonumber(ARGV[7])
+if not stock or not beginAt or not endAt or not generation
+    or not expectedGeneration or not initialStock then return 5 end
+-- 代次必须与数据库可信代次一致；库存落在 [0, 初始库存] 之外同样视为损坏。
+if generation ~= expectedGeneration then return 5 end
+if stock < 0 or stock > initialStock or stock ~= math.floor(stock) then return 5 end
 local clock = redis.call('TIME')
 local now = tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000)
 if now < beginAt or now > endAt then return 3 end

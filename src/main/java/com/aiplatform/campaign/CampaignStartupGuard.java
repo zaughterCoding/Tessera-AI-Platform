@@ -17,14 +17,17 @@ import org.springframework.stereotype.Component;
 public class CampaignStartupGuard implements ApplicationRunner {
   private final LimitedCampaignMapper campaigns;
   private final ICampaignRedisService redis;
+  private final CampaignEntryGuard entryGuard;
   private final MeterRegistry metrics;
 
   public CampaignStartupGuard(
       LimitedCampaignMapper campaigns,
       ICampaignRedisService redis,
+      CampaignEntryGuard entryGuard,
       MeterRegistry metrics) {
     this.campaigns = campaigns;
     this.redis = redis;
+    this.entryGuard = entryGuard;
     this.metrics = metrics;
   }
 
@@ -38,17 +41,24 @@ public class CampaignStartupGuard implements ApplicationRunner {
         String state = redis.activityState(campaign.getId());
         Long stock = redis.redisStock(campaign.getId());
         Integer generation = redis.redisGeneration(campaign.getId());
-        boolean aligned = state != null && stock != null
+        // Redis 库存允许因在途预约低于数据库，但高于数据库剩余必然不可信。
+        boolean aligned = state != null && stock != null && stock >= 0
+            && stock <= campaign.getRemainingStock()
             && campaign.getGeneration().equals(generation)
             && campaign.getPublishState().equals(state);
         if (!aligned) {
+          // 不仅记录日志，还要在受理入口实际拒绝请求，直到恢复重建成功。
+          entryGuard.block(campaign.getId(), "启动核对发现 Redis 活动状态不一致");
           metrics.counter("aiplatform.campaign.entry.guard", "result", "closed").increment();
           log.error("活动入口状态与数据库不一致，已保持关闭，campaignId={}，dbState={}，"
                   + "redisState={}，dbGeneration={}，redisGeneration={}，redisStock={}",
               campaign.getId(), campaign.getPublishState(), state,
               campaign.getGeneration(), generation, stock);
+        } else {
+          entryGuard.unblock(campaign.getId());
         }
       } catch (RuntimeException failure) {
+        entryGuard.block(campaign.getId(), "启动核对无法读取 Redis 活动状态");
         metrics.counter("aiplatform.campaign.entry.guard", "result", "unavailable").increment();
         log.error("活动入口状态核对失败，已保持关闭，campaignId={}，type={}",
             campaign.getId(), failure.getClass().getSimpleName());

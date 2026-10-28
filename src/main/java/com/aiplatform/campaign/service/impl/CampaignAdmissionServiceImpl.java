@@ -2,6 +2,8 @@ package com.aiplatform.campaign.service.impl;
 
 import com.aiplatform.cache.ILock;
 import com.aiplatform.cache.SimpleRedisLock;
+import com.aiplatform.campaign.CampaignEntryGuard;
+import com.aiplatform.campaign.CampaignSellability;
 import com.aiplatform.campaign.RedisIdWorker;
 import com.aiplatform.campaign.dto.CampaignAdmissionDTO;
 import com.aiplatform.campaign.dto.CampaignAdmissionForm;
@@ -44,6 +46,8 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
   private final ICampaignRedisService redis;
   private final RedisIdWorker idWorker;
   private final StringRedisTemplate redisTemplate;
+  private final CampaignSellability sellability;
+  private final CampaignEntryGuard entryGuard;
   private final String namespace;
   private final boolean consumerEnabled;
 
@@ -54,6 +58,8 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
       ICampaignRedisService redis,
       RedisIdWorker idWorker,
       StringRedisTemplate redisTemplate,
+      CampaignSellability sellability,
+      CampaignEntryGuard entryGuard,
       @Value("${app.namespace}") String namespace,
       @Value("${app.campaign.consumer-enabled:true}") boolean consumerEnabled) {
     this.campaigns = campaigns;
@@ -62,6 +68,8 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
     this.redis = redis;
     this.idWorker = idWorker;
     this.redisTemplate = redisTemplate;
+    this.sellability = sellability;
+    this.entryGuard = entryGuard;
     this.namespace = namespace;
     this.consumerEnabled = consumerEnabled;
   }
@@ -76,6 +84,11 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
     if (campaign == null || campaign.getPublishedAt() == null) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
+    // 入口不可信时直接拒绝；商品下架、应用下线或售卖模式变化同样拒绝受理。
+    entryGuard.requireOpen(campaignId);
+    if (!sellability.isSellable(sellability.load(campaign.getProductId()))) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
     requireJoinable(campaign);
     String requestKey = form.getRequestKey().trim();
     ILock lock = new SimpleRedisLock(
@@ -84,16 +97,36 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
       throw new ApiException(ErrorCode.UNAVAILABLE);
     }
     try {
+      // 进入锁后重新读取：并发恢复可能已推进代次，不能拿过期代次误判 Redis 损坏。
+      LimitedCampaign current = campaigns.selectById(campaignId);
+      if (current == null || current.getPublishedAt() == null) {
+        throw new ApiException(ErrorCode.NOT_FOUND);
+      }
+      requireJoinable(current);
       long orderId = idWorker.nextOrderId();
       long result;
       try {
-        result = redis.admit(orderId, userId, campaignId, requestKey);
+        result = redis.admit(orderId, userId, campaignId, requestKey,
+            current.getGeneration(), current.getInitialStock());
+        if (result == 5L) {
+          LimitedCampaign latest = newerGeneration(current);
+          if (latest != null) {
+            // 恢复已推进代次：按新代次重试一次，合法请求不能因管理操作被拒绝。
+            current = latest;
+            result = redis.admit(orderId, userId, campaignId, requestKey,
+                current.getGeneration(), current.getInitialStock());
+          }
+        }
       } catch (RuntimeException failure) {
         log.warn("活动入口判定失败，campaignId={}，type={}",
             campaignId, failure.getClass().getSimpleName());
         throw new ApiException(ErrorCode.UNAVAILABLE);
       }
-      return interpret(userId, campaign, requestKey, orderId, result);
+      if (result == 4L || (result == 5L && newerGeneration(current) == null)) {
+        // 类型冲突，或代次未变化却与 Redis 不符时关闭入口，后续请求不再触达原子预占。
+        entryGuard.block(campaignId, "受理时 Redis 状态不可信");
+      }
+      return interpret(userId, current, requestKey, orderId, result);
     } finally {
       lock.unlock();
     }
@@ -161,6 +194,17 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
     if (now.isBefore(campaign.getBeginAt()) || now.isAfter(campaign.getEndAt())) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
+  }
+
+  /** 仅在活动仍可参与且数据库代次已推进时返回最新活动，用于并发恢复后的安全重试。 */
+  private LimitedCampaign newerGeneration(LimitedCampaign used) {
+    LimitedCampaign latest = campaigns.selectById(used.getId());
+    if (latest != null && latest.getPublishedAt() != null
+        && CampaignState.ACTIVE.name().equals(latest.getPublishState())
+        && !Objects.equals(latest.getGeneration(), used.getGeneration())) {
+      return latest;
+    }
+    return null;
   }
 
   private CampaignAdmissionDTO interpret(long userId, LimitedCampaign campaign,

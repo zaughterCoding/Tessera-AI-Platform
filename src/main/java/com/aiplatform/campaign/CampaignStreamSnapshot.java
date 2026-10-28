@@ -12,4 +12,12 @@ public class CampaignStreamSnapshot {
   private long lag;
   private Long oldestPendingAgeMillis;
   private String lastDeliveredId;
+  /** 全部消费组的聚合水位；裁剪与恢复只认这些值。 */
+  private int groupCount;
+  private long totalPending;
+  private long otherPending;
+  private long maxGroupLag;
+  private int unknownLagGroups;
+  private boolean allGroupsCaughtUp;
+  private String trimWatermark;
 }

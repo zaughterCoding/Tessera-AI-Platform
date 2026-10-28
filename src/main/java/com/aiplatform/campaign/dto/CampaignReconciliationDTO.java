@@ -17,8 +17,13 @@ public class CampaignReconciliationDTO {
   private Long redisStock;
   private Integer redisGeneration;
   private Long redisDifference;
+  /** CONFIRMED、IN_FLIGHT、UNEXPLAINED 或 UNKNOWN；只有 CONFIRMED 允许 exact。 */
+  private String stockDifferenceKind;
   private long pendingMessages;
   private long streamLag;
+  private int unknownLagGroups;
+  /** 未完成的建单、重试或库存释放事件。 */
+  private long pendingEvents;
   private boolean exact;
   private String note;
 }
