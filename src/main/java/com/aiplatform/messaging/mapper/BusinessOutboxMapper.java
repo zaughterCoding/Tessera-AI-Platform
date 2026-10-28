@@ -60,4 +60,20 @@ public interface BusinessOutboxMapper {
   int retryReview(@Param("id") long id);
 
   long countByState(@Param("state") String state);
+
+  int insertCampaignFulfillment(@Param("orderId") long orderId,
+      @Param("userId") long userId,
+      @Param("idempotencyKey") String idempotencyKey);
+
+  BusinessOutboxTask selectCampaignFulfillment(@Param("orderId") long orderId);
+
+  int rearmCampaignFulfillment(@Param("orderId") long orderId);
+
+  int requeueCampaignFulfillment(@Param("orderId") long orderId);
+
+  int cancelCampaignFulfillment(@Param("orderId") long orderId);
+
+  long countPendingCampaignEvents(@Param("campaignId") long campaignId);
+
+  long countPendingCampaignHandoffs();
 }

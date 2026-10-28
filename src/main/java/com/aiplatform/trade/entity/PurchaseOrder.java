@@ -14,6 +14,8 @@ public class PurchaseOrder {
   private Long id;
   private Long userId;
   private Long requestId;
+  private Long campaignId;
+  private Integer campaignGeneration;
   private Long productId;
   private Long applicationId;
   private String applicationName;

@@ -2,9 +2,18 @@ package com.aiplatform.messaging.service.impl;
 
 import com.aiplatform.cache.CacheClient;
 import com.aiplatform.cache.CacheUnavailableException;
+import com.aiplatform.campaign.CampaignMessage;
+import com.aiplatform.campaign.entity.CampaignReservation;
+import com.aiplatform.campaign.entity.LimitedCampaign;
+import com.aiplatform.campaign.enums.ReservationState;
+import com.aiplatform.campaign.mapper.CampaignReservationMapper;
+import com.aiplatform.campaign.mapper.LimitedCampaignMapper;
+import com.aiplatform.campaign.service.ICampaignFulfillmentService;
+import com.aiplatform.campaign.service.ICampaignRedisService;
 import com.aiplatform.catalog.mapper.UsageProductMapper;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.entity.BusinessOutboxTask;
+import com.aiplatform.messaging.mapper.BusinessOutboxMapper;
 import com.aiplatform.messaging.service.IBusinessProjectionService;
 import com.aiplatform.trade.entity.PurchaseOrder;
 import com.aiplatform.trade.enums.FundingChannel;
@@ -22,19 +31,37 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
   private final UsageProductMapper products;
   private final PurchaseOrderMapper orders;
   private final IOrderLifecycleService lifecycle;
+  private final CampaignReservationMapper reservations;
+  private final LimitedCampaignMapper campaigns;
+  private final ICampaignFulfillmentService fulfillment;
+  private final ICampaignRedisService campaignRedis;
+  private final BusinessOutboxMapper outbox;
   private final String prefix;
+  private final boolean outboxMode;
 
   public BusinessProjectionServiceImpl(
       CacheClient cache,
       UsageProductMapper products,
       PurchaseOrderMapper orders,
       IOrderLifecycleService lifecycle,
-      @Value("${app.redis.key-prefix}") String prefix) {
+      CampaignReservationMapper reservations,
+      LimitedCampaignMapper campaigns,
+      ICampaignFulfillmentService fulfillment,
+      ICampaignRedisService campaignRedis,
+      BusinessOutboxMapper outbox,
+      @Value("${app.redis.key-prefix}") String prefix,
+      @Value("${app.campaign.fulfillment-mode:stream}") String campaignMode) {
     this.cache = cache;
     this.products = products;
     this.orders = orders;
     this.lifecycle = lifecycle;
+    this.reservations = reservations;
+    this.campaigns = campaigns;
+    this.fulfillment = fulfillment;
+    this.campaignRedis = campaignRedis;
+    this.outbox = outbox;
     this.prefix = prefix;
+    this.outboxMode = "outbox".equals(campaignMode);
   }
 
   @Override
@@ -61,6 +88,15 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
         return;
       case ORDER_EXPIRE:
         closeExpiredOrder(task);
+        return;
+      case CAMPAIGN_FULFILL:
+        projectCampaignFulfillment(task);
+        return;
+      case CAMPAIGN_STOCK_RELEASED:
+        projectCampaignStockRelease(task);
+        return;
+      case CAMPAIGN_RETRY:
+        projectCampaignRetry(task);
         return;
       default:
         throw new IllegalArgumentException("没有可用的投影处理器");
@@ -107,6 +143,86 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     }
     // 投影按事件身份幂等，重复投递不会重复产生历史效果。
     orders.insertOrderEvent(task.getId(), order.getId(), task.getKind(), task.getCreatedAt());
+  }
+
+  private void projectCampaignFulfillment(BusinessOutboxTask task) {
+    CampaignReservation reservation = requireReservation(task);
+    if (ReservationState.SUCCESS.name().equals(reservation.getState())
+        || ReservationState.FAILED.name().equals(reservation.getState())) {
+      return;
+    }
+    if (!ReservationState.PROCESSING.name().equals(reservation.getState())) {
+      throw new IllegalStateException("预约已隔离，等待人工复核");
+    }
+    fulfillment.fulfill(task.getAggregateId());
+  }
+
+  private void projectCampaignStockRelease(BusinessOutboxTask task) {
+    CampaignReservation reservation = requireReservation(task);
+    LimitedCampaign campaign = campaigns.selectById(reservation.getCampaignId());
+    if (campaign == null) {
+      throw new IllegalArgumentException("活动不存在，无法释放库存");
+    }
+    String target;
+    if (ReservationState.FAILED.name().equals(reservation.getState())) {
+      target = "FAILED";
+    } else if (ReservationState.SUCCESS.name().equals(reservation.getState())) {
+      if (!Boolean.TRUE.equals(reservation.getStockReleased())) {
+        throw new IllegalStateException("库存释放标记尚未提交");
+      }
+      target = "RELEASED";
+    } else {
+      throw new IllegalStateException("预约状态不允许释放库存");
+    }
+    // 0 表示代次或归属已变化，属于安全空操作；负值需要重试或人工复核。
+    long result = campaignRedis.release(campaign.getId(), reservation.getUserId(),
+        reservation.getOrderId(), reservation.getGeneration(), target,
+        reservation.getRequestKey(), campaign.getInitialStock());
+    if (result < 0) {
+      throw new IllegalStateException("活动库存释放未完成，返回值 " + result);
+    }
+  }
+
+  private void projectCampaignRetry(BusinessOutboxTask task) {
+    CampaignReservation reservation = requireReservation(task);
+    if (ReservationState.SUCCESS.name().equals(reservation.getState())
+        || ReservationState.FAILED.name().equals(reservation.getState())) {
+      return;
+    }
+    if (!ReservationState.PROCESSING.name().equals(reservation.getState())) {
+      throw new IllegalStateException("预约仍处于人工复核状态");
+    }
+    LimitedCampaign campaign = campaigns.selectById(reservation.getCampaignId());
+    if (campaign == null || campaign.getPublishedAt() == null) {
+      throw new IllegalArgumentException("活动不存在或尚未发布");
+    }
+    if (!Objects.equals(campaign.getGeneration(), reservation.getGeneration())) {
+      fulfillment.markReview(reservation.getOrderId(), "重试时预约代次已过期");
+      throw new IllegalStateException("预约代次已过期，等待人工复核");
+    }
+    CampaignMessage message = new CampaignMessage();
+    message.setOrderId(reservation.getOrderId());
+    message.setUserId(reservation.getUserId());
+    message.setCampaignId(reservation.getCampaignId());
+    message.setGeneration(reservation.getGeneration());
+    message.setRequestKey(reservation.getRequestKey());
+    if (outboxMode) {
+      if (outbox.requeueCampaignFulfillment(reservation.getOrderId()) == 0) {
+        outbox.insertCampaignFulfillment(reservation.getOrderId(), reservation.getUserId(),
+            "campaign-fulfill:" + reservation.getOrderId());
+      }
+      return;
+    }
+    campaignRedis.enqueue(message);
+  }
+
+  private CampaignReservation requireReservation(BusinessOutboxTask task) {
+    CampaignReservation reservation = reservations.selectReservation(task.getAggregateId());
+    if (reservation == null
+        || !Objects.equals(reservation.getUserId(), task.getUserId())) {
+      throw new IllegalArgumentException("预约与任务身份不一致");
+    }
+    return reservation;
   }
 
   private PurchaseOrder requireOrder(BusinessOutboxTask task) {

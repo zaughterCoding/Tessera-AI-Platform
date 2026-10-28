@@ -20,6 +20,7 @@ public class BusinessOutboxTask {
   private Integer consumeAttempts;
   private LocalDateTime nextAttemptAt;
   private LocalDateTime deliverAt;
+  private String idempotencyKey;
   private String leaseOwner;
   private LocalDateTime leaseUntil;
   private LocalDateTime sentAt;

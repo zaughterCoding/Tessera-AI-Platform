@@ -27,6 +27,10 @@ public interface PurchaseOrderMapper extends BaseMapper<PurchaseOrder> {
       @Param("free") boolean free,
       @Param("timeoutMinutes") int timeoutMinutes);
 
+  int insertCampaignOrder(@Param("order") PurchaseOrder order,
+      @Param("free") boolean free,
+      @Param("timeoutMinutes") int timeoutMinutes);
+
   PurchaseOrder selectOrderForUpdate(@Param("id") long id);
 
   int markPaid(@Param("id") long id,

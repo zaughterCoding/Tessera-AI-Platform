@@ -40,6 +40,11 @@ spring:
     default-property-inclusion: non_null
     deserialization:
       fail-on-unknown-properties: true
+  # 活动对账等后台任务不得阻塞 Outbox 轮询与其他定时任务。
+  task:
+    scheduling:
+      pool:
+        size: ${APP_SCHEDULING_POOL_SIZE:4}
 app:
   namespace: ${APP_NAMESPACE}
   redis:
@@ -68,6 +73,18 @@ app:
     expiry-scan-enabled: ${APP_TRADE_EXPIRY_SCAN_ENABLED:true}
     expiry-scan-ms: ${APP_TRADE_EXPIRY_SCAN_MS:5000}
     expiry-scan-batch: ${APP_TRADE_EXPIRY_SCAN_BATCH:50}
+  campaign:
+    fulfillment-mode: ${APP_CAMPAIGN_FULFILLMENT_MODE:stream}
+    consumer-enabled: ${APP_CAMPAIGN_CONSUMER_ENABLED:true}
+    consumer-batch: ${APP_CAMPAIGN_CONSUMER_BATCH:10}
+    consumer-block-ms: ${APP_CAMPAIGN_CONSUMER_BLOCK_MS:1000}
+    claim-idle-ms: ${APP_CAMPAIGN_CLAIM_IDLE_MS:5000}
+    max-deliveries: ${APP_CAMPAIGN_MAX_DELIVERIES:5}
+    request-ttl-seconds: ${APP_CAMPAIGN_REQUEST_TTL_SECONDS:2592000}
+    trim-enabled: ${APP_CAMPAIGN_TRIM_ENABLED:true}
+    trim-interval-ms: ${APP_CAMPAIGN_TRIM_INTERVAL_MS:60000}
+    reconcile-enabled: ${APP_CAMPAIGN_RECONCILE_ENABLED:true}
+    reconcile-interval-ms: ${APP_CAMPAIGN_RECONCILE_INTERVAL_MS:60000}
   messaging:
     transport: ${APP_MESSAGING_TRANSPORT:local}
     name-server: ${APP_MQ_NAMESERVER:}

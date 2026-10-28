@@ -10,6 +10,8 @@ import lombok.Data;
 @Data
 public class PurchaseOrderDTO {
   private Long id;
+  private Long campaignId;
+  private Integer campaignGeneration;
   private Long productId;
   private Long applicationId;
   private String applicationName;
@@ -39,6 +41,8 @@ public class PurchaseOrderDTO {
   public static PurchaseOrderDTO from(PurchaseOrder order) {
     PurchaseOrderDTO view = new PurchaseOrderDTO();
     view.setId(order.getId());
+    view.setCampaignId(order.getCampaignId());
+    view.setCampaignGeneration(order.getCampaignGeneration());
     view.setProductId(order.getProductId());
     view.setApplicationId(order.getApplicationId());
     view.setApplicationName(order.getApplicationName());

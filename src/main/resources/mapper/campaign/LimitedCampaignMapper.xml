@@ -1,0 +1,161 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.campaign.mapper.LimitedCampaignMapper">
+  <select id="selectCampaignForUpdate"
+      resultType="com.aiplatform.campaign.entity.LimitedCampaign">
+    SELECT * FROM limited_campaign WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="selectPublicOffers"
+      resultType="com.aiplatform.campaign.dto.CampaignOfferDTO">
+    SELECT c.id AS id,
+           c.product_id AS product_id,
+           p.application_id AS application_id,
+           a.name AS application_name,
+           p.title AS product_title,
+           p.subtitle AS product_subtitle,
+           p.rules AS product_rules,
+           p.model_version AS model_version,
+           p.image_size AS image_size,
+           p.price AS price,
+           p.credits AS credits,
+           p.valid_days AS valid_days,
+           p.output_count AS output_count,
+           c.begin_at AS begin_at,
+           c.end_at AS end_at,
+           c.remaining_stock AS remaining_stock,
+           c.publish_state AS publish_state
+    FROM limited_campaign c
+    JOIN usage_product p ON p.id = c.product_id
+    JOIN ai_application a ON a.id = p.application_id
+    WHERE c.published_at IS NOT NULL
+    ORDER BY c.begin_at DESC, c.id DESC
+  </select>
+
+  <select id="selectPublicOffer"
+      resultType="com.aiplatform.campaign.dto.CampaignOfferDTO">
+    SELECT c.id AS id,
+           c.product_id AS product_id,
+           p.application_id AS application_id,
+           a.name AS application_name,
+           p.title AS product_title,
+           p.subtitle AS product_subtitle,
+           p.rules AS product_rules,
+           p.model_version AS model_version,
+           p.image_size AS image_size,
+           p.price AS price,
+           p.credits AS credits,
+           p.valid_days AS valid_days,
+           p.output_count AS output_count,
+           c.begin_at AS begin_at,
+           c.end_at AS end_at,
+           c.remaining_stock AS remaining_stock,
+           c.publish_state AS publish_state
+    FROM limited_campaign c
+    JOIN usage_product p ON p.id = c.product_id
+    JOIN ai_application a ON a.id = p.application_id
+    WHERE c.id = #{id} AND c.published_at IS NOT NULL
+  </select>
+
+  <select id="selectAdminOffers"
+      resultType="com.aiplatform.campaign.dto.AdminCampaignDTO">
+    SELECT c.id AS id,
+           c.product_id AS product_id,
+           p.application_id AS application_id,
+           a.name AS application_name,
+           p.title AS product_title,
+           p.price AS price,
+           p.credits AS credits,
+           p.valid_days AS valid_days,
+           c.initial_stock AS initial_stock,
+           c.remaining_stock AS remaining_stock,
+           c.begin_at AS begin_at,
+           c.end_at AS end_at,
+           c.publish_state AS publish_state,
+           c.generation AS generation,
+           c.published_at AS published_at,
+           c.created_at AS created_at
+    FROM limited_campaign c
+    JOIN usage_product p ON p.id = c.product_id
+    JOIN ai_application a ON a.id = p.application_id
+    ORDER BY c.id DESC
+  </select>
+
+  <select id="selectAdminOffer"
+      resultType="com.aiplatform.campaign.dto.AdminCampaignDTO">
+    SELECT c.id AS id,
+           c.product_id AS product_id,
+           p.application_id AS application_id,
+           a.name AS application_name,
+           p.title AS product_title,
+           p.price AS price,
+           p.credits AS credits,
+           p.valid_days AS valid_days,
+           c.initial_stock AS initial_stock,
+           c.remaining_stock AS remaining_stock,
+           c.begin_at AS begin_at,
+           c.end_at AS end_at,
+           c.publish_state AS publish_state,
+           c.generation AS generation,
+           c.published_at AS published_at,
+           c.created_at AS created_at
+    FROM limited_campaign c
+    JOIN usage_product p ON p.id = c.product_id
+    JOIN ai_application a ON a.id = p.application_id
+    WHERE c.id = #{id}
+  </select>
+
+  <update id="markPublished">
+    UPDATE limited_campaign
+    SET publish_state = 'ACTIVE', published_at = NOW(3)
+    WHERE id = #{id} AND publish_state = 'DRAFT' AND published_at IS NULL
+  </update>
+
+  <update id="updatePublishState">
+    UPDATE limited_campaign
+    SET publish_state = #{to}
+    WHERE id = #{id} AND publish_state = #{from}
+  </update>
+
+  <update id="activateDraftGeneration">
+    UPDATE campaign_generation
+    SET status = 'ACTIVE', rebuilt_at = NOW(3)
+    WHERE campaign_id = #{campaignId} AND generation = #{generation}
+      AND status = 'DRAFT'
+  </update>
+
+  <insert id="insertGeneration">
+    INSERT INTO campaign_generation(campaign_id, generation, status, remaining_stock)
+    VALUES (#{campaignId}, #{generation}, #{status}, #{remainingStock})
+  </insert>
+
+  <update id="replaceActiveGeneration">
+    UPDATE campaign_generation
+    SET status = 'REPLACED', replaced_at = NOW(3)
+    WHERE campaign_id = #{campaignId} AND status = 'ACTIVE'
+      AND generation &lt;&gt; #{replacement}
+  </update>
+
+  <update id="updateAfterRecovery">
+    UPDATE limited_campaign
+    SET generation = #{generation}, publish_state = #{publishState}
+    WHERE id = #{id}
+  </update>
+
+  <update id="consumeStock">
+    UPDATE limited_campaign
+    SET remaining_stock = remaining_stock - 1
+    WHERE id = #{id} AND remaining_stock > 0
+  </update>
+
+  <update id="returnStock">
+    UPDATE limited_campaign
+    SET remaining_stock = remaining_stock + 1
+    WHERE id = #{id} AND remaining_stock &lt; initial_stock
+  </update>
+
+  <select id="countReservations" resultType="long">
+    SELECT COUNT(*) FROM campaign_reservation WHERE campaign_id = #{campaignId}
+  </select>
+</mapper>

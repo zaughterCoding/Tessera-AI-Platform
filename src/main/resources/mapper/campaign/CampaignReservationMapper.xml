@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.campaign.mapper.CampaignReservationMapper">
+  <insert id="insertProcessing">
+    INSERT IGNORE INTO campaign_reservation(
+      order_id, campaign_id, user_id, generation, request_key, state
+    ) VALUES (
+      #{orderId}, #{campaignId}, #{userId}, #{generation}, #{requestKey}, 'PROCESSING'
+    )
+  </insert>
+
+  <select id="selectReservation"
+      resultType="com.aiplatform.campaign.entity.CampaignReservation">
+    SELECT * FROM campaign_reservation WHERE order_id = #{orderId}
+  </select>
+
+  <select id="selectReservationForUpdate"
+      resultType="com.aiplatform.campaign.entity.CampaignReservation">
+    SELECT * FROM campaign_reservation WHERE order_id = #{orderId} FOR UPDATE
+  </select>
+
+  <select id="selectByRequest"
+      resultType="com.aiplatform.campaign.entity.CampaignReservation">
+    SELECT * FROM campaign_reservation
+    WHERE campaign_id = #{campaignId} AND user_id = #{userId}
+      AND request_key = #{requestKey}
+    ORDER BY order_id DESC
+    LIMIT 1
+  </select>
+
+  <update id="markSuccess">
+    UPDATE campaign_reservation
+    SET state = 'SUCCESS', last_error = NULL
+    WHERE order_id = #{orderId} AND state = 'PROCESSING'
+  </update>
+
+  <update id="markReview">
+    UPDATE campaign_reservation
+    SET state = 'REVIEW', last_error = #{reason}
+    WHERE order_id = #{orderId} AND state = 'PROCESSING'
+  </update>
+
+  <update id="markFailed">
+    UPDATE campaign_reservation
+    SET state = 'FAILED', last_error = #{reason}
+    WHERE order_id = #{orderId} AND state IN ('PROCESSING','REVIEW')
+  </update>
+
+  <update id="resetForRetry">
+    UPDATE campaign_reservation
+    SET state = 'PROCESSING', attempts = 0, last_error = NULL
+    WHERE order_id = #{orderId} AND state = 'REVIEW'
+  </update>
+
+  <update id="recordAttempt">
+    UPDATE campaign_reservation
+    SET attempts = attempts + 1, last_error = #{reason}
+    WHERE order_id = #{orderId} AND state = 'PROCESSING'
+  </update>
+
+  <update id="markStockReleased">
+    UPDATE campaign_reservation
+    SET stock_released = 1, released_at = NOW(3)
+    WHERE order_id = #{orderId} AND state = 'SUCCESS' AND stock_released = 0
+  </update>
+
+  <select id="countByState" resultType="long">
+    SELECT COUNT(*) FROM campaign_reservation
+    WHERE campaign_id = #{campaignId} AND state = #{state}
+  </select>
+
+  <select id="countAllByState" resultType="long">
+    SELECT COUNT(*) FROM campaign_reservation WHERE state = #{state}
+  </select>
+
+  <select id="countProcessingOrReview" resultType="long">
+    SELECT COUNT(*) FROM campaign_reservation
+    WHERE state IN ('PROCESSING','REVIEW')
+    <if test="campaignId != null">
+      AND campaign_id = #{campaignId}
+    </if>
+  </select>
+
+  <select id="countUnreleasedSuccessWithOrder" resultType="long">
+    SELECT COUNT(*)
+    FROM campaign_reservation r
+    JOIN purchase_order o ON o.id = r.order_id
+    WHERE r.campaign_id = #{campaignId} AND r.state = 'SUCCESS'
+      AND r.stock_released = 0
+  </select>
+
+  <select id="selectActiveSuccess"
+      resultType="com.aiplatform.campaign.entity.CampaignReservation">
+    SELECT * FROM campaign_reservation
+    WHERE campaign_id = #{campaignId} AND state = 'SUCCESS' AND stock_released = 0
+    ORDER BY order_id
+  </select>
+
+  <select id="selectReview"
+      resultType="com.aiplatform.campaign.entity.CampaignReservation">
+    SELECT * FROM campaign_reservation
+    WHERE campaign_id = #{campaignId} AND state = 'REVIEW'
+    ORDER BY updated_at, order_id
+    LIMIT #{limit}
+  </select>
+</mapper>

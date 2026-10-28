@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.campaign.mapper.CampaignDeadLetterMapper">
+  <insert id="insertIgnore">
+    INSERT IGNORE INTO campaign_dead_letter(
+      message_id, campaign_id, order_id, payload, reason
+    ) VALUES (
+      #{messageId}, #{campaignId}, #{orderId}, #{payload}, #{reason}
+    )
+  </insert>
+
+  <select id="selectById"
+      resultType="com.aiplatform.campaign.entity.CampaignDeadLetter">
+    SELECT * FROM campaign_dead_letter WHERE message_id = #{messageId}
+  </select>
+
+  <select id="selectByCampaign"
+      resultType="com.aiplatform.campaign.entity.CampaignDeadLetter">
+    SELECT * FROM campaign_dead_letter
+    <where>
+      <if test="campaignId != null">
+        campaign_id = #{campaignId}
+      </if>
+    </where>
+    ORDER BY created_at DESC, message_id DESC
+    LIMIT #{limit}
+  </select>
+</mapper>

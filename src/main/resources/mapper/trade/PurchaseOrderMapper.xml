@@ -67,6 +67,29 @@
     )
   </insert>
 
+  <!-- 活动订单号在受理前生成，必须显式写入且不应由自增覆盖。 -->
+  <insert id="insertCampaignOrder">
+    INSERT INTO purchase_order(
+      id, user_id, request_id, campaign_id, campaign_generation, product_id,
+      application_id, application_name, application_version, product_title,
+      product_subtitle, product_rules, model_version, image_size, output_count,
+      credits, valid_days, sale_mode, currency, unit_price, amount, status,
+      funding, expire_at, paid_at
+    ) VALUES (
+      #{order.id}, #{order.userId}, NULL, #{order.campaignId},
+      #{order.campaignGeneration}, #{order.productId}, #{order.applicationId},
+      #{order.applicationName}, #{order.applicationVersion}, #{order.productTitle},
+      #{order.productSubtitle}, #{order.productRules}, #{order.modelVersion},
+      #{order.imageSize}, #{order.outputCount}, #{order.credits}, #{order.validDays},
+      #{order.saleMode}, #{order.currency}, #{order.unitPrice}, #{order.amount},
+      CASE WHEN #{free} THEN 'PAID' ELSE 'UNPAID' END,
+      CASE WHEN #{free} THEN 'FREE' ELSE NULL END,
+      CASE WHEN #{free} THEN NULL
+        ELSE DATE_ADD(NOW(3), INTERVAL #{timeoutMinutes} MINUTE) END,
+      CASE WHEN #{free} THEN NOW(3) ELSE NULL END
+    )
+  </insert>
+
   <select id="selectOrderForUpdate" resultType="com.aiplatform.trade.entity.PurchaseOrder">
     SELECT * FROM purchase_order WHERE id = #{id} FOR UPDATE
   </select>

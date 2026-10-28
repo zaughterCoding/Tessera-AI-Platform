@@ -8,7 +8,10 @@ public enum BusinessEventType {
   ORDER_PAID("order-events"),
   ORDER_CLAIMED("order-events"),
   ORDER_CLOSED("order-events"),
-  ORDER_EXPIRE("order-deadlines");
+  ORDER_EXPIRE("order-deadlines"),
+  CAMPAIGN_FULFILL("campaign-fulfillment"),
+  CAMPAIGN_STOCK_RELEASED("campaign-events"),
+  CAMPAIGN_RETRY("campaign-retry");
 
   private final String consumerGroup;
 

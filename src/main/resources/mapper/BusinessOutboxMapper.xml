@@ -133,4 +133,57 @@
   <select id="countByState" resultType="long">
     SELECT COUNT(*) FROM business_outbox WHERE state = #{state}
   </select>
+
+  <!-- 建单交接按预约订单幂等；重复消息不会生成第二条任务。 -->
+  <insert id="insertCampaignFulfillment">
+    INSERT IGNORE INTO business_outbox(
+      kind, aggregate_id, user_id, state, next_attempt_at, idempotency_key
+    ) VALUES (
+      'CAMPAIGN_FULFILL', #{orderId}, #{userId}, 'PENDING', NOW(3), #{idempotencyKey}
+    )
+  </insert>
+
+  <select id="selectCampaignFulfillment"
+      resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
+    SELECT * FROM business_outbox
+    WHERE kind = 'CAMPAIGN_FULFILL' AND aggregate_id = #{orderId}
+    ORDER BY id DESC
+    LIMIT 1
+  </select>
+
+  <update id="rearmCampaignFulfillment">
+    UPDATE business_outbox
+    SET state = 'PENDING', attempts = 0, consume_attempts = 0,
+        next_attempt_at = NOW(3), sent_at = NULL, consumed_at = NULL,
+        lease_owner = NULL, lease_until = NULL, last_error = NULL
+    WHERE kind = 'CAMPAIGN_FULFILL' AND aggregate_id = #{orderId} AND state = 'REVIEW'
+  </update>
+
+  <update id="requeueCampaignFulfillment">
+    UPDATE business_outbox
+    SET state = 'PENDING', attempts = 0, consume_attempts = 0,
+        next_attempt_at = NOW(3), deliver_at = NULL, sent_at = NULL, consumed_at = NULL,
+        lease_owner = NULL, lease_until = NULL, last_error = NULL
+    WHERE kind = 'CAMPAIGN_FULFILL' AND aggregate_id = #{orderId}
+  </update>
+
+  <update id="cancelCampaignFulfillment">
+    UPDATE business_outbox
+    SET state = 'DONE', consumed_at = NOW(3), lease_owner = NULL, lease_until = NULL
+    WHERE kind = 'CAMPAIGN_FULFILL' AND aggregate_id = #{orderId} AND state &lt;&gt; 'DONE'
+  </update>
+
+  <select id="countPendingCampaignEvents" resultType="long">
+    SELECT COUNT(*)
+    FROM business_outbox o
+    JOIN campaign_reservation r ON r.order_id = o.aggregate_id
+    WHERE r.campaign_id = #{campaignId}
+      AND o.kind IN ('CAMPAIGN_FULFILL','CAMPAIGN_STOCK_RELEASED','CAMPAIGN_RETRY')
+      AND o.state &lt;&gt; 'DONE'
+  </select>
+
+  <select id="countPendingCampaignHandoffs" resultType="long">
+    SELECT COUNT(*) FROM business_outbox
+    WHERE kind IN ('CAMPAIGN_FULFILL','CAMPAIGN_RETRY') AND state &lt;&gt; 'DONE'
+  </select>
 </mapper>
