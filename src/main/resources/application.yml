@@ -71,6 +71,18 @@ app:
     demo-code-enabled: ${APP_DEMO_CODE_ENABLED:false}
     session-ttl-seconds: 1800
     monitor-token: ${APP_MONITOR_TOKEN:}
+  cdc:
+    enabled: ${APP_CDC_ENABLED:false}
+    host: ${APP_CDC_HOST:127.0.0.1}
+    port: ${APP_CDC_PORT:11111}
+    destination: ${APP_CDC_DESTINATION:ai_creation}
+    schema: ${APP_CDC_SCHEMA:}
+    username: ${APP_CDC_USERNAME:}
+    password: ${APP_CDC_PASSWORD:}
+    batch-size: ${APP_CDC_BATCH_SIZE:200}
+    poll-timeout-ms: ${APP_CDC_POLL_TIMEOUT_MS:1000}
+    lease-seconds: ${APP_CDC_LEASE_SECONDS:30}
+    reconnect-ms: ${APP_CDC_RECONNECT_MS:1000}
   trade:
     order-timeout-minutes: ${APP_TRADE_ORDER_TIMEOUT_MINUTES:15}
     mock-payment-enabled: ${APP_TRADE_MOCK_PAYMENT_ENABLED:false}
