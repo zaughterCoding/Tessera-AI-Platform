@@ -11,6 +11,8 @@ public enum ErrorCode {
   NOT_FOUND(404, "资源不存在"),
   METHOD_NOT_ALLOWED(405, "请求方法不支持"),
   CONFLICT(409, "请求与当前状态冲突"),
+  QUOTA_EXCEEDED(409, "媒体存储配额不足"),
+  PAYLOAD_TOO_LARGE(413, "文件大小或类型不合法"),
   TOO_MANY_REQUESTS(429, "请求过于频繁，请稍后重试"),
   UNAVAILABLE(503, "服务暂时不可用"),
   DELIVERY_UNAVAILABLE(503, "验证码发送渠道尚未配置"),

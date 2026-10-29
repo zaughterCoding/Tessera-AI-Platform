@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.community.mapper.CreationMediaMapper">
+  <insert id="insert">
+    INSERT INTO creation_media(creation_id, media_id, position)
+    VALUES (#{creationId}, #{mediaId}, #{position})
+  </insert>
+
+  <delete id="deleteByCreation">
+    DELETE FROM creation_media WHERE creation_id = #{creationId}
+  </delete>
+
+  <select id="selectByCreation" resultType="com.aiplatform.community.entity.CreationMedia">
+    SELECT * FROM creation_media WHERE creation_id = #{creationId} ORDER BY position
+  </select>
+
+  <select id="selectByCreationIds"
+      resultType="com.aiplatform.community.entity.CreationMedia">
+    SELECT * FROM creation_media
+    WHERE creation_id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">
+      #{id}
+    </foreach>
+    ORDER BY creation_id, position
+  </select>
+</mapper>

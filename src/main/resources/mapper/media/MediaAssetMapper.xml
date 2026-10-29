@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.media.mapper.MediaAssetMapper">
+  <insert id="insertPending" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO media_asset(
+      user_id, path, original_name, content_type, size_bytes, state
+    ) VALUES (
+      #{userId}, #{path}, #{originalName}, #{contentType}, #{sizeBytes}, 'PENDING'
+    )
+  </insert>
+
+  <select id="selectById" resultType="com.aiplatform.media.entity.MediaAsset">
+    SELECT * FROM media_asset WHERE id = #{id}
+  </select>
+
+  <select id="selectByPath" resultType="com.aiplatform.media.entity.MediaAsset">
+    SELECT * FROM media_asset WHERE path = #{path}
+  </select>
+
+  <select id="selectByIdForUpdate" resultType="com.aiplatform.media.entity.MediaAsset">
+    SELECT * FROM media_asset WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <update id="markActive">
+    UPDATE media_asset SET state = 'ACTIVE' WHERE id = #{id} AND state = 'PENDING'
+  </update>
+
+  <update id="markFailed">
+    UPDATE media_asset SET state = 'FAILED' WHERE id = #{id} AND state = 'PENDING'
+  </update>
+
+  <update id="markDeleting">
+    UPDATE media_asset SET state = 'DELETING' WHERE id = #{id} AND state = 'ACTIVE'
+  </update>
+
+  <update id="markDeleted">
+    UPDATE media_asset
+    SET state = 'DELETED', deleted_at = NOW(3)
+    WHERE id = #{id} AND state = 'DELETING'
+  </update>
+
+  <!-- 保留中的登记不允许被孤儿扫描当作未登记文件删除。 -->
+  <select id="selectRetainedPaths" resultType="string">
+    SELECT path FROM media_asset WHERE state IN ('PENDING','ACTIVE','DELETING')
+  </select>
+
+  <select id="selectStalePending" resultType="com.aiplatform.media.entity.MediaAsset">
+    SELECT * FROM media_asset
+    WHERE state = 'PENDING'
+      AND created_at &lt;= DATE_SUB(NOW(3), INTERVAL #{graceSeconds} SECOND)
+    ORDER BY id
+    LIMIT #{limit}
+  </select>
+
+  <!-- 删除事件长期未完成时由清理任务接管，仍以状态条件更新保证只结算一次。 -->
+  <select id="selectStaleDeleting" resultType="com.aiplatform.media.entity.MediaAsset">
+    SELECT * FROM media_asset
+    WHERE state = 'DELETING'
+      AND updated_at &lt;= DATE_SUB(NOW(3), INTERVAL #{graceSeconds} SECOND)
+    ORDER BY id
+    LIMIT #{limit}
+  </select>
+
+  <select id="selectByOwner" resultType="com.aiplatform.media.entity.MediaAsset">
+    SELECT * FROM media_asset
+    WHERE user_id = #{userId} AND state IN ('PENDING','ACTIVE','DELETING')
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countByOwner" resultType="long">
+    SELECT COUNT(*) FROM media_asset
+    WHERE user_id = #{userId} AND state IN ('PENDING','ACTIVE','DELETING')
+  </select>
+
+  <!-- 任何发布（含未公开）都构成删除保护；公开读取另按 PUBLISHED 判断。 -->
+  <select id="countAllReferences" resultType="long">
+    SELECT COUNT(*) FROM creation_media WHERE media_id = #{mediaId}
+  </select>
+
+  <select id="countPublicReferences" resultType="long">
+    SELECT COUNT(*)
+    FROM creation_media cm
+    JOIN creation c ON c.id = cm.creation_id
+    WHERE cm.media_id = #{mediaId} AND c.state = 'PUBLISHED'
+  </select>
+</mapper>

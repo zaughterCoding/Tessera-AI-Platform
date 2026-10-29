@@ -151,6 +151,14 @@
     LIMIT 1
   </select>
 
+  <insert id="insertFeedContinuation">
+    INSERT INTO business_outbox(
+      kind, aggregate_id, user_id, cursor_id, state, next_attempt_at
+    ) VALUES (
+      'CREATION_PUBLISH', #{creationId}, #{userId}, #{cursorId}, 'PENDING', NOW(3)
+    )
+  </insert>
+
   <update id="rearmCampaignFulfillment">
     UPDATE business_outbox
     SET state = 'PENDING', attempts = 0, consume_attempts = 0,

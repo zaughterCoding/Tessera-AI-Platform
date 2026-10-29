@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.media.mapper.MediaQuotaMapper">
+  <insert id="ensureQuota">
+    INSERT INTO media_quota(user_id, used_bytes, asset_count)
+    VALUES (#{userId}, 0, 0)
+    ON DUPLICATE KEY UPDATE updated_at = updated_at
+  </insert>
+
+  <select id="selectForUpdate" resultType="com.aiplatform.media.entity.MediaQuota">
+    SELECT * FROM media_quota WHERE user_id = #{userId} FOR UPDATE
+  </select>
+
+  <!-- 行锁内同时核对字节与数量上限；并发上传不会各自看到旧余量后一起通过。 -->
+  <update id="reserve">
+    UPDATE media_quota
+    SET used_bytes = used_bytes + #{bytes}, asset_count = asset_count + 1
+    WHERE user_id = #{userId}
+      AND used_bytes + #{bytes} &lt;= #{byteLimit}
+      AND asset_count + 1 &lt;= #{assetLimit}
+  </update>
+
+  <update id="release">
+    UPDATE media_quota
+    SET used_bytes = used_bytes - #{bytes}, asset_count = asset_count - 1
+    WHERE user_id = #{userId} AND used_bytes &gt;= #{bytes} AND asset_count &gt; 0
+  </update>
+</mapper>

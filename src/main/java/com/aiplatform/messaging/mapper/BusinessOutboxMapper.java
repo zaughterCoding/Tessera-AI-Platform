@@ -65,6 +65,11 @@ public interface BusinessOutboxMapper {
       @Param("userId") long userId,
       @Param("idempotencyKey") String idempotencyKey);
 
+  /** 粉丝分批未完成时，以已处理到的粉丝边 id 建立续传任务。 */
+  int insertFeedContinuation(@Param("creationId") long creationId,
+      @Param("userId") long userId,
+      @Param("cursorId") long cursorId);
+
   BusinessOutboxTask selectCampaignFulfillment(@Param("orderId") long orderId);
 
   int rearmCampaignFulfillment(@Param("orderId") long orderId);

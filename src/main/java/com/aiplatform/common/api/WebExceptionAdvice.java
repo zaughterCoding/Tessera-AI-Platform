@@ -15,6 +15,7 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @Slf4j
 @RestControllerAdvice
@@ -37,6 +38,11 @@ public class WebExceptionAdvice {
     return reject(ErrorCode.METHOD_NOT_ALLOWED);
   }
 
+  @ExceptionHandler(MaxUploadSizeExceededException.class)
+  public ResponseEntity<Result<Void>> tooLarge() {
+    return reject(ErrorCode.PAYLOAD_TOO_LARGE);
+  }
+
   @ExceptionHandler(DataAccessException.class)
   public ResponseEntity<Result<Void>> unavailable() {
     return reject(ErrorCode.UNAVAILABLE);
@@ -50,7 +56,8 @@ public class WebExceptionAdvice {
   @ExceptionHandler(Exception.class)
   public ResponseEntity<Result<Void>> unexpected(Exception error) {
     // 不记录异常载荷、请求体或凭据，排查时使用请求编号关联安全诊断。
-    log.error("请求失败，requestId={}，type={}", MDC.get("requestId"), error.getClass().getName());
+    log.error("请求失败，requestId={}，type={}", MDC.get("requestId"),
+        error.getClass().getName());
     return reject(ErrorCode.INTERNAL_ERROR);
   }
 

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.community.mapper.FollowMapper">
+  <insert id="insertIgnore">
+    INSERT IGNORE INTO follow_edge(user_id, follow_user_id)
+    VALUES (#{userId}, #{followUserId})
+  </insert>
+
+  <delete id="delete">
+    DELETE FROM follow_edge WHERE user_id = #{userId} AND follow_user_id = #{followUserId}
+  </delete>
+
+  <select id="exists" resultType="long">
+    SELECT COUNT(*) FROM follow_edge
+    WHERE user_id = #{userId} AND follow_user_id = #{followUserId}
+  </select>
+
+  <select id="countFollowers" resultType="long">
+    SELECT COUNT(*) FROM follow_edge WHERE follow_user_id = #{userId}
+  </select>
+
+  <select id="countFollowing" resultType="long">
+    SELECT COUNT(*) FROM follow_edge WHERE user_id = #{userId}
+  </select>
+
+  <!-- 新粉丝总在更高 id；游标只向后推进，重启后从数据库游标继续。 -->
+  <select id="selectFollowerBatch"
+      resultType="com.aiplatform.community.entity.FollowEdge">
+    SELECT * FROM follow_edge
+    WHERE follow_user_id = #{followUserId} AND id &gt; #{afterId}
+    ORDER BY id
+    LIMIT #{limit}
+  </select>
+
+  <select id="selectCommonFollows"
+      resultType="com.aiplatform.community.dto.FollowUserDTO">
+    SELECT u.id AS user_id, u.nick_name, u.icon
+    FROM follow_edge mine
+    JOIN follow_edge other ON other.follow_user_id = mine.follow_user_id
+    JOIN creator_user u ON u.id = mine.follow_user_id
+    WHERE mine.user_id = #{userId} AND other.user_id = #{otherUserId}
+    ORDER BY mine.id
+    LIMIT #{limit}
+  </select>
+</mapper>

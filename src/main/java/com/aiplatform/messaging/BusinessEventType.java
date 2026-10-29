@@ -11,7 +11,9 @@ public enum BusinessEventType {
   ORDER_EXPIRE("order-deadlines"),
   CAMPAIGN_FULFILL("campaign-fulfillment"),
   CAMPAIGN_STOCK_RELEASED("campaign-events"),
-  CAMPAIGN_RETRY("campaign-retry");
+  CAMPAIGN_RETRY("campaign-retry"),
+  MEDIA_DELETE("media-lifecycle"),
+  CREATION_PUBLISH("community-feed");
 
   private final String consumerGroup;
 

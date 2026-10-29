@@ -11,7 +11,10 @@ import com.aiplatform.campaign.mapper.LimitedCampaignMapper;
 import com.aiplatform.campaign.service.ICampaignFulfillmentService;
 import com.aiplatform.campaign.service.ICampaignRedisService;
 import com.aiplatform.catalog.mapper.UsageProductMapper;
+import com.aiplatform.community.service.IFeedService;
+import com.aiplatform.media.service.IMediaService;
 import com.aiplatform.messaging.BusinessEventType;
+import com.aiplatform.messaging.ProjectionResult;
 import com.aiplatform.messaging.entity.BusinessOutboxTask;
 import com.aiplatform.messaging.mapper.BusinessOutboxMapper;
 import com.aiplatform.messaging.service.IBusinessProjectionService;
@@ -35,6 +38,8 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
   private final LimitedCampaignMapper campaigns;
   private final ICampaignFulfillmentService fulfillment;
   private final ICampaignRedisService campaignRedis;
+  private final IMediaService media;
+  private final IFeedService feed;
   private final BusinessOutboxMapper outbox;
   private final String prefix;
   private final boolean outboxMode;
@@ -48,6 +53,8 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
       LimitedCampaignMapper campaigns,
       ICampaignFulfillmentService fulfillment,
       ICampaignRedisService campaignRedis,
+      IMediaService media,
+      IFeedService feed,
       BusinessOutboxMapper outbox,
       @Value("${app.redis.key-prefix}") String prefix,
       @Value("${app.campaign.fulfillment-mode:stream}") String campaignMode) {
@@ -59,48 +66,70 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     this.campaigns = campaigns;
     this.fulfillment = fulfillment;
     this.campaignRedis = campaignRedis;
+    this.media = media;
+    this.feed = feed;
     this.outbox = outbox;
     this.prefix = prefix;
     this.outboxMode = "outbox".equals(campaignMode);
   }
 
   @Override
-  public void project(BusinessOutboxTask task) {
+  public ProjectionResult project(BusinessOutboxTask task) {
     BusinessEventType type = BusinessEventType.from(task.getKind());
     switch (type) {
       case APPLICATION_INVALIDATE:
         invalidateApplication(task.getAggregateId());
-        return;
+        return ProjectionResult.complete();
       case PRODUCT_INVALIDATE:
         invalidateProduct(task);
-        return;
+        return ProjectionResult.complete();
       case ORDER_CREATED:
         projectOrder(task, null, null);
-        return;
+        return ProjectionResult.complete();
       case ORDER_PAID:
         projectOrder(task, OrderStatus.PAID.name(), FundingChannel.MOCK.name());
-        return;
+        return ProjectionResult.complete();
       case ORDER_CLAIMED:
         projectOrder(task, OrderStatus.PAID.name(), FundingChannel.FREE.name());
-        return;
+        return ProjectionResult.complete();
       case ORDER_CLOSED:
         projectOrder(task, OrderStatus.CANCELLED.name(), null);
-        return;
+        return ProjectionResult.complete();
       case ORDER_EXPIRE:
         closeExpiredOrder(task);
-        return;
+        return ProjectionResult.complete();
       case CAMPAIGN_FULFILL:
         projectCampaignFulfillment(task);
-        return;
+        return ProjectionResult.complete();
       case CAMPAIGN_STOCK_RELEASED:
         projectCampaignStockRelease(task);
-        return;
+        return ProjectionResult.complete();
       case CAMPAIGN_RETRY:
         projectCampaignRetry(task);
-        return;
+        return ProjectionResult.complete();
+      case MEDIA_DELETE:
+        projectMediaDelete(task);
+        return ProjectionResult.complete();
+      case CREATION_PUBLISH:
+        return projectCreationPublish(task);
       default:
         throw new IllegalArgumentException("没有可用的投影处理器");
     }
+  }
+
+  private void projectMediaDelete(BusinessOutboxTask task) {
+    if (task.getUserId() == null) {
+      throw new IllegalArgumentException("媒体删除任务缺少用户身份");
+    }
+    media.completeDeletion(task.getUserId(), task.getAggregateId());
+  }
+
+  private ProjectionResult projectCreationPublish(BusinessOutboxTask task) {
+    if (task.getUserId() == null) {
+      throw new IllegalArgumentException("发布任务缺少作者身份");
+    }
+    long cursor = task.getCursorId() == null ? 0L : task.getCursorId();
+    return feed.fanout(task.getAggregateId(), task.getUserId(), cursor);
   }
 
   private void invalidateApplication(long applicationId) {

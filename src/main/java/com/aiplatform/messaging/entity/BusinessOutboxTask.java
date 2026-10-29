@@ -15,6 +15,7 @@ public class BusinessOutboxTask {
   private String kind;
   private Long aggregateId;
   private Long userId;
+  private Long cursorId;
   private String state;
   private Integer attempts;
   private Integer consumeAttempts;

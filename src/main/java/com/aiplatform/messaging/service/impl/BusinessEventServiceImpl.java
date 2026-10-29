@@ -4,6 +4,7 @@ import com.aiplatform.messaging.BusinessEvent;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.DeliveryRetryPolicy;
 import com.aiplatform.messaging.FailureMessages;
+import com.aiplatform.messaging.ProjectionResult;
 import com.aiplatform.messaging.entity.BusinessOutboxTask;
 import com.aiplatform.messaging.entity.MessageFailure;
 import com.aiplatform.messaging.enums.OutboxState;
@@ -69,8 +70,12 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
       if (OutboxState.REVIEW.matches(task.getState())) {
         throw new IllegalStateException("任务已隔离，等待人工复核");
       }
-      projection.project(task);
+      ProjectionResult result = projection.project(task);
       messages.insertInboxEvent(consumerGroup, event.getEventId());
+      if (result.isContinuation()) {
+        // 续传任务与当前任务的完成状态同事务提交；任一步失败都从原游标重放。
+        outbox.insertFeedContinuation(task.getAggregateId(), task.getUserId(), result.cursor());
+      }
       outbox.markConsumed(task.getId(), brokerTransport);
       metrics.counter("aiplatform.messaging.events",
           "consumer", consumerGroup, "outcome", "consumed").increment();

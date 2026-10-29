@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.community.mapper.CreationMapper">
+  <sql id="view">
+    SELECT c.id, c.user_id, u.nick_name AS author_nick_name, u.icon AS author_icon,
+           c.application_id, a.name AS application_name, c.kind, c.title, c.content,
+           c.state, c.like_count, c.published_at, c.created_at
+    FROM creation c
+    JOIN creator_user u ON u.id = c.user_id
+    JOIN ai_application a ON a.id = c.application_id
+  </sql>
+
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO creation(
+      user_id, application_id, kind, title, content, state, like_count, published_at
+    ) VALUES (
+      #{userId}, #{applicationId}, #{kind}, #{title}, #{content}, #{state}, 0, #{publishedAt}
+    )
+  </insert>
+
+  <select id="selectById" resultType="com.aiplatform.community.entity.Creation">
+    SELECT * FROM creation WHERE id = #{id}
+  </select>
+
+  <select id="selectByIdForUpdate" resultType="com.aiplatform.community.entity.Creation">
+    SELECT * FROM creation WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="selectViewById" resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.id = #{id}
+  </select>
+
+  <update id="updateContent">
+    UPDATE creation
+    SET title = #{title}, content = #{content}
+    WHERE id = #{id} AND user_id = #{userId}
+  </update>
+
+  <update id="updateVisibility">
+    UPDATE creation
+    SET state = #{state},
+        published_at = CASE WHEN #{state} = 'PUBLISHED' THEN #{publishedAt}
+                            ELSE published_at END
+    WHERE id = #{id} AND user_id = #{userId}
+  </update>
+
+  <update id="incrementLike">
+    UPDATE creation SET like_count = like_count + 1 WHERE id = #{id}
+  </update>
+
+  <!-- 计数只随唯一键删除成功而减少，不能减成负数。 -->
+  <update id="decrementLike">
+    UPDATE creation SET like_count = like_count - 1
+    WHERE id = #{id} AND like_count &gt; 0
+  </update>
+
+  <delete id="deleteOwned">
+    DELETE FROM creation WHERE id = #{id} AND user_id = #{userId}
+  </delete>
+
+  <select id="selectPublic" resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.state = 'PUBLISHED'
+    ORDER BY c.published_at DESC, c.id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countPublic" resultType="long">
+    SELECT COUNT(*) FROM creation WHERE state = 'PUBLISHED'
+  </select>
+
+  <select id="selectHot" resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.state = 'PUBLISHED'
+    ORDER BY c.like_count DESC, c.published_at DESC, c.id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="selectMine" resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.user_id = #{userId}
+    ORDER BY c.id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countMine" resultType="long">
+    SELECT COUNT(*) FROM creation WHERE user_id = #{userId}
+  </select>
+
+  <select id="selectPublishedByAuthor"
+      resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.user_id = #{userId} AND c.state = 'PUBLISHED'
+    ORDER BY c.published_at DESC, c.id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countPublishedByAuthor" resultType="long">
+    SELECT COUNT(*) FROM creation WHERE user_id = #{userId} AND state = 'PUBLISHED'
+  </select>
+
+  <select id="selectPublishedByApplication"
+      resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.application_id = #{applicationId} AND c.state = 'PUBLISHED'
+    ORDER BY c.published_at DESC, c.id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countPublishedByApplication" resultType="long">
+    SELECT COUNT(*) FROM creation WHERE application_id = #{applicationId} AND state = 'PUBLISHED'
+  </select>
+
+  <select id="selectPublishedByIds" resultType="com.aiplatform.community.dto.CreationDTO">
+    <include refid="view"/>
+    WHERE c.state = 'PUBLISHED' AND c.id IN
+    <foreach collection="ids" item="id" open="(" separator="," close=")">
+      #{id}
+    </foreach>
+  </select>
+</mapper>
