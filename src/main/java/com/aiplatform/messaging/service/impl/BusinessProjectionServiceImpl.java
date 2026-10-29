@@ -1,5 +1,6 @@
 package com.aiplatform.messaging.service.impl;
 
+import com.aiplatform.analytics.service.IAnalyticsJournalService;
 import com.aiplatform.cache.CacheClient;
 import com.aiplatform.cache.CacheUnavailableException;
 import com.aiplatform.campaign.CampaignMessage;
@@ -41,6 +42,7 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
   private final IMediaService media;
   private final IFeedService feed;
   private final BusinessOutboxMapper outbox;
+  private final IAnalyticsJournalService analytics;
   private final String prefix;
   private final boolean outboxMode;
 
@@ -56,6 +58,7 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
       IMediaService media,
       IFeedService feed,
       BusinessOutboxMapper outbox,
+      IAnalyticsJournalService analytics,
       @Value("${app.redis.key-prefix}") String prefix,
       @Value("${app.campaign.fulfillment-mode:stream}") String campaignMode) {
     this.cache = cache;
@@ -69,6 +72,7 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     this.media = media;
     this.feed = feed;
     this.outbox = outbox;
+    this.analytics = analytics;
     this.prefix = prefix;
     this.outboxMode = "outbox".equals(campaignMode);
   }
@@ -172,6 +176,8 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     }
     // 投影按事件身份幂等，重复投递不会重复产生历史效果。
     orders.insertOrderEvent(task.getId(), order.getId(), task.getKind(), task.getCreatedAt());
+    // 分析任务与订单历史投影同事务登记；分析关闭时不产生任何记录。
+    analytics.appendOrderFact(order, task);
   }
 
   private void projectCampaignFulfillment(BusinessOutboxTask task) {

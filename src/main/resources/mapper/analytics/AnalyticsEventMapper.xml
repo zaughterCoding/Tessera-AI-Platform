@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.analytics.mapper.AnalyticsEventMapper">
+  <!-- 事件主键同时承担去重；返回 0 表示重复，由上层核对内容。 -->
+  <insert id="insertEvent">
+    INSERT IGNORE INTO analytics_event(
+      event_id, application_id, user_id, action, occurred_at_ms, bucket_ms
+    ) VALUES (
+      #{eventId}, #{applicationId}, #{userId}, #{action}, #{occurredAtMs}, #{bucketMs}
+    )
+  </insert>
+
+  <select id="selectEventForUpdate"
+      resultType="com.aiplatform.analytics.entity.AnalyticsEventRecord">
+    SELECT event_id AS eventId,
+           application_id AS applicationId,
+           user_id AS userId,
+           action AS action,
+           occurred_at_ms AS occurredAtMs,
+           bucket_ms AS bucketMs
+    FROM analytics_event
+    WHERE event_id = #{eventId}
+    FOR UPDATE
+  </select>
+
+  <insert id="upsertBucket">
+    INSERT INTO analytics_application_bucket(
+      application_id, bucket_ms, visits, orders, payments, claims, closed_orders
+    ) VALUES (
+      #{applicationId}, #{bucketMs},
+      <choose><when test="action == 'VISIT'">1</when><otherwise>0</otherwise></choose>,
+      <choose><when test="action == 'ORDER'">1</when><otherwise>0</otherwise></choose>,
+      <choose><when test="action == 'PAID'">1</when><otherwise>0</otherwise></choose>,
+      <choose><when test="action == 'CLAIM'">1</when><otherwise>0</otherwise></choose>,
+      <choose><when test="action == 'CLOSED'">1</when><otherwise>0</otherwise></choose>
+    )
+    ON DUPLICATE KEY UPDATE
+      visits = visits + VALUES(visits),
+      orders = orders + VALUES(orders),
+      payments = payments + VALUES(payments),
+      claims = claims + VALUES(claims),
+      closed_orders = closed_orders + VALUES(closed_orders)
+  </insert>
+
+  <insert id="insertVisitUser">
+    INSERT IGNORE INTO analytics_visit_user(application_id, user_id, bucket_ms)
+    VALUES (#{applicationId}, #{userId}, #{bucketMs})
+  </insert>
+
+  <!-- 窗口 UV 对整段窗口去重，不能把每分钟 UV 相加。 -->
+  <select id="selectPopularity"
+      resultType="com.aiplatform.analytics.entity.PopularityRow">
+    SELECT b.application_id AS applicationId,
+           a.name AS name,
+           a.summary AS summary,
+           a.cover_url AS coverUrl,
+           b.visits AS visits,
+           COALESCE(u.uv, 0) AS uv,
+           b.orders AS orders,
+           b.payments AS payments,
+           b.claims AS claims,
+           (b.visits * #{visitWeight} + COALESCE(u.uv, 0) * #{uvWeight}
+             + b.orders * #{orderWeight} + b.payments * #{paymentWeight}
+             + b.claims * #{claimWeight}) AS heat
+    FROM (
+      SELECT application_id,
+             SUM(visits) AS visits,
+             SUM(orders) AS orders,
+             SUM(payments) AS payments,
+             SUM(claims) AS claims
+      FROM analytics_application_bucket
+      WHERE bucket_ms &gt;= #{fromMs} AND bucket_ms &lt; #{toMs}
+      GROUP BY application_id
+    ) b
+    JOIN ai_application a ON a.id = b.application_id AND a.status = 1
+    LEFT JOIN (
+      SELECT application_id, COUNT(DISTINCT user_id) AS uv
+      FROM analytics_visit_user
+      WHERE bucket_ms &gt;= #{fromMs} AND bucket_ms &lt; #{toMs}
+      GROUP BY application_id
+    ) u ON u.application_id = b.application_id
+    ORDER BY heat DESC, b.application_id ASC
+    LIMIT #{limit}
+  </select>
+
+  <select id="selectBucketTotals"
+      resultType="com.aiplatform.analytics.entity.AnalyticsOverviewRow">
+    SELECT SUM(visits) AS visits,
+           SUM(orders) AS orders,
+           SUM(payments) AS payments,
+           SUM(claims) AS claims,
+           SUM(closed_orders) AS closedOrders
+    FROM analytics_application_bucket
+    WHERE application_id = #{applicationId}
+      AND bucket_ms &gt;= #{fromMs} AND bucket_ms &lt; #{toMs}
+  </select>
+
+  <select id="selectUv" resultType="long">
+    SELECT COUNT(DISTINCT user_id)
+    FROM analytics_visit_user
+    WHERE application_id = #{applicationId}
+      AND bucket_ms &gt;= #{fromMs} AND bucket_ms &lt; #{toMs}
+  </select>
+
+  <select id="selectApplicationName" resultType="string">
+    SELECT name FROM ai_application WHERE id = #{applicationId} AND status = 1
+  </select>
+
+  <!-- 保留期清理按时间截断；更早的重放会因超出保留期被隔离，不会重复计数。 -->
+  <delete id="deleteEventsBefore">
+    DELETE FROM analytics_event WHERE occurred_at_ms &lt; #{cutoffMs} LIMIT #{limit}
+  </delete>
+
+  <delete id="deleteVisitUsersBefore">
+    DELETE FROM analytics_visit_user WHERE bucket_ms &lt; #{cutoffMs} LIMIT #{limit}
+  </delete>
+
+  <delete id="deleteBucketsBefore">
+    DELETE FROM analytics_application_bucket WHERE bucket_ms &lt; #{cutoffMs} LIMIT #{limit}
+  </delete>
+</mapper>

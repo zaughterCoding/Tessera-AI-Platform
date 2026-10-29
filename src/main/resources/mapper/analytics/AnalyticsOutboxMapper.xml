@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.analytics.mapper.AnalyticsOutboxMapper">
+  <insert id="insertIfAbsent">
+    INSERT IGNORE INTO analytics_outbox(
+      event_id, application_id, user_id, action, occurred_at_ms, payload,
+      state, next_attempt_at
+    ) VALUES (
+      #{eventId}, #{applicationId}, #{userId}, #{action}, #{occurredAtMs}, #{payload},
+      'PENDING', NOW(3)
+    )
+  </insert>
+
+  <sql id="factColumns">
+    event_id AS eventId,
+    application_id AS applicationId,
+    user_id AS userId,
+    action AS action,
+    occurred_at_ms AS occurredAtMs,
+    payload AS payload,
+    state AS state,
+    attempts AS attempts,
+    next_attempt_at AS nextAttemptAt,
+    lease_owner AS leaseOwner,
+    lease_until AS leaseUntil,
+    sent_at AS sentAt,
+    last_error AS lastError,
+    created_at AS createdAt
+  </sql>
+
+  <select id="selectFact" resultType="com.aiplatform.analytics.entity.AnalyticsOutboxEvent">
+    SELECT <include refid="factColumns"/>
+    FROM analytics_outbox
+    WHERE event_id = #{eventId}
+  </select>
+
+  <!-- 冲突核对必须读取最新已提交内容，不能沿用事务开始时的快照。 -->
+  <select id="selectFactForUpdate"
+      resultType="com.aiplatform.analytics.entity.AnalyticsOutboxEvent">
+    SELECT <include refid="factColumns"/>
+    FROM analytics_outbox
+    WHERE event_id = #{eventId}
+    FOR UPDATE
+  </select>
+
+  <select id="selectClaimable"
+      resultType="com.aiplatform.analytics.entity.AnalyticsOutboxEvent">
+    SELECT * FROM analytics_outbox
+    WHERE (state = 'PENDING' AND next_attempt_at &lt;= NOW(3))
+       OR (state = 'SENDING' AND lease_until &lt; NOW(3))
+    ORDER BY next_attempt_at, event_id
+    LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <update id="claim">
+    UPDATE analytics_outbox
+    SET state = 'SENDING', lease_owner = #{leaseOwner}, attempts = attempts + 1,
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{seconds} SECOND)
+    WHERE event_id = #{eventId}
+      AND ((state = 'PENDING' AND next_attempt_at &lt;= NOW(3))
+        OR (state = 'SENDING' AND lease_until &lt; NOW(3)))
+  </update>
+
+  <update id="renewLease">
+    UPDATE analytics_outbox
+    SET lease_until = DATE_ADD(NOW(3), INTERVAL #{seconds} SECOND)
+    WHERE event_id = #{eventId} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="markSent">
+    UPDATE analytics_outbox
+    SET state = 'SENT', sent_at = NOW(3), last_error = NULL,
+        lease_owner = NULL, lease_until = NULL
+    WHERE event_id = #{eventId} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="recordFailure">
+    UPDATE analytics_outbox
+    SET state = IF(attempts &gt;= #{maxAttempts}, 'REVIEW', 'PENDING'),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        lease_owner = NULL, lease_until = NULL, last_error = #{error}
+    WHERE event_id = #{eventId} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <update id="reject">
+    UPDATE analytics_outbox
+    SET state = 'REVIEW', lease_owner = NULL, lease_until = NULL, last_error = #{error}
+    WHERE event_id = #{eventId} AND state = 'SENDING' AND lease_owner = #{leaseOwner}
+  </update>
+
+  <select id="selectEvents"
+      resultType="com.aiplatform.analytics.entity.AnalyticsOutboxEvent">
+    SELECT * FROM analytics_outbox
+    <where>
+      <if test="state != null and state != ''">
+        state = #{state}
+      </if>
+    </where>
+    ORDER BY created_at DESC, event_id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <update id="retryReview">
+    UPDATE analytics_outbox
+    SET state = 'PENDING', attempts = 0, next_attempt_at = NOW(3),
+        lease_owner = NULL, lease_until = NULL, last_error = NULL
+    WHERE event_id = #{eventId} AND state = 'REVIEW'
+  </update>
+
+  <select id="countPending" resultType="long">
+    SELECT COUNT(*) FROM analytics_outbox WHERE state IN ('PENDING','SENDING','REVIEW')
+  </select>
+
+  <!-- 只清理已确认发送且超过保留期的任务；待发与隔离记录保留给恢复使用。 -->
+  <delete id="deleteSentBefore">
+    DELETE FROM analytics_outbox
+    WHERE state = 'SENT' AND sent_at &lt; DATE_SUB(NOW(3), INTERVAL #{days} DAY)
+    LIMIT #{limit}
+  </delete>
+</mapper>

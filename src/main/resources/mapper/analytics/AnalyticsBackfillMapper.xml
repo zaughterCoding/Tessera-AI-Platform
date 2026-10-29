@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.analytics.mapper.AnalyticsBackfillMapper">
+  <select id="selectStateForUpdate"
+      resultType="com.aiplatform.analytics.entity.AnalyticsBackfillState">
+    SELECT id, state, cursor_event_id AS cursorEventId, range_from_ms AS rangeFromMs,
+           processed, started_at AS startedAt, updated_at AS updatedAt,
+           last_error AS lastError
+    FROM analytics_backfill_state
+    WHERE id = #{id}
+    FOR UPDATE
+  </select>
+
+  <select id="selectState"
+      resultType="com.aiplatform.analytics.entity.AnalyticsBackfillState">
+    SELECT id, state, cursor_event_id AS cursorEventId, range_from_ms AS rangeFromMs,
+           processed, started_at AS startedAt, updated_at AS updatedAt,
+           last_error AS lastError
+    FROM analytics_backfill_state
+    WHERE id = #{id}
+  </select>
+
+  <update id="start">
+    UPDATE analytics_backfill_state
+    SET state = 'RUNNING', cursor_event_id = #{cursor}, range_from_ms = #{rangeFromMs},
+        processed = 0, started_at = NOW(3), last_error = NULL
+    WHERE id = #{id} AND state &lt;&gt; 'RUNNING'
+  </update>
+
+  <update id="restart">
+    UPDATE analytics_backfill_state
+    SET state = 'RUNNING', cursor_event_id = 0, range_from_ms = #{rangeFromMs},
+        processed = 0, started_at = NOW(3), last_error = NULL
+    WHERE id = #{id} AND state &lt;&gt; 'RUNNING'
+  </update>
+
+  <update id="advance">
+    UPDATE analytics_backfill_state
+    SET cursor_event_id = #{cursor}, processed = processed + #{count}
+    WHERE id = #{id} AND state = 'RUNNING'
+  </update>
+
+  <update id="complete">
+    UPDATE analytics_backfill_state
+    SET state = 'DONE', cursor_event_id = #{cursor}, processed = processed + #{count}
+    WHERE id = #{id} AND state = 'RUNNING'
+  </update>
+
+  <update id="markFailed">
+    UPDATE analytics_backfill_state
+    SET state = 'FAILED', last_error = #{error}
+    WHERE id = #{id}
+  </update>
+
+  <!-- 只读取业务事件历史，身份沿用已提交的业务任务号。 -->
+  <select id="selectEvents"
+      resultType="com.aiplatform.analytics.entity.AnalyticsBackfillEvent">
+    SELECT e.event_id AS taskId,
+           e.order_id AS orderId,
+           e.event_type AS eventType,
+           e.occurred_at AS occurredAt,
+           o.application_id AS applicationId,
+           o.user_id AS userId
+    FROM purchase_order_event e
+    JOIN purchase_order o ON o.id = e.order_id
+    WHERE e.event_id &gt; #{cursor}
+      AND e.occurred_at &gt;= FROM_UNIXTIME(#{rangeFromSeconds})
+    ORDER BY e.event_id
+    LIMIT #{limit}
+  </select>
+</mapper>

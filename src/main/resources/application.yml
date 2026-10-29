@@ -131,6 +131,37 @@ app:
     retry-max-seconds: ${APP_MESSAGING_RETRY_MAX_SECONDS:300}
     max-send-attempts: ${APP_MESSAGING_MAX_SEND_ATTEMPTS:10}
     max-consume-attempts: ${APP_MESSAGING_MAX_CONSUME_ATTEMPTS:5}
+  analytics:
+    enabled: ${APP_ANALYTICS_ENABLED:false}
+    topic: ${APP_ANALYTICS_TOPIC:}
+    group: ${APP_ANALYTICS_GROUP:}
+    bootstrap-servers: ${APP_KAFKA_BOOTSTRAP_SERVERS:}
+    client-id: ${APP_ANALYTICS_CLIENT_ID:ai-creation-analytics}
+    visit-queue-capacity: ${APP_ANALYTICS_VISIT_QUEUE_CAPACITY:512}
+    visit-attempts: ${APP_ANALYTICS_VISIT_ATTEMPTS:3}
+    send-timeout-ms: ${APP_ANALYTICS_SEND_TIMEOUT_MS:3000}
+    relay-batch: ${APP_ANALYTICS_RELAY_BATCH:50}
+    lease-seconds: ${APP_ANALYTICS_LEASE_SECONDS:30}
+    relay-enabled: ${APP_ANALYTICS_RELAY_ENABLED:true}
+    max-send-attempts: ${APP_ANALYTICS_MAX_SEND_ATTEMPTS:30}
+    max-retry-seconds: ${APP_ANALYTICS_MAX_RETRY_SECONDS:300}
+    poll-delay-ms: ${APP_ANALYTICS_POLL_DELAY_MS:1000}
+    consumer-enabled: ${APP_ANALYTICS_CONSUMER_ENABLED:true}
+    poll-records: ${APP_ANALYTICS_POLL_RECORDS:50}
+    poll-timeout-ms: ${APP_ANALYTICS_POLL_TIMEOUT_MS:1000}
+    retry-backoff-ms: ${APP_ANALYTICS_RETRY_BACKOFF_MS:1000}
+    backfill-enabled: ${APP_ANALYTICS_BACKFILL_ENABLED:true}
+    backfill-days: ${APP_ANALYTICS_BACKFILL_DAYS:7}
+    backfill-batch: ${APP_ANALYTICS_BACKFILL_BATCH:200}
+    backfill-interval-ms: ${APP_ANALYTICS_BACKFILL_INTERVAL_MS:500}
+    retention-days: ${APP_ANALYTICS_RETENTION_DAYS:30}
+    max-clock-skew-minutes: ${APP_ANALYTICS_MAX_CLOCK_SKEW_MINUTES:5}
+    cleanup-interval-ms: ${APP_ANALYTICS_CLEANUP_INTERVAL_MS:3600000}
+    heat-visit-weight: ${APP_ANALYTICS_HEAT_VISIT_WEIGHT:1}
+    heat-uv-weight: ${APP_ANALYTICS_HEAT_UV_WEIGHT:2}
+    heat-order-weight: ${APP_ANALYTICS_HEAT_ORDER_WEIGHT:5}
+    heat-payment-weight: ${APP_ANALYTICS_HEAT_PAYMENT_WEIGHT:10}
+    heat-claim-weight: ${APP_ANALYTICS_HEAT_CLAIM_WEIGHT:8}
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
 management:

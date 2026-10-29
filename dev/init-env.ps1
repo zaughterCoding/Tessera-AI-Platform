@@ -25,6 +25,11 @@ $taskProfile = @{ dev = 'local'; test = 'test'; load = 'load' }[$Environment]
 $taskDemoEnabled = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskMockPayment = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskCanalSlaveId = @{ dev = '12341'; test = '12342'; load = '12343' }[$Environment]
+$taskKafkaClusterId = @{
+    dev = 'AQrkGJkvTTCsTVgElHWZDg'
+    test = 'wUzqfWIcS9OX_SEfGWBxmg'
+    load = 'NtaTM3_1SqC1cs5Cgv6VTA'
+}[$Environment]
 $taskCanalClientPassword = New-LocalSecret()
 $taskValues = @(
     "COMPOSE_PROJECT_NAME=ai-creation-$Environment"
@@ -54,6 +59,10 @@ $taskValues = @(
     "APP_TRADE_EXPIRY_SCAN_ENABLED=true"
     "APP_TRADE_EXPIRY_SCAN_MS=5000"
     "APP_TRADE_EXPIRY_SCAN_BATCH=50"
+    "APP_ANALYTICS_ENABLED=true"
+    "APP_ANALYTICS_TOPIC=ai-platform-$Environment-analytics"
+    "APP_ANALYTICS_GROUP=ai-platform-$Environment-analytics"
+    "APP_KAFKA_CLUSTER_ID=$taskKafkaClusterId"
     "MYSQL_ROOT_PASSWORD=$(New-LocalSecret)"
     "APP_DB_PASSWORD=$(New-LocalSecret)"
     "SCHEMA_DB_PASSWORD=$(New-LocalSecret)"

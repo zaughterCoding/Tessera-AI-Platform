@@ -1,6 +1,7 @@
 package com.aiplatform.catalog.service.impl;
 
 import cn.hutool.crypto.digest.DigestUtil;
+import com.aiplatform.analytics.service.IAnalyticsJournalService;
 import com.aiplatform.cache.CacheClient;
 import com.aiplatform.catalog.dto.ApplicationAdminUpdateForm;
 import com.aiplatform.catalog.dto.ApplicationDetailDTO;
@@ -47,6 +48,7 @@ public class ApplicationServiceImpl
   private final ICategoryService categories;
   private final ApplicationCategoryMapper categoryMapper;
   private final IBusinessOutboxService outbox;
+  private final IAnalyticsJournalService analytics;
   private final String prefix;
 
   public ApplicationServiceImpl(
@@ -54,11 +56,13 @@ public class ApplicationServiceImpl
       ICategoryService categories,
       ApplicationCategoryMapper categoryMapper,
       IBusinessOutboxService outbox,
+      IAnalyticsJournalService analytics,
       @Value("${app.redis.key-prefix}") String prefix) {
     this.cache = cache;
     this.categories = categories;
     this.categoryMapper = categoryMapper;
     this.outbox = outbox;
+    this.analytics = analytics;
     this.prefix = prefix;
   }
 
@@ -87,6 +91,9 @@ public class ApplicationServiceImpl
     if (!Integer.valueOf(STATUS_PUBLISHED).equals(liveStatus)) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
+    // 只有成功返回可见详情才计一次访问；身份来自服务端会话，采集失败不影响读取。
+    UserDTO viewer = UserHolder.getUser();
+    analytics.recordVisit(id, viewer == null ? null : viewer.getId());
     return Result.ok(detail);
   }
 

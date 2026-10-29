@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.analytics.mapper.AnalyticsFailureMapper">
+  <insert id="insertFailure">
+    INSERT IGNORE INTO analytics_failure(
+      topic, partition_id, message_offset, payload, reason
+    ) VALUES (
+      #{topic}, #{partitionId}, #{messageOffset}, #{payload}, #{reason}
+    )
+  </insert>
+
+  <select id="listFailures"
+      resultType="com.aiplatform.analytics.entity.AnalyticsFailureRecord">
+    SELECT topic AS topic,
+           partition_id AS partitionId,
+           message_offset AS messageOffset,
+           reason AS reason,
+           created_at AS createdAt
+    FROM analytics_failure
+    ORDER BY created_at DESC, topic, partition_id, message_offset
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countFailures" resultType="long">
+    SELECT COUNT(*) FROM analytics_failure
+  </select>
+</mapper>

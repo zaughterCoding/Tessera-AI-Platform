@@ -6,11 +6,13 @@ import com.aiplatform.identity.dto.UserDTO;
 import com.aiplatform.identity.service.IUserService;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.annotation.AnnotatedElementUtils;
 import org.springframework.stereotype.Component;
 import org.springframework.web.method.HandlerMethod;
 import org.springframework.web.servlet.HandlerInterceptor;
 
+@Slf4j
 @Component
 public class AccessGuard implements HandlerInterceptor {
   private final IUserService users;
@@ -44,6 +46,8 @@ public class AccessGuard implements HandlerInterceptor {
       if (open.rateLimited() && !limits.allow("auth-ip:" + request.getRemoteAddr(), 30, 60000)) {
         throw new ApiException(ErrorCode.TOO_MANY_REQUESTS);
       }
+      // 公开接口保持匿名可用；仅在携带凭据时识别身份，识别失败不得影响访问。
+      attachOptionalUser(request);
       return true;
     }
     UserDTO user = users.authenticate(request.getHeader("Authorization"));
@@ -55,5 +59,20 @@ public class AccessGuard implements HandlerInterceptor {
       throw new ApiException(ErrorCode.FORBIDDEN);
     }
     return true;
+  }
+
+  private void attachOptionalUser(HttpServletRequest request) {
+    String authorization = request.getHeader("Authorization");
+    if (authorization == null || authorization.trim().isEmpty()) {
+      return;
+    }
+    try {
+      UserDTO user = users.authenticate(authorization);
+      if (user != null) {
+        UserHolder.saveUser(user);
+      }
+    } catch (RuntimeException failure) {
+      log.debug("公开接口可选身份识别失败，type={}", failure.getClass().getSimpleName());
+    }
   }
 }
