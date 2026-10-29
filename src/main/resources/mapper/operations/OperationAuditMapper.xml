@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.operations.mapper.OperationAuditMapper">
+  <sql id="auditFilters">
+    <where>
+      <if test="action != null and action != ''">
+        action = #{action}
+      </if>
+      <if test="objectType != null and objectType != ''">
+        AND object_type = #{objectType}
+      </if>
+      <if test="operatorId != null">
+        AND operator_id = #{operatorId}
+      </if>
+      <if test="outcome != null and outcome != ''">
+        AND outcome = #{outcome}
+      </if>
+    </where>
+  </sql>
+
+  <select id="selectAudits" resultType="com.aiplatform.operations.entity.OperationAudit">
+    SELECT * FROM operation_audit
+    <include refid="auditFilters"/>
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countAudits" resultType="long">
+    SELECT COUNT(*) FROM operation_audit
+    <include refid="auditFilters"/>
+  </select>
+
+  <select id="countBefore" resultType="long">
+    SELECT COUNT(*) FROM operation_audit WHERE occurred_at &lt; #{cutoff}
+  </select>
+
+  <!-- 按主键顺序批量推进；重复执行只会继续删除同一保留期外的记录。 -->
+  <delete id="deleteBefore">
+    DELETE FROM operation_audit
+    WHERE occurred_at &lt; #{cutoff}
+    ORDER BY id
+    LIMIT #{limit}
+  </delete>
+</mapper>

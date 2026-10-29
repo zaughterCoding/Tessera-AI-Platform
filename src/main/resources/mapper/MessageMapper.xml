@@ -28,4 +28,50 @@
     ORDER BY created_at DESC
     LIMIT #{limit} OFFSET #{offset}
   </select>
+
+  <select id="countFailures" resultType="long">
+    SELECT COUNT(*) FROM message_failure
+  </select>
+
+  <!-- 任务仍未完成时保留去重记录；否则重放可能重复执行同一业务投影。 -->
+  <select id="countInboxBefore" resultType="long">
+    SELECT COUNT(*) FROM message_inbox
+    WHERE processed_at &lt; #{cutoff}
+      AND NOT EXISTS (
+        SELECT 1 FROM business_outbox o
+        WHERE o.id = message_inbox.event_id AND o.state &lt;&gt; 'DONE'
+      )
+  </select>
+
+  <delete id="deleteInboxBefore">
+    DELETE FROM message_inbox
+    WHERE processed_at &lt; #{cutoff}
+      AND NOT EXISTS (
+        SELECT 1 FROM business_outbox o
+        WHERE o.id = message_inbox.event_id AND o.state &lt;&gt; 'DONE'
+      )
+    ORDER BY consumer_group, event_id
+    LIMIT #{limit}
+  </delete>
+
+  <!-- 仍关联待复核隔离任务的失败记录作为证据保留。 -->
+  <select id="countFailuresBefore" resultType="long">
+    SELECT COUNT(*) FROM message_failure
+    WHERE created_at &lt; #{cutoff}
+      AND (event_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM business_outbox o
+        WHERE o.id = message_failure.event_id AND o.state = 'REVIEW'
+      ))
+  </select>
+
+  <delete id="deleteFailuresBefore">
+    DELETE FROM message_failure
+    WHERE created_at &lt; #{cutoff}
+      AND (event_id IS NULL OR NOT EXISTS (
+        SELECT 1 FROM business_outbox o
+        WHERE o.id = message_failure.event_id AND o.state = 'REVIEW'
+      ))
+    ORDER BY created_at, consumer_group, event_key
+    LIMIT #{limit}
+  </delete>
 </mapper>

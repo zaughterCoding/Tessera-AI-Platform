@@ -25,4 +25,15 @@
   <select id="countFailures" resultType="long">
     SELECT COUNT(*) FROM analytics_failure
   </select>
+
+  <select id="countFailuresBefore" resultType="long">
+    SELECT COUNT(*) FROM analytics_failure WHERE created_at &lt; #{cutoff}
+  </select>
+
+  <delete id="deleteFailuresBefore">
+    DELETE FROM analytics_failure
+    WHERE created_at &lt; #{cutoff}
+    ORDER BY created_at, topic, partition_id, message_offset
+    LIMIT #{limit}
+  </delete>
 </mapper>

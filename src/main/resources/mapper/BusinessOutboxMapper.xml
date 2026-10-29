@@ -194,4 +194,35 @@
     SELECT COUNT(*) FROM business_outbox
     WHERE kind IN ('CAMPAIGN_FULFILL','CAMPAIGN_RETRY') AND state &lt;&gt; 'DONE'
   </select>
+
+  <select id="countDoneBefore" resultType="long">
+    SELECT COUNT(*) FROM business_outbox
+    WHERE state = 'DONE' AND consumed_at &lt; #{cutoff}
+      AND NOT EXISTS (
+        SELECT 1 FROM message_failure f WHERE f.event_id = business_outbox.id
+      )
+  </select>
+
+  <!-- 只删除已完成且没有失败复核引用的任务；重复执行继续从同一边界推进。 -->
+  <delete id="deleteDoneBefore">
+    DELETE FROM business_outbox
+    WHERE state = 'DONE' AND consumed_at &lt; #{cutoff}
+      AND NOT EXISTS (
+        SELECT 1 FROM message_failure f WHERE f.event_id = business_outbox.id
+      )
+    ORDER BY id
+    LIMIT #{limit}
+  </delete>
+
+  <select id="oldestPendingReadyAt" resultType="java.time.LocalDateTime">
+    SELECT MIN(next_attempt_at) FROM business_outbox
+    WHERE state = 'PENDING'
+  </select>
+
+  <select id="selectOrderTasks" resultType="com.aiplatform.messaging.dto.OrderTaskDTO">
+    SELECT id, kind, state, attempts, consume_attempts, created_at, sent_at, consumed_at
+    FROM business_outbox
+    WHERE aggregate_id = #{orderId} AND kind LIKE 'ORDER\_%'
+    ORDER BY id
+  </select>
 </mapper>

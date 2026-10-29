@@ -1,0 +1,16 @@
+global:
+  resolve_timeout: 2m
+
+route:
+  receiver: isolated-verification
+  group_by: [alertname, component]
+  group_wait: 5s
+  group_interval: 20s
+  repeat_interval: 4h
+
+receivers:
+  - name: isolated-verification
+    webhook_configs:
+      - url: http://alert-receiver:8099/notify
+        send_resolved: true
+        max_alerts: 0

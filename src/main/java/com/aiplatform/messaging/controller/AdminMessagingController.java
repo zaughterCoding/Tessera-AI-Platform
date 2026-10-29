@@ -10,6 +10,7 @@ import com.aiplatform.messaging.entity.BusinessOutboxTask;
 import com.aiplatform.messaging.entity.MessageFailure;
 import com.aiplatform.messaging.service.IBusinessEventService;
 import com.aiplatform.messaging.service.IOutboxRelayService;
+import com.aiplatform.operations.audit.AuditOperation;
 import java.util.ArrayList;
 import java.util.List;
 import javax.validation.constraints.Max;
@@ -61,6 +62,7 @@ public class AdminMessagingController {
   }
 
   @PostMapping("/outbox/{id}/retry")
+  @AuditOperation(action = "messaging.outbox.retry", objectType = "outbox")
   public Result<Void> retry(@PathVariable @Positive Long id) {
     if (!relay.retryReview(id)) {
       throw new ApiException(ErrorCode.CONFLICT);

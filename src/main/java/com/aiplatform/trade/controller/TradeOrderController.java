@@ -54,6 +54,11 @@ public class TradeOrderController {
     return Result.ok(orders.pay(currentUserId(), id, form.getExpectedAmount()));
   }
 
+  @PostMapping("/{id}/cancel")
+  public Result<PurchaseOrderDTO> cancel(@PathVariable @Positive Long id) {
+    return Result.ok(orders.cancel(currentUserId(), id));
+  }
+
   private long currentUserId() {
     UserDTO user = UserHolder.getUser();
     if (user == null) {

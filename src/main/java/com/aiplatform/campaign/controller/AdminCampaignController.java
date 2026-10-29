@@ -10,6 +10,7 @@ import com.aiplatform.campaign.dto.CampaignStreamMetricsDTO;
 import com.aiplatform.campaign.service.ICampaignAdminService;
 import com.aiplatform.common.api.Result;
 import com.aiplatform.identity.security.RequireAdmin;
+import com.aiplatform.operations.audit.AuditOperation;
 import java.util.List;
 import javax.validation.Valid;
 import javax.validation.constraints.Positive;
@@ -36,6 +37,8 @@ public class AdminCampaignController {
   }
 
   @PostMapping
+  @AuditOperation(action = "campaign.create", objectType = "campaign",
+      objectIdParam = "")
   public Result<AdminCampaignDTO> create(
       @Valid @RequestBody CampaignAdminCreateForm form) {
     return Result.ok(campaigns.create(form));
@@ -52,16 +55,19 @@ public class AdminCampaignController {
   }
 
   @PostMapping("/{id}/publish")
+  @AuditOperation(action = "campaign.publish", objectType = "campaign")
   public Result<AdminCampaignDTO> publish(@PathVariable @Positive Long id) {
     return Result.ok(campaigns.publish(id));
   }
 
   @PostMapping("/{id}/pause")
+  @AuditOperation(action = "campaign.pause", objectType = "campaign")
   public Result<AdminCampaignDTO> pause(@PathVariable @Positive Long id) {
     return Result.ok(campaigns.pause(id));
   }
 
   @PostMapping("/{id}/recover")
+  @AuditOperation(action = "campaign.recover", objectType = "campaign")
   public Result<AdminCampaignDTO> recover(@PathVariable @Positive Long id) {
     return Result.ok(campaigns.recover(id));
   }
@@ -80,11 +86,15 @@ public class AdminCampaignController {
   }
 
   @PostMapping("/reservations/{orderId}/retry")
+  @AuditOperation(action = "campaign.reservation.retry",
+      objectType = "campaign-reservation", objectIdParam = "orderId")
   public Result<CampaignReservationDTO> retry(@PathVariable @Positive Long orderId) {
     return Result.ok(campaigns.retry(orderId));
   }
 
   @PostMapping("/reservations/{orderId}/fail")
+  @AuditOperation(action = "campaign.reservation.fail",
+      objectType = "campaign-reservation", objectIdParam = "orderId")
   public Result<CampaignReservationDTO> fail(
       @PathVariable @Positive Long orderId,
       @Valid @RequestBody(required = false) CampaignFailForm form) {
@@ -99,6 +109,8 @@ public class AdminCampaignController {
   }
 
   @PostMapping("/dead-letters/{messageId}/replay")
+  @AuditOperation(action = "campaign.dead-letter.replay",
+      objectType = "campaign-message", objectIdParam = "messageId")
   public Result<Void> replay(
       @PathVariable @Size(min = 1, max = 64) String messageId) {
     campaigns.replayDeadLetter(messageId);

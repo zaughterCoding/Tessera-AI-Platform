@@ -14,12 +14,18 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.RequestAttributes;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 @Slf4j
 @RestControllerAdvice
 public class WebExceptionAdvice {
+  /** 供审计拦截器读取已解析的业务错误码，不写入响应头或日志。 */
+  public static final String ERROR_CODE_ATTRIBUTE = WebExceptionAdvice.class.getName() + ".code";
+
   @ExceptionHandler(ApiException.class)
   public ResponseEntity<Result<Void>> business(ApiException error) {
     return reject(error.getErrorCode());
@@ -62,6 +68,11 @@ public class WebExceptionAdvice {
   }
 
   private ResponseEntity<Result<Void>> reject(ErrorCode error) {
+    RequestAttributes attributes = RequestContextHolder.getRequestAttributes();
+    if (attributes instanceof ServletRequestAttributes) {
+      ((ServletRequestAttributes) attributes).getRequest()
+          .setAttribute(ERROR_CODE_ATTRIBUTE, error.name());
+    }
     return ResponseEntity.status(error.getStatus()).body(Result.fail(error));
   }
 }

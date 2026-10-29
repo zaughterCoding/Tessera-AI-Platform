@@ -13,6 +13,7 @@ import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
 import com.aiplatform.identity.security.RequireAdmin;
+import com.aiplatform.operations.audit.AuditOperation;
 import java.util.ArrayList;
 import java.util.List;
 import javax.validation.constraints.Max;
@@ -55,6 +56,8 @@ public class AdminAnalyticsController {
   }
 
   @PostMapping("/backfill")
+  @AuditOperation(action = "analytics.backfill.restart",
+      objectType = "analytics-backfill", objectIdParam = "")
   public Result<Void> restartBackfill() {
     if (!backfill.restart()) {
       throw new ApiException(ErrorCode.CONFLICT);
@@ -87,6 +90,8 @@ public class AdminAnalyticsController {
   }
 
   @PostMapping("/outbox/{eventId}/retry")
+  @AuditOperation(action = "analytics.outbox.retry",
+      objectType = "analytics-outbox", objectIdParam = "eventId")
   public Result<Void> retry(
       @PathVariable @Pattern(regexp = "[A-Za-z0-9:_-]{1,64}") String eventId) {
     if (!relay.retryReview(eventId)) {

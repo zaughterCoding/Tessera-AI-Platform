@@ -4,6 +4,7 @@ import com.aiplatform.catalog.dto.ApplicationAdminUpdateForm;
 import com.aiplatform.catalog.service.IApplicationService;
 import com.aiplatform.common.api.Result;
 import com.aiplatform.identity.security.RequireAdmin;
+import com.aiplatform.operations.audit.AuditOperation;
 import javax.validation.Valid;
 import javax.validation.constraints.Positive;
 import org.springframework.validation.annotation.Validated;
@@ -26,6 +27,7 @@ public class AdminApplicationController {
   }
 
   @PutMapping("/{id}")
+  @AuditOperation(action = "catalog.application.update", objectType = "application")
   public Result<Void> update(
       @PathVariable @Positive Long id,
       @Valid @RequestBody ApplicationAdminUpdateForm form) {

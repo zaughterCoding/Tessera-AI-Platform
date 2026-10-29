@@ -162,6 +162,23 @@ app:
     heat-order-weight: ${APP_ANALYTICS_HEAT_ORDER_WEIGHT:5}
     heat-payment-weight: ${APP_ANALYTICS_HEAT_PAYMENT_WEIGHT:10}
     heat-claim-weight: ${APP_ANALYTICS_HEAT_CLAIM_WEIGHT:8}
+  experience:
+    # 技术体验默认关闭，且只允许在显式 local/test 配置下启用。
+    enabled: ${APP_EXPERIENCE_ENABLED:false}
+  operations:
+    metrics-interval-ms: ${APP_OPERATIONS_METRICS_INTERVAL_MS:15000}
+    metrics-initial-delay-ms: ${APP_OPERATIONS_METRICS_INITIAL_DELAY_MS:5000}
+    dependency-check-interval-ms: ${APP_OPERATIONS_DEPENDENCY_INTERVAL_MS:15000}
+    dependency-check-initial-delay-ms: ${APP_OPERATIONS_DEPENDENCY_INITIAL_DELAY_MS:5000}
+  retention:
+    cleanup-enabled: ${APP_RETENTION_CLEANUP_ENABLED:true}
+    cleanup-interval-ms: ${APP_RETENTION_CLEANUP_INTERVAL_MS:86400000}
+    outbox-done-days: ${APP_RETENTION_OUTBOX_DONE_DAYS:30}
+    inbox-days: ${APP_RETENTION_INBOX_DAYS:30}
+    message-failure-days: ${APP_RETENTION_MESSAGE_FAILURE_DAYS:30}
+    analytics-failure-days: ${APP_RETENTION_ANALYTICS_FAILURE_DAYS:30}
+    audit-days: ${APP_RETENTION_AUDIT_DAYS:365}
+    batch-size: ${APP_RETENTION_BATCH_SIZE:500}
 mybatis-plus:
   mapper-locations: classpath*:/mapper/**/*.xml
 management:

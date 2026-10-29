@@ -40,4 +40,6 @@ public interface MediaAssetMapper {
   long countAllReferences(@Param("mediaId") long mediaId);
 
   long countPublicReferences(@Param("mediaId") long mediaId);
+
+  long countByState(@Param("state") String state);
 }

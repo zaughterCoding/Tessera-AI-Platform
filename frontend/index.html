@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'" />
+  <meta name="description" content="AI 创作平台：浏览 AI 应用、购买使用包、参与限量活动并分享作品。" />
+  <title>AI 创作平台</title>
+  <link rel="stylesheet" href="./assets/app.css" />
+</head>
+<body>
+  <div id="app" v-cloak>
+    <div class="state-block" style="margin:40px auto;max-width:720px">
+      <span class="spinner"></span>
+      <span>正在加载页面…</span>
+    </div>
+  </div>
+  <noscript>
+    <div class="state-block empty" style="margin:40px auto;max-width:720px">
+      当前页面需要启用 JavaScript 才能调用受保护的真实接口。
+    </div>
+  </noscript>
+  <script src="./vendor/vue.js"></script>
+  <script type="module" src="./scripts/app.js"></script>
+</body>
+</html>

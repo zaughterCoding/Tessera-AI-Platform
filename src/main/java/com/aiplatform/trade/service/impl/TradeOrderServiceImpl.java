@@ -146,6 +146,16 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
   }
 
   @Override
+  public PurchaseOrderDTO cancel(long userId, long orderId) {
+    lifecycle.cancelUnpaid(userId, orderId);
+    PurchaseOrder order = orders.selectById(orderId);
+    if (order == null || !Long.valueOf(userId).equals(order.getUserId())) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    return PurchaseOrderDTO.from(order);
+  }
+
+  @Override
   public PurchaseOrderDTO detail(long userId, long orderId) {
     PurchaseOrder order = orders.selectById(orderId);
     if (order == null || !Long.valueOf(userId).equals(order.getUserId())) {

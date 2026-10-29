@@ -7,6 +7,7 @@ import com.aiplatform.campaign.service.ICampaignReconciliationService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -21,6 +22,7 @@ public class CampaignReconciliationScheduler {
   private final LimitedCampaignMapper campaigns;
   private final ICampaignReconciliationService reconciliation;
   private final MeterRegistry metrics;
+  private final AtomicLong mismatched = new AtomicLong();
 
   public CampaignReconciliationScheduler(
       LimitedCampaignMapper campaigns,
@@ -29,6 +31,7 @@ public class CampaignReconciliationScheduler {
     this.campaigns = campaigns;
     this.reconciliation = reconciliation;
     this.metrics = metrics;
+    metrics.gauge("aiplatform.campaign.stock.mismatch", mismatched);
   }
 
   @Scheduled(fixedDelayString = "${app.campaign.reconcile-interval-ms:60000}")
@@ -36,6 +39,7 @@ public class CampaignReconciliationScheduler {
     List<LimitedCampaign> published = campaigns.selectList(
         new LambdaQueryWrapper<LimitedCampaign>()
             .isNotNull(LimitedCampaign::getPublishedAt));
+    AtomicLong currentMismatch = new AtomicLong();
     for (LimitedCampaign campaign : published) {
       try {
         CampaignReconciliationDTO view = reconciliation.reconcile(campaign.getId());
@@ -44,6 +48,7 @@ public class CampaignReconciliationScheduler {
             "formula", view.isFormulaMatched() ? "matched" : "mismatched",
             "exact", view.isExact() ? "exact" : "inexact").increment();
         if (!view.isFormulaMatched() || !view.isExact()) {
+          currentMismatch.incrementAndGet();
           log.warn("活动对账存在差异，campaignId={}，formula={}，exact={}，note={}",
               campaign.getId(), view.isFormulaMatched(), view.isExact(), view.getNote());
         }
@@ -52,5 +57,6 @@ public class CampaignReconciliationScheduler {
             campaign.getId(), failure.getClass().getSimpleName());
       }
     }
+    mismatched.set(currentMismatch.get());
   }
 }

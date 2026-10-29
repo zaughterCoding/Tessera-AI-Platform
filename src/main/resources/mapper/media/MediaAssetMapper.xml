@@ -85,4 +85,8 @@
     JOIN creation c ON c.id = cm.creation_id
     WHERE cm.media_id = #{mediaId} AND c.state = 'PUBLISHED'
   </select>
+
+  <select id="countByState" resultType="long">
+    SELECT COUNT(*) FROM media_asset WHERE state = #{state}
+  </select>
 </mapper>

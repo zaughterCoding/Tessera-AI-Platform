@@ -1,5 +1,6 @@
 package com.aiplatform.messaging.mapper;
 
+import com.aiplatform.messaging.dto.OrderTaskDTO;
 import com.aiplatform.messaging.entity.BusinessOutboxTask;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -81,4 +82,13 @@ public interface BusinessOutboxMapper {
   long countPendingCampaignEvents(@Param("campaignId") long campaignId);
 
   long countPendingCampaignHandoffs();
+
+  long countDoneBefore(@Param("cutoff") LocalDateTime cutoff);
+
+  int deleteDoneBefore(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
+
+  /** 最早已到期但仍未投递的任务时间；无积压时为 null。 */
+  LocalDateTime oldestPendingReadyAt();
+
+  List<OrderTaskDTO> selectOrderTasks(@Param("orderId") long orderId);
 }

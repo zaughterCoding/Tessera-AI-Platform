@@ -20,6 +20,18 @@ export function parseResponseText(text) {
   return JSON.parse(lossless);
 }
 
+function statusMessage(status) {
+  if (status === 400) return "请求参数不合法";
+  if (status === 401) return "请先登录";
+  if (status === 403) return "当前账号没有操作权限";
+  if (status === 404) return "资源不存在";
+  if (status === 409) return "请求与当前状态冲突";
+  if (status === 413) return "文件大小或类型不合法";
+  if (status === 429) return "请求过于频繁，请稍后重试";
+  if (status === 503) return "服务暂时不可用，请稍后重试";
+  return status ? "请求未完成（HTTP " + status + "）" : "操作未完成，请稍后重试";
+}
+
 export function createApi({
   fetchImpl = fetch,
   tokenProvider = () => null,
@@ -56,9 +68,9 @@ export function createApi({
       if (response.status === 401) onUnauthorized(quiet);
       if (!response.ok || !result?.success) {
         throw new ApiError(
-          result?.errorMsg || "操作未完成，请稍后重试",
+          result?.errorMsg || statusMessage(response.status),
           response.status,
-          result?.code || "HTTP_ERROR",
+          result?.code || (response.status ? "HTTP_" + response.status : "NETWORK_ERROR"),
           result?.requestId || response.headers?.get("X-Request-ID") || null,
         );
       }

@@ -6,6 +6,7 @@ import com.aiplatform.common.api.Result;
 import com.aiplatform.identity.dto.UserDTO;
 import com.aiplatform.identity.security.RequireAdmin;
 import com.aiplatform.identity.security.UserHolder;
+import com.aiplatform.operations.audit.AuditOperation;
 import javax.validation.Valid;
 import javax.validation.constraints.Positive;
 import org.springframework.validation.annotation.Validated;
@@ -28,6 +29,7 @@ public class AdminProductController {
   }
 
   @PutMapping("/{id}")
+  @AuditOperation(action = "catalog.product.update", objectType = "product")
   public Result<Void> update(
       @PathVariable @Positive Long id,
       @Valid @RequestBody ProductAdminUpdateForm form) {

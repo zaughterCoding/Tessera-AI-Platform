@@ -1,0 +1,38 @@
+#!/bin/sh
+set -eu
+LOG=/var/log/alert-receiver/alerts.jsonl
+PATH_PART=''
+read -r REQUEST_LINE || REQUEST_LINE=''
+PATH_PART=$(printf '%s' "$REQUEST_LINE" | awk '{print $2}')
+LENGTH=0
+while IFS= read -r LINE; do
+  LINE=$(printf '%s' "$LINE" | tr -d '\r')
+  [ -z "$LINE" ] && break
+  case "$LINE" in
+    [Cc]ontent-[Ll]ength:*) LENGTH=$(printf '%s' "$LINE" | sed 's/^[^:]*:[[:space:]]*//') ;;
+  esac
+done
+case "$LENGTH" in
+  ''|*[!0-9]*) LENGTH=0 ;;
+esac
+BODY=$(mktemp)
+trap 'rm -f "$BODY"' EXIT
+if [ "$LENGTH" -gt 0 ]; then
+  dd bs=1 count="$LENGTH" of="$BODY" 2>/dev/null || true
+fi
+if [ "$PATH_PART" = '/notify' ]; then
+  {
+    printf '{"receivedAt":"%s","remote":"%s","bytes":%s,"body":' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${REMOTE_ADDR:-unknown}" "$(wc -c < "$BODY")"
+    # 告警体自带结尾换行；去换行后与包装对象拼成单行 JSONL，便于逐条校验。
+    tr -d '\r\n' < "$BODY"
+    printf '}\n'
+  } >> "$LOG"
+fi
+printf 'HTTP/1.1 200 OK\r\n'
+printf 'Content-Type: application/json\r\n'
+printf 'Cache-Control: no-store\r\n'
+printf 'Connection: close\r\n'
+printf 'Content-Length: 15\r\n'
+printf '\r\n'
+printf '{"status":"ok"}'

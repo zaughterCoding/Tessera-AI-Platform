@@ -4,6 +4,8 @@ import com.aiplatform.campaign.entity.CampaignReservation;
 import com.aiplatform.campaign.enums.ReservationState;
 import com.aiplatform.campaign.mapper.CampaignReservationMapper;
 import com.aiplatform.campaign.mapper.LimitedCampaignMapper;
+import com.aiplatform.common.api.ApiException;
+import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.service.IBusinessOutboxService;
 import com.aiplatform.trade.entity.PurchaseOrder;
@@ -53,6 +55,30 @@ public class OrderLifecycleServiceImpl implements IOrderLifecycleService {
           order.getUserId(), order.getExpireAt());
     }
     return false;
+  }
+
+  @Override
+  @Transactional
+  public void cancelUnpaid(long userId, long orderId) {
+    PurchaseOrder order = orders.selectOrderForUpdate(orderId);
+    if (order == null || !Objects.equals(userId, order.getUserId())) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    if (OrderStatus.CANCELLED.matches(order.getStatus())) {
+      // 重复取消保持幂等；已关闭订单不会再释放第二次库存或登记第二条事件。
+      return;
+    }
+    if (!OrderStatus.UNPAID.matches(order.getStatus())) {
+      // 已支付订单不能伪装成退款；取消只适用于未支付状态。
+      throw new ApiException(ErrorCode.CONFLICT);
+    }
+    if (orders.cancelUnpaid(orderId, userId) != 1) {
+      throw new ApiException(ErrorCode.CONFLICT);
+    }
+    if (order.getCampaignId() != null) {
+      releaseCampaignStock(order);
+    }
+    outbox.appendEvent(BusinessEventType.ORDER_CLOSED.name(), orderId, userId);
   }
 
   private void releaseCampaignStock(PurchaseOrder order) {

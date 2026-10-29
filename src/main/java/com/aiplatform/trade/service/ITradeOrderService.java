@@ -12,6 +12,8 @@ public interface ITradeOrderService {
 
   PurchaseOrderDTO pay(long userId, long orderId, long expectedAmount);
 
+  PurchaseOrderDTO cancel(long userId, long orderId);
+
   PurchaseOrderDTO detail(long userId, long orderId);
 
   Result<List<PurchaseOrderDTO>> list(long userId, TradeOrderQueryForm form);

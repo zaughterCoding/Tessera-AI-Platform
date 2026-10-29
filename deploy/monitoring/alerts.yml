@@ -1,0 +1,162 @@
+groups:
+  - name: ai-creation-availability
+    rules:
+      - alert: ApplicationScrapeDown
+        expr: up{job="ai-creation-app"} == 0
+        for: 30s
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "AI 创作平台应用不可抓取"
+          description: "Prometheus 连续 30 秒无法抓取应用指标，业务健康未知，不能按正常处理。"
+      - alert: DependencyUnavailable
+        expr: aiplatform_dependency_up < 1
+        for: 45s
+        labels:
+          severity: critical
+          component: dependency
+        annotations:
+          summary: "核心依赖不可用（{{ $labels.dependency }}）"
+          description: "依赖探测返回 0；未探测过的未知值不会按 0 处理。"
+      - alert: DependencyMetricUnknown
+        expr: absent(aiplatform_dependency_up{dependency="mysql"}) and on() up{job="ai-creation-app"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: dependency
+        annotations:
+          summary: "MySQL 依赖指标缺失"
+          description: "应用可抓取但没有 MySQL 依赖指标，依赖状态未知。"
+      - alert: CdcDisconnected
+        expr: aiplatform_cdc_enabled == 1 and aiplatform_cdc_connected == 0
+        for: 45s
+        labels:
+          severity: critical
+          component: cdc
+        annotations:
+          summary: "CDC 已启用但连接断开"
+          description: "缓存同步连接断开，应用目录缓存可能暂停刷新。"
+      - alert: CdcPollStalled
+        expr: aiplatform_cdc_enabled == 1 and aiplatform_cdc_poll_age_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+          component: cdc
+        annotations:
+          summary: "CDC 轮询停滞"
+          description: "CDC 距上次成功轮询超过 120 秒。"
+
+  - name: ai-creation-reliable-tasks
+    rules:
+      - alert: OutboxReviewRequired
+        expr: aiplatform_outbox_backlog{state="REVIEW"} > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: outbox
+        annotations:
+          summary: "可靠消息进入人工复核"
+          description: "存在 REVIEW 状态的业务消息，需在运营台核查后处理。"
+      - alert: OutboxPendingBacklog
+        expr: aiplatform_outbox_backlog{state="PENDING"} > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: "业务消息积压"
+          description: "PENDING 业务消息超过 100 条并持续 5 分钟。"
+      - alert: OutboxOldestPending
+        expr: aiplatform_outbox_oldest_pending_age_seconds > 600
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+        annotations:
+          summary: "业务消息最老待发超过 10 分钟"
+          description: "存在长时间未被投递的 PENDING 业务消息。"
+      - alert: MessageConsumerFailures
+        expr: aiplatform_message_failures > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: messaging
+        annotations:
+          summary: "消息消费失败隔离"
+          description: "存在失败消息，需检查消费重试与失败隔离记录。"
+      - alert: AnalyticsFailures
+        expr: aiplatform_analytics_failures > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: analytics
+        annotations:
+          summary: "行为分析失败隔离"
+          description: "存在分析事件失败记录，补数和热榜可能不完整。"
+      - alert: AnalyticsOutboxBacklog
+        expr: aiplatform_analytics_outbox_pending > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: analytics
+        annotations:
+          summary: "分析事件积压"
+          description: "待发送的分析事件超过 100 条并持续 5 分钟。"
+      - alert: AnalyticsConsumerStopped
+        expr: aiplatform_analytics_consumer_running == 0
+        for: 1m
+        labels:
+          severity: warning
+          component: analytics
+        annotations:
+          summary: "分析消费者停止"
+          description: "Kafka 分析消费者未运行。"
+      - alert: AnalyticsConsumerLag
+        expr: aiplatform_analytics_consumer_lag > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: analytics
+        annotations:
+          summary: "分析消费者积压"
+          description: "Kafka 消费组积压超过 1000 条并持续 5 分钟。"
+      - alert: OperationsMetricCollectionFailed
+        expr: aiplatform_operations_metrics_collection_failed > 0
+        for: 2m
+        labels:
+          severity: warning
+          component: operations
+        annotations:
+          summary: "运维指标采集失败"
+          description: "积压指标未刷新，旧值不能被当作当前准确值。"
+
+  - name: ai-creation-data-integrity
+    rules:
+      - alert: MediaPendingStuck
+        expr: aiplatform_media_pending > 20
+        for: 30m
+        labels:
+          severity: warning
+          component: media
+        annotations:
+          summary: "待确认媒体文件偏多"
+          description: "PENDING 媒体超过 20 个并持续 30 分钟，检查上传中断与清理任务。"
+      - alert: MediaDeletingStuck
+        expr: aiplatform_media_deleting > 0
+        for: 30m
+        labels:
+          severity: warning
+          component: media
+        annotations:
+          summary: "媒体删除未完成"
+          description: "存在 DELETING 状态的媒体文件超过 30 分钟。"
+      - alert: CampaignStockMismatch
+        expr: aiplatform_campaign_stock_mismatch > 0
+        for: 5m
+        labels:
+          severity: critical
+          component: campaign
+        annotations:
+          summary: "限量活动库存不一致"
+          description: "活动剩余库存与 Redis 准入状态不一致，需立即对账。"

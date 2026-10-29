@@ -1,0 +1,118 @@
+﻿param(
+    [ValidatePattern('^[a-z][a-z0-9-]{1,20}$')][string]$Environment = 'release',
+    [int]$WebPort = 18480,
+    [int]$AppPort = 18490,
+    [int]$PrometheusPort = 19090,
+    [int]$AlertmanagerPort = 19093,
+    [int]$ReceiverPort = 19099,
+    [int]$GrafanaPort = 13000,
+    [switch]$DemoCodeEnabled,
+    [switch]$MockPaymentEnabled
+)
+$ErrorActionPreference = 'Stop'
+$taskRoot = Split-Path -Parent $PSScriptRoot
+$taskDirectory = Join-Path $taskRoot ".local\deploy\$Environment"
+$taskEnvFile = Join-Path $taskDirectory '.env'
+$taskTokenFile = Join-Path $taskDirectory 'monitor-token'
+if (Test-Path -LiteralPath $taskEnvFile) { throw '环境文件已存在；请复用原凭据或换一个环境名。' }
+New-Item -ItemType Directory -Path $taskDirectory -Force | Out-Null
+
+function New-LocalSecret([int]$ByteCount = 32) {
+    $taskBytes = New-Object byte[] $ByteCount
+    $taskRandom = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $taskRandom.GetBytes($taskBytes) } finally { $taskRandom.Dispose() }
+    return -join ($taskBytes | ForEach-Object { $_.ToString('x2') })
+}
+
+function New-KafkaClusterId {
+    $taskBytes = New-Object byte[] 16
+    $taskRandom = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $taskRandom.GetBytes($taskBytes) } finally { $taskRandom.Dispose() }
+    return [Convert]::ToBase64String($taskBytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+}
+
+function Get-CanalServerPassword([string]$ClientPassword) {
+    # Canal 服务端保存 SHA1(SHA1(明文))，客户端仍使用明文参与握手。
+    $taskSha = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $taskFirst = $taskSha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($ClientPassword))
+        $taskSecond = $taskSha.ComputeHash($taskFirst)
+        return -join ($taskSecond | ForEach-Object { $_.ToString('x2') })
+    } finally { $taskSha.Dispose() }
+}
+
+$taskDatabase = 'ai_creation_' + $Environment.Replace('-', '_')
+$taskDemo = if ($DemoCodeEnabled) { 'true' } else { 'false' }
+$taskMockPayment = if ($MockPaymentEnabled) { 'true' } else { 'false' }
+# 演示验证码与模拟支付只允许显式 local/test；默认部署保持 release 且全部关闭。
+$taskProfile = if ($DemoCodeEnabled -or $MockPaymentEnabled) { 'test' } else { 'release' }
+$taskSlaveId = (Get-Random -Minimum 20001 -Maximum 50000).ToString()
+$taskCanalClientPassword = New-LocalSecret
+$taskMonitorToken = New-LocalSecret
+$taskValues = @(
+    "COMPOSE_PROJECT_NAME=ai-creation-$Environment"
+    "DEPLOY_ENV=$Environment"
+    "MYSQL_DATABASE=$taskDatabase"
+    "APP_NAMESPACE=ai-platform:$Environment"
+    "APP_REDIS_PREFIX=ai-platform:${Environment}:"
+    "APP_PROFILE=$taskProfile"
+    "WEB_BIND=127.0.0.1"
+    "WEB_PORT=$WebPort"
+    "APP_HTTP_PORT=$AppPort"
+    "MONITOR_BIND=127.0.0.1"
+    "PROMETHEUS_PORT=$PrometheusPort"
+    "ALERTMANAGER_PORT=$AlertmanagerPort"
+    "ALERT_RECEIVER_PORT=$ReceiverPort"
+    "GRAFANA_PORT=$GrafanaPort"
+    "APP_DEMO_CODE_ENABLED=$taskDemo"
+    "APP_TRADE_MOCK_PAYMENT_ENABLED=$taskMockPayment"
+    "APP_EXPERIENCE_ENABLED=false"
+    "APP_MONITOR_TOKEN=$taskMonitorToken"
+    "APP_CACHE_ENABLED=true"
+    "APP_MEMCACHE_ENABLED=true"
+    "APP_CDC_ENABLED=true"
+    "APP_CDC_DESTINATION=$taskDatabase"
+    "APP_CDC_SCHEMA=$taskDatabase"
+    "APP_CDC_LEASE_SECONDS=30"
+    "CANAL_SLAVE_ID=$taskSlaveId"
+    "APP_MESSAGING_TRANSPORT=local"
+    "APP_MQ_TOPIC=ai-platform-$Environment-business"
+    "APP_MQ_GROUP_PREFIX=ai-platform-$Environment"
+    "APP_MESSAGING_REDRIVE_SENT_SECONDS=30"
+    "APP_MESSAGING_REDRIVE_FAILED_SECONDS=300"
+    "APP_MESSAGING_RETRY_BASE_SECONDS=1"
+    "APP_MESSAGING_MAX_CONSUME_ATTEMPTS=5"
+    "APP_TRADE_ORDER_TIMEOUT_MINUTES=15"
+    "APP_TRADE_EXPIRY_SCAN_ENABLED=true"
+    "APP_TRADE_EXPIRY_SCAN_MS=5000"
+    "APP_TRADE_EXPIRY_SCAN_BATCH=50"
+    "APP_ANALYTICS_ENABLED=true"
+    "APP_ANALYTICS_TOPIC=ai-platform-$Environment-analytics"
+    "APP_ANALYTICS_GROUP=ai-platform-$Environment-analytics"
+    "APP_ANALYTICS_RETENTION_DAYS=30"
+    "APP_ANALYTICS_BACKFILL_DAYS=7"
+    "APP_KAFKA_CLUSTER_ID=$(New-KafkaClusterId)"
+    "APP_RETENTION_CLEANUP_ENABLED=true"
+    "APP_RETENTION_OUTBOX_DONE_DAYS=30"
+    "APP_RETENTION_INBOX_DAYS=30"
+    "APP_RETENTION_MESSAGE_FAILURE_DAYS=30"
+    "APP_RETENTION_ANALYTICS_FAILURE_DAYS=30"
+    "APP_RETENTION_AUDIT_DAYS=365"
+    "APP_RETENTION_BATCH_SIZE=500"
+    "MYSQL_ROOT_PASSWORD=$(New-LocalSecret)"
+    "APP_DB_PASSWORD=$(New-LocalSecret)"
+    "SCHEMA_DB_PASSWORD=$(New-LocalSecret)"
+    "REDIS_PASSWORD=$(New-LocalSecret)"
+    # MySQL 复制注册的 report-password 上限为 32 字节。
+    "CANAL_DB_PASSWORD=$(New-LocalSecret 16)"
+    "CANAL_CLIENT_PASSWORD=$taskCanalClientPassword"
+    "CANAL_SERVER_PASSWORD=$(Get-CanalServerPassword $taskCanalClientPassword)"
+    "GRAFANA_ADMIN_PASSWORD=$(New-LocalSecret)"
+)
+[System.IO.File]::WriteAllLines($taskEnvFile, $taskValues, (New-Object System.Text.UTF8Encoding $false))
+# Prometheus 的凭据文件只保存令牌本身，不写入日志或环境清单。
+[System.IO.File]::WriteAllText($taskTokenFile, $taskMonitorToken, (New-Object System.Text.UTF8Encoding $false))
+Write-Output "已创建独立部署环境：$Environment"
+Write-Output "环境文件：$taskEnvFile"
+Write-Output "演示验证码：$taskDemo；模拟支付：$taskMockPayment；技术体验：false"
+Write-Output "启动命令：powershell -File deploy/start.ps1 -Environment $Environment"

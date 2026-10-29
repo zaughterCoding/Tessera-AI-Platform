@@ -1,6 +1,7 @@
 package com.aiplatform.analytics.mapper;
 
 import com.aiplatform.analytics.entity.AnalyticsFailureRecord;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -18,4 +19,8 @@ public interface AnalyticsFailureMapper {
       @Param("offset") int offset);
 
   long countFailures();
+
+  long countFailuresBefore(@Param("cutoff") LocalDateTime cutoff);
+
+  int deleteFailuresBefore(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
 }

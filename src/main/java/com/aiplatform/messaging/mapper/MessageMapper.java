@@ -1,6 +1,7 @@
 package com.aiplatform.messaging.mapper;
 
 import com.aiplatform.messaging.entity.MessageFailure;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -23,4 +24,14 @@ public interface MessageMapper {
   List<MessageFailure> listFailures(@Param("consumerGroup") String consumerGroup,
       @Param("limit") int limit,
       @Param("offset") int offset);
+
+  long countFailures();
+
+  long countInboxBefore(@Param("cutoff") LocalDateTime cutoff);
+
+  int deleteInboxBefore(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
+
+  long countFailuresBefore(@Param("cutoff") LocalDateTime cutoff);
+
+  int deleteFailuresBefore(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
 }

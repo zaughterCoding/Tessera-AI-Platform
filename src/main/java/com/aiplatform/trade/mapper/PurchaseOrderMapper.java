@@ -39,6 +39,9 @@ public interface PurchaseOrderMapper extends BaseMapper<PurchaseOrder> {
 
   int closeExpired(@Param("id") long id);
 
+  /** 本人未支付订单取消；条件更新只在状态仍为 UNPAID 时成立。 */
+  int cancelUnpaid(@Param("id") long id, @Param("userId") long userId);
+
   List<Long> selectExpiredOrderIds(@Param("limit") int limit);
 
   int insertOrderEvent(@Param("eventId") long eventId,

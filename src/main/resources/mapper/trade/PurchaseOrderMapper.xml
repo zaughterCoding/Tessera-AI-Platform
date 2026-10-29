@@ -107,6 +107,13 @@
     WHERE id = #{id} AND status = 'UNPAID' AND expire_at &lt;= NOW(3)
   </update>
 
+  <!-- 取消与付款共用订单行锁；只允许本人未支付订单关闭。 -->
+  <update id="cancelUnpaid">
+    UPDATE purchase_order
+    SET status = 'CANCELLED', closed_at = NOW(3)
+    WHERE id = #{id} AND user_id = #{userId} AND status = 'UNPAID'
+  </update>
+
   <select id="selectExpiredOrderIds" resultType="long">
     SELECT id FROM purchase_order
     WHERE status = 'UNPAID' AND expire_at &lt;= NOW(3)
