@@ -12,6 +12,8 @@ public class AiCreationPlatformApplication {
   public static void main(String[] args) {
     // 在加载连接池和时间配置前统一时区，避免开发机设置改变持久时间含义。
     TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+    // RocketMQ 客户端仍使用 fastjson 1.x，固定开启安全模式阻断 autoType 反序列化。
+    com.alibaba.fastjson.parser.ParserConfig.getGlobalInstance().setSafeMode(true);
     SpringApplication.run(AiCreationPlatformApplication.class, args);
   }
 }
