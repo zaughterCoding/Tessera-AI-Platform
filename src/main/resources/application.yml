@@ -146,6 +146,8 @@ app:
     max-send-attempts: ${APP_ANALYTICS_MAX_SEND_ATTEMPTS:30}
     max-retry-seconds: ${APP_ANALYTICS_MAX_RETRY_SECONDS:300}
     poll-delay-ms: ${APP_ANALYTICS_POLL_DELAY_MS:1000}
+    sent-recovery-seconds: ${APP_ANALYTICS_SENT_RECOVERY_SECONDS:60}
+    sent-recovery-interval-ms: ${APP_ANALYTICS_SENT_RECOVERY_INTERVAL_MS:15000}
     consumer-enabled: ${APP_ANALYTICS_CONSUMER_ENABLED:true}
     poll-records: ${APP_ANALYTICS_POLL_RECORDS:50}
     poll-timeout-ms: ${APP_ANALYTICS_POLL_TIMEOUT_MS:1000}

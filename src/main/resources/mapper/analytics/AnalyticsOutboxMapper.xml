@@ -109,6 +109,22 @@
     WHERE event_id = #{eventId} AND state = 'REVIEW'
   </update>
 
+  <!-- 已确认发送但保留期内没有消费明细的事实，说明消息在消息存储重建或故障切换中丢失；
+       重新置为待发，消费端仍按事件号去重。已消费与超出保留期的事实不参与。 -->
+  <update id="requeueUnconsumed">
+    UPDATE analytics_outbox o
+    SET o.state = 'PENDING', o.next_attempt_at = NOW(3),
+        o.lease_owner = NULL, o.lease_until = NULL, o.last_error = #{reason}
+    WHERE o.state = 'SENT'
+      AND o.sent_at &lt;= DATE_SUB(NOW(3), INTERVAL #{seconds} SECOND)
+      AND o.occurred_at_ms &gt;= #{retentionCutoffMs}
+      AND NOT EXISTS (
+        SELECT 1 FROM analytics_event e WHERE e.event_id = o.event_id
+      )
+    ORDER BY o.sent_at, o.event_id
+    LIMIT #{limit}
+  </update>
+
   <select id="countPending" resultType="long">
     SELECT COUNT(*) FROM analytics_outbox WHERE state IN ('PENDING','SENDING','REVIEW')
   </select>

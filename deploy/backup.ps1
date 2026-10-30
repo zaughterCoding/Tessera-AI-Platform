@@ -46,8 +46,17 @@ $taskStartedAt = (Get-Date).ToUniversalTime().ToString('o')
 $taskMysqlId = (& docker @taskComposeArgs @('ps', '-q', 'mysql') | Select-Object -First 1)
 $taskRedisId = (& docker @taskComposeArgs @('ps', '-q', 'redis') | Select-Object -First 1)
 if (-not $taskMysqlId -or -not $taskRedisId) { throw 'MySQL 或 Redis 未运行，无法执行一致性备份。' }
-$taskMediaVolume = (& docker volume ls --filter "label=com.docker.compose.project=$taskProject" --filter 'label=com.docker.compose.volume=media-data' --format '{{.Name}}' | Select-Object -First 1)
-if (-not $taskMediaVolume) { throw '未找到该环境的媒体卷。' }
+$taskMediaVolumes = @(& docker volume ls --filter "label=com.docker.compose.project=$taskProject" --filter 'label=com.docker.compose.volume=media-data' --format '{{.Name}}' | Where-Object { $_ })
+if ($taskMediaVolumes.Count -eq 0) { throw '未找到该环境的媒体卷。' }
+if ($taskMediaVolumes.Count -gt 1) { throw '该环境存在多个候选媒体卷，已拒绝自动选择。' }
+$taskMediaVolume = $taskMediaVolumes[0]
+if ($taskMediaVolume -ne "${taskProject}_media-data") { throw '媒体卷名称与当前项目不一致，已拒绝备份。' }
+$taskMediaMeta = @(& docker volume inspect $taskMediaVolume | ConvertFrom-Json)[0]
+$taskMediaProject = [string]$taskMediaMeta.Labels.'com.docker.compose.project'
+$taskMediaComponent = [string]$taskMediaMeta.Labels.'com.docker.compose.volume'
+if ([string]$taskMediaMeta.Name -ne $taskMediaVolume -or $taskMediaProject -ne $taskProject -or $taskMediaComponent -ne 'media-data') {
+    throw '媒体卷归属校验失败，已拒绝备份。'
+}
 
 # 停止应用写入后再取数据库、Redis 与媒体快照，保证跨存储边界一致。
 Invoke-Compose @('stop', 'app', 'web') | Out-Null
@@ -121,15 +130,24 @@ UNION ALL SELECT 'flyway_schema_history', COUNT(*) FROM flyway_schema_history;
     if (($taskCounts -join '').Trim().Length -eq 0) { throw '业务计数读取为空，已放弃备份。' }
 
     $taskRedisStats = Invoke-RedisCli @('DBSIZE')
-    $taskRedisKeyList = @(Invoke-RedisCli @('--scan', '--pattern', '*'))
+    $taskRedisKeyList = @(Invoke-RedisCli @('--scan', '--pattern', '*') | Where-Object { $_ })
     $taskRedisKeys = $taskRedisKeyList.Count
     $taskRedisSamples = @($taskRedisKeyList | Where-Object { $_ -like '*campaign*' } | Select-Object -First 20)
     @("dbsize=$taskRedisStats", "keys=$taskRedisKeys") + $taskRedisSamples | Out-File -FilePath (Join-Path $taskBackupDirectory 'redis-keys.txt') -Encoding utf8
+    # 记录永不过期的键，恢复后逐键核对；带 TTL 的键只校验载入时数量，允许其按原到期时间消失。
+    $taskPersistentKeys = @()
+    foreach ($taskRedisKey in $taskRedisKeyList) {
+        $taskRedisTtl = (Invoke-RedisCli @('TTL', $taskRedisKey) | Select-Object -First 1).Trim()
+        if ($taskRedisTtl -eq '-1') { $taskPersistentKeys += $taskRedisKey }
+    }
+    @("count=$($taskPersistentKeys.Count)") + $taskPersistentKeys | Out-File -FilePath (Join-Path $taskBackupDirectory 'redis-persistent.txt') -Encoding utf8
 
     $taskMediaRaw = @(& docker run --rm -v "${taskMediaVolume}:/data:ro" alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a sh -c 'find /data -type f | wc -l; du -sb /data | cut -f1')
-    $taskMediaStats = @("files=$($taskMediaRaw[0].Trim())", "bytes=$($taskMediaRaw[1].Trim())")
+    $taskMediaFiles = [int]$taskMediaRaw[0].Trim()
+    $taskMediaBytes = if ($taskMediaFiles -eq 0) { 0 } else { [long]$taskMediaRaw[1].Trim() }
+    $taskMediaStats = @("files=$taskMediaFiles", "bytes=$taskMediaBytes")
     $taskMediaStats | Out-File -FilePath (Join-Path $taskBackupDirectory 'media-stats.txt') -Encoding utf8
-    if ((($taskMediaStats -join '')) -notmatch 'files=[1-9][0-9]*') { throw '媒体文件计数异常，已放弃备份。' }
+    if ((($taskMediaStats -join "`n")) -notmatch '^files=\d+[\r\n]+bytes=\d+$') { throw '媒体文件统计异常，已放弃备份。' }
 
     $taskOffsets = Invoke-Compose @('exec', '-T', 'kafka', '/opt/kafka/bin/kafka-consumer-groups.sh', '--bootstrap-server', '127.0.0.1:9092', '--describe', '--group', $taskEnv['APP_ANALYTICS_GROUP'])
     $taskOffsets | Out-File -FilePath (Join-Path $taskBackupDirectory 'kafka-offsets.txt') -Encoding utf8
@@ -143,7 +161,7 @@ UNION ALL SELECT 'flyway_schema_history', COUNT(*) FROM flyway_schema_history;
         analyticsGroup = $taskEnv['APP_ANALYTICS_GROUP']
     }
     $taskFileHashes = @{}
-    foreach ($taskName in @('database.sql', 'redis.rdb', 'media.tar.gz')) {
+    foreach ($taskName in @('database.sql', 'redis.rdb', 'media.tar.gz', 'counts.sql', 'flyway-history.txt', 'redis-persistent.txt')) {
         $taskPath = Join-Path $taskBackupDirectory $taskName
         $taskFileHashes[$taskName] = @{
             bytes = (Get-Item -LiteralPath $taskPath).Length

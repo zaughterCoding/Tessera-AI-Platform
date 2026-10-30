@@ -47,6 +47,11 @@ public interface AnalyticsOutboxMapper {
 
   int retryReview(@Param("eventId") String eventId);
 
+  int requeueUnconsumed(@Param("seconds") long seconds,
+      @Param("retentionCutoffMs") long retentionCutoffMs,
+      @Param("limit") int limit,
+      @Param("reason") String reason);
+
   long countPending();
 
   int deleteSentBefore(@Param("days") int days, @Param("limit") int limit);

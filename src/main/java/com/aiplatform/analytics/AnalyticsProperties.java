@@ -24,6 +24,8 @@ public class AnalyticsProperties {
   private int maxSendAttempts = 30;
   private long maxRetrySeconds = 300;
   private long pollDelayMs = 1000;
+  private long sentRecoverySeconds = 60;
+  private long sentRecoveryIntervalMs = 15000;
   private boolean consumerEnabled = true;
   private int pollRecords = 50;
   private long pollTimeoutMs = 1000;
@@ -59,6 +61,8 @@ public class AnalyticsProperties {
     requireRange("max-send-attempts", maxSendAttempts, 1, 1000);
     requireRange("max-retry-seconds", maxRetrySeconds, 1, 3600);
     requireRange("poll-delay-ms", pollDelayMs, 10, 60000);
+    requireRange("sent-recovery-seconds", sentRecoverySeconds, 1, 86400);
+    requireRange("sent-recovery-interval-ms", sentRecoveryIntervalMs, 1000, 3600000);
     requireRange("poll-records", pollRecords, 1, 500);
     requireRange("poll-timeout-ms", pollTimeoutMs, 10, 60000);
     requireRange("retry-backoff-ms", retryBackoffMs, 10, 60000);

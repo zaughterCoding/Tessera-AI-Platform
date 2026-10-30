@@ -8,6 +8,7 @@ import com.aiplatform.analytics.entity.AnalyticsFailureRecord;
 import com.aiplatform.analytics.entity.AnalyticsOutboxEvent;
 import com.aiplatform.analytics.mapper.AnalyticsFailureMapper;
 import com.aiplatform.analytics.service.IAnalyticsBackfillService;
+import com.aiplatform.analytics.service.IAnalyticsRecoveryService;
 import com.aiplatform.analytics.service.IAnalyticsRelayService;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
@@ -35,14 +36,17 @@ import org.springframework.web.bind.annotation.RestController;
 public class AdminAnalyticsController {
   private final IAnalyticsRelayService relay;
   private final IAnalyticsBackfillService backfill;
+  private final IAnalyticsRecoveryService recovery;
   private final AnalyticsFailureMapper failures;
 
   public AdminAnalyticsController(
       IAnalyticsRelayService relay,
       IAnalyticsBackfillService backfill,
+      IAnalyticsRecoveryService recovery,
       AnalyticsFailureMapper failures) {
     this.relay = relay;
     this.backfill = backfill;
+    this.recovery = recovery;
     this.failures = failures;
   }
 
@@ -87,6 +91,13 @@ public class AdminAnalyticsController {
       result.add(AnalyticsOutboxDTO.from(event));
     }
     return Result.ok(result);
+  }
+
+  @PostMapping("/outbox/recovery")
+  @AuditOperation(action = "analytics.outbox.recovery",
+      objectType = "analytics-outbox", objectIdParam = "")
+  public Result<Integer> recoverUnconsumed() {
+    return Result.ok(recovery.recoverUnconsumed());
   }
 
   @PostMapping("/outbox/{eventId}/retry")
