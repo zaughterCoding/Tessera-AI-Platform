@@ -10,7 +10,7 @@ spring:
   application:
     name: ai-creation-platform
   datasource:
-    driver-class-name: com.mysql.jdbc.Driver
+    driver-class-name: com.mysql.cj.jdbc.Driver
     url: ${DB_URL}
     username: ${APP_DB_USERNAME}
     password: ${APP_DB_PASSWORD}
@@ -59,6 +59,7 @@ app:
     rebuild-wait-seconds: ${APP_CACHE_REBUILD_WAIT_SECONDS:2}
     rebuild-lock-seconds: ${APP_CACHE_REBUILD_LOCK_SECONDS:10}
     redis-backoff-ms: ${APP_CACHE_REDIS_BACKOFF_MS:1000}
+    listener-retry-ms: ${APP_CACHE_LISTENER_RETRY_MS:2000}
     fallback:
       max-concurrent: ${APP_CACHE_FALLBACK_CONCURRENCY:4}
       acquire-timeout-ms: ${APP_CACHE_FALLBACK_ACQUIRE_TIMEOUT_MS:50}

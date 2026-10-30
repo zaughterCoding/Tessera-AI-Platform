@@ -18,9 +18,4 @@ public class ApiErrorController implements ErrorController {
     return ResponseEntity.status(status).body(Result.fail(
         ErrorCode.forStatus(status), (String) request.getAttribute("requestId")));
   }
-
-  @Override
-  public String getErrorPath() {
-    return "/error";
-  }
 }

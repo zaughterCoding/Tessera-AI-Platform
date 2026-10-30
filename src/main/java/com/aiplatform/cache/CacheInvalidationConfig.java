@@ -1,5 +1,6 @@
 package com.aiplatform.cache;
 
+import io.micrometer.core.instrument.MeterRegistry;
 import java.nio.charset.StandardCharsets;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -14,8 +15,11 @@ public class CacheInvalidationConfig {
   public RedisMessageListenerContainer cacheInvalidations(
       RedisConnectionFactory connection,
       CacheClient cache,
-      @Value("${app.namespace}") String namespace) {
-    RedisMessageListenerContainer listener = new RedisMessageListenerContainer();
+      MeterRegistry metrics,
+      @Value("${app.namespace}") String namespace,
+      @Value("${app.cache.listener-retry-ms:2000}") long listenerRetryMillis) {
+    RedisMessageListenerContainer listener =
+        new ResilientRedisListenerContainer(metrics, listenerRetryMillis);
     listener.setConnectionFactory(connection);
     listener.setRecoveryInterval(1_000L);
     listener.addMessageListener(
