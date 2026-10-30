@@ -9,6 +9,7 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskEnvFile = Join-Path $taskRoot ".local\deploy\$Environment\.env"
 $taskComposeFile = Join-Path $PSScriptRoot 'compose.yml'
+. (Join-Path $PSScriptRoot 'redis-snapshot.ps1')
 if (-not (Test-Path -LiteralPath $taskEnvFile)) { throw '该部署环境尚未初始化。' }
 
 function Get-EnvMap([string]$Path) {
@@ -27,12 +28,8 @@ function Invoke-Compose([string[]]$CommandArgs) {
 }
 # PowerShell 5.1 会重写原生命令参数中的引号；查询与 Redis 命令改为逐参数传递，不经 sh -c。
 $taskMysqlPassword = $taskEnv['MYSQL_ROOT_PASSWORD']
-$taskRedisPassword = $taskEnv['REDIS_PASSWORD']
 function Invoke-MysqlQuery([string]$Sql) {
     Invoke-Compose @('exec', '-T', '-e', "MYSQL_PWD=$taskMysqlPassword", 'mysql', 'mysql', '-uroot', '-N', '-B', $taskDatabase, '-e', $Sql)
-}
-function Invoke-RedisCli([string[]]$RedisArgs) {
-    Invoke-Compose (@('exec', '-T', '-e', "REDISCLI_AUTH=$taskRedisPassword", 'redis', 'redis-cli') + $RedisArgs)
 }
 
 $taskStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -129,17 +126,22 @@ UNION ALL SELECT 'flyway_schema_history', COUNT(*) FROM flyway_schema_history;
     $taskCounts | Out-File -FilePath (Join-Path $taskBackupDirectory 'counts.txt') -Encoding utf8
     if (($taskCounts -join '').Trim().Length -eq 0) { throw '业务计数读取为空，已放弃备份。' }
 
-    $taskRedisStats = Invoke-RedisCli @('DBSIZE')
-    $taskRedisKeyList = @(Invoke-RedisCli @('--scan', '--pattern', '*') | Where-Object { $_ })
-    $taskRedisKeys = $taskRedisKeyList.Count
-    $taskRedisSamples = @($taskRedisKeyList | Where-Object { $_ -like '*campaign*' } | Select-Object -First 20)
-    @("dbsize=$taskRedisStats", "keys=$taskRedisKeys") + $taskRedisSamples | Out-File -FilePath (Join-Path $taskBackupDirectory 'redis-keys.txt') -Encoding utf8
-    # 记录永不过期的键，恢复后逐键核对；带 TTL 的键只校验载入时数量，允许其按原到期时间消失。
-    $taskPersistentKeys = @()
-    foreach ($taskRedisKey in $taskRedisKeyList) {
-        $taskRedisTtl = (Invoke-RedisCli @('TTL', $taskRedisKey) | Select-Object -First 1).Trim()
-        if ($taskRedisTtl -eq '-1') { $taskPersistentKeys += $taskRedisKey }
+    # 只读载入已导出的 RDB，清单不再混入在线 Redis 的较晚状态。
+    $taskRdb = Get-RdbSnapshotMetadata $taskBackupDirectory
+    $taskSnapshotName = 'ai-creation-redis-snapshot-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    try {
+        & docker run -d --rm --network none --name $taskSnapshotName -v "${taskHostBackup}:/snapshot:ro" $taskRedisImage redis-server --appendonly no --dir /snapshot --dbfilename redis.rdb | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'Redis 备份快照实例启动失败。' }
+        Wait-RedisSnapshot $taskSnapshotName ''
+        $taskLoaded = Test-RedisSnapshotLoad $taskSnapshotName '' $taskRdb
+        $taskPersistentKeys = @(Get-SnapshotPersistentKeys $taskSnapshotName '')
+        if ($taskPersistentKeys.Count -ne $taskRdb.keys - $taskRdb.expires) { throw 'Redis 永久键与固定快照统计不一致。' }
+    } finally {
+        & docker rm -f $taskSnapshotName | Out-Null
     }
+    $taskRedisStats = [string]$taskRdb.keys
+    $taskRedisSamples = @($taskPersistentKeys | Where-Object { $_ -like '*campaign*' } | Select-Object -First 20)
+    @("dbsize=$taskRedisStats", "keys=$taskRedisStats") + $taskRedisSamples | Out-File -FilePath (Join-Path $taskBackupDirectory 'redis-keys.txt') -Encoding utf8
     @("count=$($taskPersistentKeys.Count)") + $taskPersistentKeys | Out-File -FilePath (Join-Path $taskBackupDirectory 'redis-persistent.txt') -Encoding utf8
 
     $taskMediaRaw = @(& docker run --rm -v "${taskMediaVolume}:/data:ro" alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a sh -c 'find /data -type f | wc -l; du -sb /data | cut -f1')
@@ -179,7 +181,8 @@ UNION ALL SELECT 'flyway_schema_history', COUNT(*) FROM flyway_schema_history;
         logical = $taskLogical
         files = $taskFileHashes
         counts = ($taskCounts -join "`n")
-        redis = ($taskRedisStats -join "`n")
+        redis = $taskRedisStats
+        redisSnapshot = @{ version = 1; keys = $taskRdb.keys; expires = $taskRdb.expires }
         media = ($taskMediaStats -join "`n")
     }
     $taskManifest | ConvertTo-Json -Depth 6 | Out-File -FilePath (Join-Path $taskBackupDirectory 'manifest.json') -Encoding utf8

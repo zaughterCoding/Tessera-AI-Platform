@@ -8,6 +8,7 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $taskRoot = Split-Path -Parent $PSScriptRoot
 $taskEnvFile = Join-Path $taskRoot ".local\deploy\$Environment\.env"
 $taskComposeFile = Join-Path $PSScriptRoot 'compose.yml'
+. (Join-Path $PSScriptRoot 'redis-snapshot.ps1')
 $taskBackupDirectory = [System.IO.Path]::GetFullPath($BackupDirectory)
 if (-not (Test-Path -LiteralPath $taskEnvFile)) { throw '目标隔离环境尚未初始化。' }
 # 恢复前预检：清单、必需文件、大小与摘要全部通过后才允许修改目标环境或启动容器。
@@ -49,6 +50,23 @@ function Test-ManifestFile([string]$Name, [bool]$Required) {
 }
 foreach ($taskName in @('database.sql', 'redis.rdb', 'media.tar.gz')) { Test-ManifestFile $taskName $true }
 foreach ($taskName in @('counts.sql', 'flyway-history.txt', 'redis-persistent.txt')) { Test-ManifestFile $taskName $false }
+# 摘要预检仍最先执行；RDB 结构校验也在目标环境变更之前完成。
+$taskRdb = Get-RdbSnapshotMetadata $taskBackupDirectory
+$taskRdbRead = $taskRdb.keys
+$taskRdbExpires = $taskRdb.expires
+$taskExpectedRedis = [long]([string]$taskManifest.redis).Trim()
+if ($null -ne $taskManifest.redisSnapshot) {
+    $taskSnapshotMeta = $taskManifest.redisSnapshot
+    if ([string]$taskSnapshotMeta.version -ne '1' -or
+        [string]$taskSnapshotMeta.keys -notmatch '^\d+$' -or [string]$taskSnapshotMeta.expires -notmatch '^\d+$' -or
+        [long]$taskSnapshotMeta.keys -ne $taskRdbRead -or [long]$taskSnapshotMeta.expires -ne $taskRdbExpires -or $taskExpectedRedis -ne $taskRdbRead) {
+        throw 'Redis 固定快照元数据与 RDB 不一致。'
+    }
+    Test-ManifestFile 'redis-persistent.txt' $true
+} elseif ($taskExpectedRedis -lt $taskRdbRead - $taskRdbExpires -or $taskExpectedRedis -gt $taskRdbRead) {
+    # 旧清单使用稍后在线计数，只兼容 TTL 可解释的差额；永久键下界和 RDB 完整性不可放宽。
+    throw "Redis 旧清单计数超出快照边界：expected=$taskExpectedRedis read=$taskRdbRead expires=$taskRdbExpires"
+}
 
 function Get-EnvMap([string]$Path) {
     $taskMap = @{}
@@ -176,48 +194,25 @@ try {
     $taskHostBackup = $taskBackupDirectory.Replace('\', '/')
     & docker run --rm -v "${taskRedisVolume}:/data" -v "${taskHostBackup}:/backup:ro" alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a sh -c "rm -rf /data/* /data/.[!.]* /data/..?* 2>/dev/null || true; cp /backup/redis.rdb /data/dump.rdb; chown -R ${taskRedisUid}:${taskRedisUid} /data"
     if ($LASTEXITCODE -ne 0) { throw 'Redis 快照恢复失败。' }
-    # Redis 以 AOF 模式运行，直接放回 dump.rdb 不会载入；先用临时实例载入 RDB，再生成含数据的 AOF。
-    $taskRedisImage = 'redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499'
-    # 先离线校验 RDB 完整性与键数；校验器会给出载入时已过期的键数，据此计算预期可见键数，
-    # 这样零键快照、带 TTL 的会话键和永久协调键都能被准确核对，而不是只看 DBSIZE 是否大于零。
-    $taskRdbCheck = @(& docker run --rm -v "${taskRedisVolume}:/data:ro" $taskRedisImage redis-check-rdb /data/dump.rdb)
-    if ($LASTEXITCODE -ne 0) { throw 'Redis 快照校验失败。' }
-    $taskRdbCheckText = $taskRdbCheck -join "`n"
-    if ($taskRdbCheckText -notmatch 'RDB looks OK') { throw 'Redis 快照未通过完整性校验。' }
-    $taskRdbRead = 0
-    if ($taskRdbCheckText -match '(?m)^\[info\] (\d+) keys read\r?$') { $taskRdbRead = [long]$Matches[1] }
-    $taskRdbExpires = 0
-    if ($taskRdbCheckText -match '(?m)^\[info\] (\d+) expires\r?$') { $taskRdbExpires = [long]$Matches[1] }
-    $taskRdbExpired = 0
-    if ($taskRdbCheckText -match '(?m)^\[info\] (\d+) already expired\r?$') { $taskRdbExpired = [long]$Matches[1] }
-    $taskExpectedRedis = [long]([string]$taskManifest.redis).Trim()
-    if ($taskRdbRead -ne $taskExpectedRedis) {
-        throw "Redis 快照键数与清单不一致：expected=$taskExpectedRedis read=$taskRdbRead"
-    }
-    $taskRedisLive = $taskRdbRead - $taskRdbExpired
+    # Redis 以 AOF 模式运行，先载入 RDB，再生成含数据的 AOF。
     $taskSeedName = 'ai-creation-redis-seed-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
-    & docker run -d --rm --name $taskSeedName -v "${taskRedisVolume}:/data" $taskRedisImage redis-server --appendonly no --dir /data --dbfilename dump.rdb --requirepass $taskRedisPassword | Out-Null
+    & docker run -d --rm --network none --name $taskSeedName -v "${taskRedisVolume}:/data" $taskRedisImage redis-server --appendonly no --dir /data --dbfilename dump.rdb --requirepass $taskRedisPassword | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Redis 快照装载容器启动失败。' }
-    $taskSeedReady = $false
-    for ($taskAttempt = 0; $taskAttempt -lt 60; $taskAttempt++) {
-        $taskPong = (& docker exec $taskSeedName redis-cli --no-auth-warning -a $taskRedisPassword PING 2>$null)
-        if (($taskPong -join '').Trim() -eq 'PONG') { $taskSeedReady = $true; break }
-        Start-Sleep -Seconds 1
-    }
-    if (-not $taskSeedReady) { & docker rm -f $taskSeedName | Out-Null; throw 'Redis 快照装载实例未就绪。' }
-    $taskSeedSize = (& docker exec $taskSeedName redis-cli --no-auth-warning -a $taskRedisPassword DBSIZE | Select-Object -First 1).Trim()
-    if (-not ($taskSeedSize -match '^\d+$') -or [long]$taskSeedSize -ne $taskRedisLive) {
+    try {
+        Wait-RedisSnapshot $taskSeedName $taskRedisPassword
+        $taskRedisLoaded = Test-RedisSnapshotLoad $taskSeedName $taskRedisPassword $taskRdb
+        $taskSnapshotPersistent = @(Get-SnapshotPersistentKeys $taskSeedName $taskRedisPassword)
+        if ($taskSnapshotPersistent.Count -ne $taskRdbRead - $taskRdbExpires) { throw 'Redis 永久键载入不完整。' }
+        & docker exec $taskSeedName redis-cli --no-auth-warning -a $taskRedisPassword CONFIG SET appendonly yes | Out-Null
+        $taskAofReady = $false
+        for ($taskAttempt = 0; $taskAttempt -lt 60; $taskAttempt++) {
+            $taskPersistence = (& docker exec $taskSeedName redis-cli --no-auth-warning -a $taskRedisPassword INFO persistence) -join "`n"
+            if ($taskPersistence -match 'aof_enabled:1' -and $taskPersistence -match 'aof_rewrite_in_progress:0' -and $taskPersistence -match 'aof_last_bgrewrite_status:ok') { $taskAofReady = $true; break }
+            Start-Sleep -Seconds 1
+        }
+    } finally {
         & docker stop $taskSeedName | Out-Null
-        throw "Redis 快照载入键数与预期不一致：read=$taskRdbRead expired=$taskRdbExpired expected=$taskRedisLive actual=$taskSeedSize"
     }
-    & docker exec $taskSeedName redis-cli --no-auth-warning -a $taskRedisPassword CONFIG SET appendonly yes | Out-Null
-    $taskAofReady = $false
-    for ($taskAttempt = 0; $taskAttempt -lt 60; $taskAttempt++) {
-        $taskPersistence = (& docker exec $taskSeedName redis-cli --no-auth-warning -a $taskRedisPassword INFO persistence) -join "`n"
-        if ($taskPersistence -match 'aof_enabled:1' -and $taskPersistence -match 'aof_rewrite_in_progress:0' -and $taskPersistence -match 'aof_last_bgrewrite_status:ok') { $taskAofReady = $true; break }
-        Start-Sleep -Seconds 1
-    }
-    & docker stop $taskSeedName | Out-Null
     if (-not $taskAofReady) { throw 'Redis 快照未能写入 AOF。' }
     $taskAofFiles = (& docker run --rm -v "${taskRedisVolume}:/data:ro" alpine:latest@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a sh -c 'find /data/appendonlydir -type f 2>/dev/null | wc -l' | Select-Object -First 1).Trim()
     if (-not ($taskAofFiles -match '^\d+$' -and [long]$taskAofFiles -ge 1)) { throw 'Redis 快照未生成 AOF 文件。' }
@@ -233,23 +228,17 @@ try {
     $taskRedisPersistence = (Invoke-RedisCli @('INFO', 'persistence')) -join "`n"
     $taskFinalRedis = if ($taskRedisSize -match '^\d+$') { [long]$taskRedisSize } else { -1 }
     # 带 TTL 的键可能在恢复期间按原到期时间消失；永久键必须完整存在（由 persistent 清单单独核对）。
-    $taskRedisSizeOk = if ($taskRedisLive -eq 0) { $taskFinalRedis -eq 0 } elseif ($taskRdbExpires -eq 0) { $taskFinalRedis -eq $taskRedisLive } else { $taskFinalRedis -le $taskRedisLive }
+    $taskRedisSizeOk = ($taskFinalRedis -ge $taskRdbRead - $taskRdbExpires -and $taskFinalRedis -le $taskRedisLoaded)
     $taskRedisOk = ($taskFinalRedis -ge 0 -and $taskRedisSizeOk -and $taskRedisPersistence -match 'aof_enabled:1')
-    Add-Check 'redis_snapshot' $taskRedisOk "expected=$taskExpectedRedis read=$taskRdbRead expires=$taskRdbExpires expiredAtLoad=$taskRdbExpired liveAtLoad=$taskRedisLive dbsize=$taskRedisSize aofEnabled=$($taskRedisPersistence -match 'aof_enabled:1')"
+    Add-Check 'redis_snapshot' $taskRedisOk "expected=$taskExpectedRedis read=$taskRdbRead expires=$taskRdbExpires expiredAtCheck=$($taskRdb.expiredAtCheck) loaded=$taskRedisLoaded dbsize=$taskRedisSize aofEnabled=$($taskRedisPersistence -match 'aof_enabled:1')"
 
-    # 非空快照额外核对备份时采集的活动协调键，证明协调状态随快照一起恢复。
-    $taskRedisKeyFile = Join-Path $taskBackupDirectory 'redis-keys.txt'
-    if (Test-Path -LiteralPath $taskRedisKeyFile) {
-        $taskRedisSamples = @(Get-Content -LiteralPath $taskRedisKeyFile | Select-Object -Skip 2 | Where-Object { $_ -ne '' })
-        $taskRedisMissing = @()
-        foreach ($taskKey in $taskRedisSamples) {
-            $taskKeyExists = (Invoke-RedisCli @('EXISTS', $taskKey) | Select-Object -First 1).Trim()
-            if ($taskKeyExists -ne '1') { $taskRedisMissing += $taskKey }
-        }
-        Add-Check 'redis_coordination_keys' ($taskRedisMissing.Count -eq 0) ("samples=" + $taskRedisSamples.Count + " missing=" + $taskRedisMissing.Count)
-    } else {
-        Add-Skip 'redis_coordination_keys' '备份未包含协调键样本。'
+    # 即使旧备份没有永久键清单，也从真实 RDB 载入结果核对全部永久协调键。
+    $taskSnapshotMissing = @()
+    foreach ($taskKey in $taskSnapshotPersistent) {
+        $taskKeyTtl = (Invoke-RedisCli @('PTTL', $taskKey) | Select-Object -First 1).Trim()
+        if ($taskKeyTtl -ne '-1') { $taskSnapshotMissing += $taskKey }
     }
+    Add-Check 'redis_coordination_keys' ($taskSnapshotMissing.Count -eq 0) ("persistent=" + $taskSnapshotPersistent.Count + " missing=" + $taskSnapshotMissing.Count)
 
     # 新格式备份记录全部永久键；恢复后逐键核对，证明快照中的长期状态没有丢失。
     $taskPersistentFile = Join-Path $taskBackupDirectory 'redis-persistent.txt'
