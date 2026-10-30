@@ -1,4 +1,4 @@
-ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:8-jre@sha256:165366caa3881d47586ff7fb63787e4e682c79b6d1fdff31f4be8f45df3fd45a
+ARG JAVA_RUNTIME_IMAGE=eclipse-temurin:21.0.13_9-jre@sha256:0b99b3376fbb50dbf9c0af8535fdd5b8eb0d3fdfc8b1e4967f383b6919f6901a
 FROM ${JAVA_RUNTIME_IMAGE}
 WORKDIR /app
 COPY target/ai-creation-platform.jar /app/app.jar

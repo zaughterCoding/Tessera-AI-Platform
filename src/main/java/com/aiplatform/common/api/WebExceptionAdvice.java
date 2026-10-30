@@ -1,7 +1,7 @@
 package com.aiplatform.common.api;
 
 import com.aiplatform.cache.CacheUnavailableException;
-import javax.validation.ConstraintViolationException;
+import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
@@ -19,6 +19,8 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 @Slf4j
 @RestControllerAdvice
@@ -42,6 +44,12 @@ public class WebExceptionAdvice {
   @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
   public ResponseEntity<Result<Void>> methodNotAllowed() {
     return reject(ErrorCode.METHOD_NOT_ALLOWED);
+  }
+
+  // Spring Framework 6 对无匹配处理器和缺失静态资源抛出专用异常，需保持既有结构化 404。
+  @ExceptionHandler({NoHandlerFoundException.class, NoResourceFoundException.class})
+  public ResponseEntity<Result<Void>> notFound() {
+    return reject(ErrorCode.NOT_FOUND);
   }
 
   @ExceptionHandler(MaxUploadSizeExceededException.class)
