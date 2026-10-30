@@ -18,6 +18,10 @@ spring:
       connection-init-sql: SET time_zone = '+00:00'
       connection-timeout: 2000
       validation-timeout: 1000
+      # 数据库进程冻结时 TCP 仍可写，只有 socket 超时能让请求有界失败而不是无限挂起。
+      data-source-properties:
+        connectTimeout: 3000
+        socketTimeout: 15000
   flyway:
     url: ${DB_URL}
     user: ${SCHEMA_DB_USERNAME}
