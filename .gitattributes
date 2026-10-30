@@ -10,3 +10,4 @@ mvnw text eol=lf
 mvnw.cmd text eol=crlf
 # 自托管 Vue 运行时按锁定摘要校验，任何平台都必须保持原始字节。
 frontend/vendor/vue.js -text
+deploy/monitoring/receiver/handler text eol=lf
