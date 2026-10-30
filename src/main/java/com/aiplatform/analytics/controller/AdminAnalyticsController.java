@@ -6,7 +6,6 @@ import com.aiplatform.analytics.dto.BackfillStateDTO;
 import com.aiplatform.analytics.entity.AnalyticsBackfillState;
 import com.aiplatform.analytics.entity.AnalyticsFailureRecord;
 import com.aiplatform.analytics.entity.AnalyticsOutboxEvent;
-import com.aiplatform.analytics.mapper.AnalyticsFailureMapper;
 import com.aiplatform.analytics.service.IAnalyticsBackfillService;
 import com.aiplatform.analytics.service.IAnalyticsRecoveryService;
 import com.aiplatform.analytics.service.IAnalyticsRelayService;
@@ -37,17 +36,14 @@ public class AdminAnalyticsController {
   private final IAnalyticsRelayService relay;
   private final IAnalyticsBackfillService backfill;
   private final IAnalyticsRecoveryService recovery;
-  private final AnalyticsFailureMapper failures;
 
   public AdminAnalyticsController(
       IAnalyticsRelayService relay,
       IAnalyticsBackfillService backfill,
-      IAnalyticsRecoveryService recovery,
-      AnalyticsFailureMapper failures) {
+      IAnalyticsRecoveryService recovery) {
     this.relay = relay;
     this.backfill = backfill;
     this.recovery = recovery;
-    this.failures = failures;
   }
 
   @GetMapping("/backfill")
@@ -74,7 +70,7 @@ public class AdminAnalyticsController {
       @RequestParam(defaultValue = "50") @Min(1) @Max(200) int limit,
       @RequestParam(defaultValue = "0") @Min(0) int offset) {
     List<AnalyticsFailureDTO> result = new ArrayList<>();
-    for (AnalyticsFailureRecord failure : failures.listFailures(limit, offset)) {
+    for (AnalyticsFailureRecord failure : relay.listFailures(limit, offset)) {
       result.add(AnalyticsFailureDTO.from(failure));
     }
     return Result.ok(result);
@@ -97,7 +93,7 @@ public class AdminAnalyticsController {
   @AuditOperation(action = "analytics.outbox.recovery",
       objectType = "analytics-outbox", objectIdParam = "")
   public Result<Integer> recoverUnconsumed() {
-    return Result.ok(recovery.recoverUnconsumed());
+    return Result.ok(recovery.recoverAsAdmin());
   }
 
   @PostMapping("/outbox/{eventId}/retry")

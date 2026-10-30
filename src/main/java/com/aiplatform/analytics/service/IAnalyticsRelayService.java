@@ -1,5 +1,6 @@
 package com.aiplatform.analytics.service;
 
+import com.aiplatform.analytics.entity.AnalyticsFailureRecord;
 import com.aiplatform.analytics.entity.AnalyticsOutboxEvent;
 import java.util.List;
 
@@ -14,4 +15,6 @@ public interface IAnalyticsRelayService {
   boolean retryReview(String eventId);
 
   long countPending();
+
+  List<AnalyticsFailureRecord> listFailures(int limit, int offset);
 }

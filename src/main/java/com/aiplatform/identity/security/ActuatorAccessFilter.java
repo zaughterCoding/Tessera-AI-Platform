@@ -1,44 +1,38 @@
 package com.aiplatform.identity.security;
 
-import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ApiResponseWriter;
 import com.aiplatform.common.api.ErrorCode;
-import com.aiplatform.identity.dto.UserDTO;
-import com.aiplatform.identity.service.IUserService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
-import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 import org.springframework.web.util.UrlPathHelper;
 
+/**
+ * 监控端点暴露面收敛：只保留规范健康探针与 Prometheus 路径。
+ *
+ * <p>身份和角色由 Spring Security 过滤链处理；本过滤器只负责把非规范
+ * Actuator 路径统一收敛为结构化 404/405，避免暴露额外端点。
+ */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 10)
-public class MetricsAccessFilter extends OncePerRequestFilter {
-  public static final String AUTHORIZED = MetricsAccessFilter.class.getName() + ".authorized";
+public class ActuatorAccessFilter extends OncePerRequestFilter {
   private static final Set<String> HEALTH = new HashSet<>(Arrays.asList(
       "/actuator/health", "/actuator/health/liveness", "/actuator/health/readiness"));
+  private static final String PROMETHEUS = "/actuator/prometheus";
   private final UrlPathHelper paths = new UrlPathHelper();
-  private final IUserService users;
   private final ApiResponseWriter writer;
-  private final String monitorToken;
 
-  public MetricsAccessFilter(IUserService users, ApiResponseWriter writer,
-      @Value("${app.identity.monitor-token}") String monitorToken) {
-    this.users = users;
+  public ActuatorAccessFilter(ApiResponseWriter writer) {
     this.writer = writer;
-    this.monitorToken = monitorToken;
   }
 
   @Override
@@ -51,11 +45,10 @@ public class MetricsAccessFilter extends OncePerRequestFilter {
     }
     boolean read = "GET".equals(request.getMethod()) || "HEAD".equals(request.getMethod());
     if (HEALTH.contains(path) && read) {
-      request.setAttribute(AUTHORIZED, true);
       chain.doFilter(request, response);
       return;
     }
-    if (!"/actuator/prometheus".equals(path)) {
+    if (!PROMETHEUS.equals(path)) {
       writer.reject(response, ErrorCode.NOT_FOUND);
       return;
     }
@@ -63,28 +56,6 @@ public class MetricsAccessFilter extends OncePerRequestFilter {
       writer.reject(response, ErrorCode.METHOD_NOT_ALLOWED);
       return;
     }
-    String authorization = request.getHeader("Authorization");
-    boolean monitor = !monitorToken.isEmpty() && authorization != null
-        && MessageDigest.isEqual(("Bearer " + monitorToken).getBytes(StandardCharsets.UTF_8),
-            authorization.getBytes(StandardCharsets.UTF_8));
-    try {
-      UserDTO user = monitor ? null : users.authenticate(authorization);
-      if (!monitor && user == null) {
-        writer.reject(response, ErrorCode.UNAUTHENTICATED);
-        return;
-      }
-      if (!monitor && !user.getRoles().contains("ADMIN")) {
-        writer.reject(response, ErrorCode.FORBIDDEN);
-        return;
-      }
-    } catch (ApiException error) {
-      writer.reject(response, error.getErrorCode());
-      return;
-    } catch (DataAccessException unavailable) {
-      writer.reject(response, ErrorCode.UNAVAILABLE);
-      return;
-    }
-    request.setAttribute(AUTHORIZED, true);
     chain.doFilter(request, response);
   }
 }

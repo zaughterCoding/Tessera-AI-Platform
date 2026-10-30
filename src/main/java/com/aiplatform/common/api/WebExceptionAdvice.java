@@ -7,6 +7,8 @@ import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.BindException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -55,6 +57,16 @@ public class WebExceptionAdvice {
   @ExceptionHandler(MaxUploadSizeExceededException.class)
   public ResponseEntity<Result<Void>> tooLarge() {
     return reject(ErrorCode.PAYLOAD_TOO_LARGE);
+  }
+
+  @ExceptionHandler(AuthenticationException.class)
+  public ResponseEntity<Result<Void>> unauthenticated() {
+    return reject(ErrorCode.UNAUTHENTICATED);
+  }
+
+  @ExceptionHandler(AccessDeniedException.class)
+  public ResponseEntity<Result<Void>> forbidden() {
+    return reject(ErrorCode.FORBIDDEN);
   }
 
   @ExceptionHandler(DataAccessException.class)

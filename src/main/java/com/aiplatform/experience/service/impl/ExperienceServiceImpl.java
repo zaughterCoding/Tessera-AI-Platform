@@ -22,10 +22,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 
 /** 只读技术观察：展示真实配置、真实缓存层与真实可靠任务，不制造数据。 */
 @Service
+@PreAuthorize("hasRole('ADMIN')")
 public class ExperienceServiceImpl implements IExperienceService {
   private final IApplicationService applications;
   private final ITradeOrderService orders;

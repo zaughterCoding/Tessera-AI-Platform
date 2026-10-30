@@ -1,17 +1,20 @@
 package com.aiplatform.common.config;
 
-import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
-import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+import org.springframework.boot.jackson.autoconfigure.JsonMapperBuilderCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import tools.jackson.databind.module.SimpleModule;
+import tools.jackson.databind.ser.std.ToStringSerializer;
 
 @Configuration
 public class JsonConfig {
   @Bean
-  public Jackson2ObjectMapperBuilderCustomizer longAsString() {
+  public JsonMapperBuilderCustomizer longAsString() {
     return builder -> {
-      builder.serializerByType(Long.class, ToStringSerializer.instance);
-      builder.serializerByType(Long.TYPE, ToStringSerializer.instance);
+      SimpleModule module = new SimpleModule("long-as-string");
+      module.addSerializer(Long.class, ToStringSerializer.instance);
+      module.addSerializer(Long.TYPE, ToStringSerializer.instance);
+      builder.addModule(module);
     };
   }
 }

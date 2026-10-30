@@ -113,6 +113,7 @@ while IFS="=" read -r key value; do
   case "${key-}" in
   distributionUrl) distributionUrl=$(trim "${value-}") ;;
   distributionSha256Sum) distributionSha256Sum=$(trim "${value-}") ;;
+  distributionSha256SumTarGz) distributionSha256SumTarGz=$(trim "${value-}") ;;
   esac
 done <"$scriptDir/.mvn/wrapper/maven-wrapper.properties"
 [ -n "${distributionUrl-}" ] || die "cannot read distributionUrl property in $scriptDir/.mvn/wrapper/maven-wrapper.properties"
@@ -179,6 +180,9 @@ verbose "Downloading to: $TMP_DOWNLOAD_DIR/$distributionUrlName"
 if ! command -v unzip >/dev/null; then
   distributionUrl="${distributionUrl%.zip}.tar.gz"
   distributionUrlName="${distributionUrl##*/}"
+  # 归档格式切换后必须使用对应摘要，不能沿用 zip 的校验值。
+  distributionSha256Sum="${distributionSha256SumTarGz-}"
+  [ -n "$distributionSha256Sum" ] || die "cannot read distributionSha256SumTarGz property, required when unzip is unavailable"
 fi
 
 # verbose opt

@@ -6,6 +6,7 @@ import com.aiplatform.analytics.service.IAnalyticsRecoveryService;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 
 /** 消息存储重建后，唤醒已确认但未被消费的事实；消费端按事件号幂等吸收重复。 */
@@ -52,5 +53,11 @@ public class AnalyticsRecoveryServiceImpl implements IAnalyticsRecoveryService {
       log.warn("分析任务恢复轮询失败，type={}", failure.getClass().getSimpleName());
       return 0;
     }
+  }
+
+  @Override
+  @PreAuthorize("hasRole('ADMIN')")
+  public int recoverAsAdmin() {
+    return recoverUnconsumed();
   }
 }

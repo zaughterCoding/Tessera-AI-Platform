@@ -14,6 +14,7 @@ import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -112,6 +113,7 @@ public class OutboxRelayServiceImpl implements IOutboxRelayService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public List<BusinessOutboxTask> listTasks(String state, int limit, int offset) {
     int safeLimit = Math.max(1, Math.min(limit, 200));
     int safeOffset = Math.max(0, offset);
@@ -119,11 +121,13 @@ public class OutboxRelayServiceImpl implements IOutboxRelayService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public BusinessOutboxTask getTask(long id) {
     return outbox.selectEvent(id);
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public boolean retryReview(long id) {
     return outbox.retryReview(id) == 1;
   }

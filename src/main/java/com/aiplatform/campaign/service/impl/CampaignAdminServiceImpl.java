@@ -40,6 +40,7 @@ import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,6 +51,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** 活动库存只在建单时扣减；暂停先关入口，恢复先重建覆盖再替换旧代次。 */
 @Slf4j
 @Service
+@PreAuthorize("hasRole('ADMIN')")
 public class CampaignAdminServiceImpl implements ICampaignAdminService {
   private static final int REASON_LIMIT = 255;
   private static final int LOCK_SECONDS = 10;

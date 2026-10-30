@@ -16,7 +16,7 @@ import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.service.IBusinessOutboxService;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -100,6 +101,7 @@ public class UsageProductServiceImpl
 
   @Override
   @Transactional
+  @PreAuthorize("hasRole('ADMIN')")
   public void updateProduct(Long id, ProductAdminUpdateForm form, Long actorId) {
     if (baseMapper.selectById(id) == null) {
       throw new ApiException(ErrorCode.NOT_FOUND);

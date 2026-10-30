@@ -2,10 +2,10 @@ package com.aiplatform.messaging;
 
 import com.aiplatform.messaging.entity.BusinessOutboxTask;
 import com.aiplatform.messaging.service.IBusinessEventService;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 
 /** 单进程传输：与 Broker 一样按任务身份投递，失败仍落到持久任务。 */
 @Component
@@ -39,7 +39,7 @@ public class LocalEventPublisher implements EventPublisher {
   private String payload(BusinessEvent event) {
     try {
       return json.writeValueAsString(event);
-    } catch (JsonProcessingException failure) {
+    } catch (JacksonException failure) {
       return "";
     }
   }

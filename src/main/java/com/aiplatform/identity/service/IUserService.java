@@ -5,7 +5,7 @@ import com.aiplatform.identity.dto.LoginFormDTO;
 import com.aiplatform.identity.dto.ProfileFormDTO;
 import com.aiplatform.identity.dto.UserDTO;
 import com.aiplatform.identity.entity.User;
-import com.baomidou.mybatisplus.extension.service.IService;
+import com.baomidou.mybatisplus.spring.service.IService;
 import java.util.Map;
 
 public interface IUserService extends IService<User> {

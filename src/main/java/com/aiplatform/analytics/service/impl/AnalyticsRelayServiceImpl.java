@@ -4,7 +4,9 @@ import com.aiplatform.analytics.AnalyticsEvent;
 import com.aiplatform.analytics.AnalyticsEventCodec;
 import com.aiplatform.analytics.AnalyticsMalformedException;
 import com.aiplatform.analytics.AnalyticsProperties;
+import com.aiplatform.analytics.entity.AnalyticsFailureRecord;
 import com.aiplatform.analytics.entity.AnalyticsOutboxEvent;
+import com.aiplatform.analytics.mapper.AnalyticsFailureMapper;
 import com.aiplatform.analytics.mapper.AnalyticsOutboxMapper;
 import com.aiplatform.analytics.service.IAnalyticsRelayService;
 import com.aiplatform.analytics.transport.AnalyticsTransport;
@@ -17,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -27,6 +30,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class AnalyticsRelayServiceImpl implements IAnalyticsRelayService {
   private final AnalyticsProperties properties;
   private final AnalyticsOutboxMapper outbox;
+  private final AnalyticsFailureMapper failures;
   private final AnalyticsEventCodec codec;
   private final ObjectProvider<AnalyticsTransport> transport;
   private final MeterRegistry metrics;
@@ -36,12 +40,14 @@ public class AnalyticsRelayServiceImpl implements IAnalyticsRelayService {
   public AnalyticsRelayServiceImpl(
       AnalyticsProperties properties,
       AnalyticsOutboxMapper outbox,
+      AnalyticsFailureMapper failures,
       AnalyticsEventCodec codec,
       ObjectProvider<AnalyticsTransport> transport,
       MeterRegistry metrics,
       PlatformTransactionManager transactionManager) {
     this.properties = properties;
     this.outbox = outbox;
+    this.failures = failures;
     this.codec = codec;
     this.transport = transport;
     this.metrics = metrics;
@@ -123,16 +129,19 @@ public class AnalyticsRelayServiceImpl implements IAnalyticsRelayService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public List<AnalyticsOutboxEvent> listTasks(String state, int limit, int offset) {
     return outbox.selectEvents(state, Math.max(1, Math.min(limit, 200)), Math.max(0, offset));
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public AnalyticsOutboxEvent getTask(String eventId) {
     return outbox.selectFact(eventId);
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public boolean retryReview(String eventId) {
     return outbox.retryReview(eventId) == 1;
   }
@@ -140,5 +149,11 @@ public class AnalyticsRelayServiceImpl implements IAnalyticsRelayService {
   @Override
   public long countPending() {
     return outbox.countPending();
+  }
+
+  @Override
+  @PreAuthorize("hasRole('ADMIN')")
+  public List<AnalyticsFailureRecord> listFailures(int limit, int offset) {
+    return failures.listFailures(Math.max(1, Math.min(limit, 200)), Math.max(0, offset));
   }
 }

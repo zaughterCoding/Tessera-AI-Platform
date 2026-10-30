@@ -7,6 +7,7 @@ import com.aiplatform.operations.mapper.OperationAuditMapper;
 import com.aiplatform.operations.service.IOperationAuditService;
 import java.util.ArrayList;
 import java.util.List;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,6 +27,7 @@ public class OperationAuditServiceImpl implements IOperationAuditService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public Result<List<OperationAuditDTO>> list(String action, String objectType, Long operatorId,
       String outcome, int limit, int offset) {
     int safeLimit = Math.max(1, Math.min(limit, 200));

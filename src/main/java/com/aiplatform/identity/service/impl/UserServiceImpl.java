@@ -13,7 +13,7 @@ import com.aiplatform.identity.security.UserHolder;
 import com.aiplatform.identity.service.IUserService;
 import com.aiplatform.identity.session.RedisScripts;
 import com.aiplatform.identity.session.SessionStore;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Arrays;
@@ -29,6 +29,7 @@ import org.springframework.core.env.Environment;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -160,6 +161,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public UserDTO findForAdministration(Long userId) {
     if (!currentUser().getRoles().contains("ADMIN")) {
       throw new ApiException(ErrorCode.FORBIDDEN);

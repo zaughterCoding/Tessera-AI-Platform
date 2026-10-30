@@ -16,6 +16,7 @@ import com.aiplatform.operations.retention.RetentionTarget;
 import com.aiplatform.operations.service.IRetentionService;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -55,6 +56,7 @@ public class RetentionServiceImpl implements IRetentionService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public RetentionOverviewDTO overview() {
     RetentionOverviewDTO view = new RetentionOverviewDTO();
     for (RetentionTarget target : RetentionTarget.values()) {
@@ -73,6 +75,12 @@ public class RetentionServiceImpl implements IRetentionService {
     view.setAnalyticsNote("分析明细与分钟桶由分析维护任务按保留期截断；"
         + "失败隔离与补数任务不进入自动清理");
     return view;
+  }
+
+  @Override
+  @PreAuthorize("hasRole('ADMIN')")
+  public RetentionRunDTO runAsAdmin(RetentionTarget target, int maxBatches) {
+    return run(target, maxBatches);
   }
 
   @Override

@@ -64,6 +64,6 @@ public class AdminOperationsController {
           + "|analytics-failure|operation-audit") String target,
       @Valid @RequestBody(required = false) RetentionRunForm form) {
     int batches = form == null || form.getMaxBatches() == null ? 10 : form.getMaxBatches();
-    return Result.ok(retention.run(RetentionTarget.fromKey(target), batches));
+    return Result.ok(retention.runAsAdmin(RetentionTarget.fromKey(target), batches));
   }
 }

@@ -1,7 +1,6 @@
 package com.aiplatform.messaging;
 
 import com.aiplatform.messaging.service.IBusinessEventService;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -20,6 +19,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Component;
+import tools.jackson.databind.ObjectMapper;
 
 /** 真实 Broker 传输；Topic 与消费组使用环境前缀，消息身份仍由数据库任务核对。 */
 @Slf4j

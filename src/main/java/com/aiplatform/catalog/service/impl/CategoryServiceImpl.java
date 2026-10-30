@@ -8,7 +8,7 @@ import com.aiplatform.catalog.mapper.ApplicationCategoryMapper;
 import com.aiplatform.catalog.service.ICategoryService;
 import com.aiplatform.common.api.Result;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;

@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Objects;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
@@ -129,6 +130,7 @@ public class BusinessEventServiceImpl implements IBusinessEventService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public List<MessageFailure> listFailures(String consumerGroup, int limit, int offset) {
     return messages.listFailures(consumerGroup,
         Math.max(1, Math.min(limit, 200)), Math.max(0, offset));

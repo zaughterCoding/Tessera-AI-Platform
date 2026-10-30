@@ -24,7 +24,7 @@ import com.aiplatform.messaging.service.IBusinessOutboxService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -34,6 +34,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -99,6 +100,7 @@ public class ApplicationServiceImpl
 
   @Override
   @Transactional
+  @PreAuthorize("hasRole('ADMIN')")
   public void updateMetadata(Long id, ApplicationAdminUpdateForm form) {
     AiApplication existing = baseMapper.selectById(id);
     if (existing == null) {

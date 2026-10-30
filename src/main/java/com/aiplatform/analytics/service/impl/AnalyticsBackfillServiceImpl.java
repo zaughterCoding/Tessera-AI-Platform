@@ -21,6 +21,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.ContextRefreshedEvent;
 import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -158,11 +159,13 @@ public class AnalyticsBackfillServiceImpl implements IAnalyticsBackfillService {
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public AnalyticsBackfillState state() {
     return backfill.selectState(STATE_ID);
   }
 
   @Override
+  @PreAuthorize("hasRole('ADMIN')")
   public boolean restart() {
     if (!properties.isEnabled()) {
       return false;
