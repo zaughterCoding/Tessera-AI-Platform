@@ -31,10 +31,6 @@ body {
   line-height: 1.65;
 }
 
-[v-cloak] {
-  display: none;
-}
-
 a {
   color: var(--accent-dark);
 }

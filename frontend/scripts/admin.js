@@ -1,5 +1,3 @@
-const Vue = window.Vue;
-
 const BOOT = {
   loading: false,
   error: null,

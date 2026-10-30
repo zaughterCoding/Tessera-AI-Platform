@@ -1,4 +1,4 @@
-import "./components.js";
+import { registerComponents } from "./components.js";
 import { createApi } from "./api.js";
 import {
   clearRequestKey,
@@ -40,8 +40,7 @@ import {
 } from "./pages-more.js";
 import { AdminPage } from "./admin.js";
 
-const Vue = window.Vue;
-const EMPTY_ROUTE = Object.freeze({ segments: [], path: "/home", id: "", query: {}, fullPath: "#/home" });
+const { createApp, reactive } = window.Vue;
 
 const ROUTE_TITLES = {
   home: "首页",
@@ -121,33 +120,13 @@ function protectedPath(route) {
   return ["orders", "media", "mine", "create", "admin"].indexOf(first) >= 0;
 }
 
-Vue.prototype.$api = function api(path, options) {
-  return this.$root.request(path, options);
-};
-Vue.prototype.$authorizedHeaders = function authorizedHeaders() {
-  return this.$root.token ? { authorization: this.$root.token } : {};
-};
-Vue.prototype.$formatTime = formatTime;
-Vue.prototype.$formatDate = formatDate;
-Vue.prototype.$parseServerTime = parseServerTime;
-Vue.prototype.$countdown = countdown;
-Vue.prototype.$isExpired = isExpired;
-Vue.prototype.$orderStatus = orderStatusLabel;
-Vue.prototype.$reservation = reservationLabel;
+// 路由状态在应用级共享：根实例与所有页面读取同一响应式对象，hash 变化时就地更新。
+const routeState = reactive(parseRoute());
 
-// 路由对象由根实例替换；子组件通过 getter 读取最新值，避免闭包停留在首次解析结果。
-Object.defineProperty(Vue.prototype, "$route", {
-  get() {
-    const root = this.$root;
-    return (root && root.route) || EMPTY_ROUTE;
-  },
-});
-
-const app = new Vue({
-  el: "#app",
+const app = createApp({
   data() {
     return {
-      route: parseRoute(),
+      route: routeState,
       routeEpoch: 0,
       token: getToken(),
       user: getUser(),
@@ -196,7 +175,7 @@ const app = new Vue({
       });
     }
   },
-  beforeDestroy() {
+  beforeUnmount() {
     window.removeEventListener("hashchange", this.onHashChange);
     window.removeEventListener("aiplatform:session-expired", this.onSessionExpired);
     if (this.toastTimer) window.clearTimeout(this.toastTimer);
@@ -204,7 +183,7 @@ const app = new Vue({
   methods: {
     parseRoute,
     onHashChange() {
-      this.route = parseRoute();
+      Object.assign(this.route, parseRoute());
       this.routeEpoch++;
       this.applyTitle();
       const main = document.getElementById("main");
@@ -349,5 +328,24 @@ const app = new Vue({
     </div>
   `,
 });
+
+// Vue 3 用 globalProperties 提供与 Vue.prototype 等价的共享方法；函数内 this 仍指向调用组件。
+app.config.globalProperties.$api = function api(path, options) {
+  return this.$root.request(path, options);
+};
+app.config.globalProperties.$authorizedHeaders = function authorizedHeaders() {
+  return this.$root.token ? { authorization: this.$root.token } : {};
+};
+app.config.globalProperties.$formatTime = formatTime;
+app.config.globalProperties.$formatDate = formatDate;
+app.config.globalProperties.$parseServerTime = parseServerTime;
+app.config.globalProperties.$countdown = countdown;
+app.config.globalProperties.$isExpired = isExpired;
+app.config.globalProperties.$orderStatus = orderStatusLabel;
+app.config.globalProperties.$reservation = reservationLabel;
+app.config.globalProperties.$route = routeState;
+
+registerComponents(app);
+app.mount("#app");
 
 export { app };

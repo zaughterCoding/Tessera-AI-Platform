@@ -3,6 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check scripts/api.js && node --check scripts/auth.js && node --check scripts/format.js && node --check scripts/components.js && node --check scripts/pages.js && node --check scripts/pages-more.js && node --check scripts/admin.js && node --check scripts/app.js"
+    "check": "node --check scripts/api.js && node --check scripts/auth.js && node --check scripts/format.js && node --check scripts/components.js && node --check scripts/pages.js && node --check scripts/pages-more.js && node --check scripts/admin.js && node --check scripts/app.js",
+    "vendor:vue": "node tools/vendor-vue.mjs"
+  },
+  "devDependencies": {
+    "vue": "3.5.44"
   }
 }

@@ -1,5 +1,3 @@
-const Vue = window.Vue;
-
 const pageCommon = {
   data() {
     return { loading: false, error: null };
@@ -555,12 +553,14 @@ const CampaignDetailPage = {
       pollDelay: 2000,
       pollTimeout: false,
       notice: "",
+      unmounted: false,
     };
   },
   created() {
     this.load();
   },
-  beforeDestroy() {
+  beforeUnmount() {
+    this.unmounted = true;
     this.stopPolling();
   },
   methods: {
@@ -592,6 +592,8 @@ const CampaignDetailPage = {
           method: "POST",
           body: { campaignId: this.offer.id, requestKey: this.key() },
         });
+        // 受理响应可能晚于路由切换返回；已卸载时不再启动新的轮询。
+        if (this.unmounted) return;
         this.admission = result.data;
         if (result.data.requestKey) {
           this.$root.rememberPurchaseKey("campaign:" + this.id, result.data.requestKey);
@@ -610,6 +612,7 @@ const CampaignDetailPage = {
       }
     },
     startPolling(key) {
+      if (this.unmounted) return;
       this.stopPolling();
       this.polling = true;
       this.pollAttempts = 0;
@@ -631,6 +634,7 @@ const CampaignDetailPage = {
           params: { campaignId: this.offer.id, requestKey: key },
           quiet: true,
         });
+        if (!this.polling) return;
         this.admission = result.data;
         this.pollDelay = 2000;
         if (["SUCCESS", "FAILED", "REVIEW"].indexOf(result.data.state) >= 0) {
@@ -649,6 +653,8 @@ const CampaignDetailPage = {
           this.pollDelay = 5000;
         }
       }
+      // 请求返回前组件可能已卸载；此时不再续约定时器。
+      if (!this.polling) return;
       if (this.pollAttempts >= 30) {
         this.stopPolling();
         this.pollTimeout = true;
@@ -819,6 +825,7 @@ const OrderDetailPage = {
       polling: false,
       pollAttempts: 0,
       actionNotice: "",
+      unmounted: false,
     };
   },
   created() {
@@ -835,8 +842,10 @@ const OrderDetailPage = {
       }
     }, 1000);
   },
-  beforeDestroy() {
+  beforeUnmount() {
+    this.unmounted = true;
     if (this.ticker) window.clearInterval(this.ticker);
+    this.ticker = null;
     this.stopPolling();
   },
   computed: {
@@ -875,6 +884,7 @@ const OrderDetailPage = {
     async loadReservation() {
       try {
         const result = await this.$api("/campaign/reservations/" + encodeURIComponent(this.id), { quiet: true });
+        if (this.unmounted) return;
         this.reservation = result.data;
         if (["PROCESSING", "BOOKED"].indexOf(result.data.state) >= 0) {
           this.startReservationPolling();
@@ -886,7 +896,7 @@ const OrderDetailPage = {
       }
     },
     startReservationPolling() {
-      if (this.polling) return;
+      if (this.unmounted || this.polling) return;
       this.polling = true;
       this.pollAttempts = 0;
       this.pollTimer = window.setTimeout(() => this.pollReservation(), 3000);
@@ -903,6 +913,7 @@ const OrderDetailPage = {
       this.pollAttempts++;
       try {
         const result = await this.$api("/campaign/reservations/" + encodeURIComponent(this.id), { quiet: true });
+        if (!this.polling) return;
         this.reservation = result.data;
         if (["PROCESSING", "BOOKED"].indexOf(result.data.state) < 0) {
           this.stopPolling();
@@ -915,6 +926,8 @@ const OrderDetailPage = {
           return;
         }
       }
+      // 请求返回前组件可能已卸载；此时不再续约定时器。
+      if (!this.polling) return;
       if (this.pollAttempts >= 20) {
         this.stopPolling();
         return;

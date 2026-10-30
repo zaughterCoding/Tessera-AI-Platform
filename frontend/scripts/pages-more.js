@@ -1,5 +1,3 @@
-const Vue = window.Vue;
-
 const pageCommon = {
   data() {
     return { loading: false, error: null };
