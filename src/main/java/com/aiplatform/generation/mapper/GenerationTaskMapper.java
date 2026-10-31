@@ -27,4 +27,16 @@ public interface GenerationTaskMapper extends BaseMapper<GenerationTask> {
   int insertHandoff(@Param("taskId") long taskId);
 
   List<Long> selectMediaIds(@Param("taskId") long taskId);
+
+  int updateStateIn(@Param("taskId") long taskId, @Param("state") String state,
+      @Param("note") String note, @Param("states") List<String> states);
+
+  int updateStateUnlessFinal(@Param("taskId") long taskId, @Param("state") String state,
+      @Param("note") String note);
+
+  int countByState(@Param("state") String state);
+
+  /** 管理查询按状态过滤；只读，不参与调度或账务。 */
+  List<GenerationTask> selectRecentTasks(@Param("state") String state,
+      @Param("limit") int limit, @Param("offset") int offset);
 }

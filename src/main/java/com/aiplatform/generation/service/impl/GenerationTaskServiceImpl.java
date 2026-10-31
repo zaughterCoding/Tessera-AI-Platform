@@ -10,14 +10,23 @@ import com.aiplatform.entitlement.entity.EntitlementGrant;
 import com.aiplatform.entitlement.mapper.EntitlementGrantMapper;
 import com.aiplatform.entitlement.service.IEntitlementReservationService;
 import com.aiplatform.generation.GenerationRequestDigest;
+import com.aiplatform.generation.GenerationTaskState;
+import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.dto.GenerationStatusDTO;
 import com.aiplatform.generation.dto.GenerationTaskDTO;
 import com.aiplatform.generation.dto.GenerationTaskForm;
 import com.aiplatform.generation.entity.GenerationRequest;
 import com.aiplatform.generation.entity.GenerationTask;
+import com.aiplatform.generation.entity.ProviderAttempt;
+import com.aiplatform.generation.entity.ProviderChannel;
+import com.aiplatform.generation.mapper.GenerationQuotaMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
+import com.aiplatform.generation.mapper.ProviderAttemptMapper;
+import com.aiplatform.generation.mapper.ProviderChannelMapper;
 import com.aiplatform.generation.service.IGenerationTaskService;
 import com.aiplatform.media.service.IMediaService;
+import com.aiplatform.messaging.BusinessEventType;
+import com.aiplatform.messaging.service.IBusinessOutboxService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -27,11 +36,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import org.springframework.beans.factory.annotation.Value;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-/** 提交事务只完成受理与冻结；不调用上游、不产生结果，也不提前结算。 */
+/** 提交事务只完成受理、冻结与队列占用；调度在提交后独立进行。 */
 @Service
 public class GenerationTaskServiceImpl implements IGenerationTaskService {
   private static final int APPLICATION_PUBLISHED = 1;
@@ -40,18 +50,26 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
   private static final int MAX_MEDIA = 4;
   private static final int MAX_PAGE_SIZE = 20;
   private static final int FROZEN_UNITS = 1;
-  private static final String QUEUED = "QUEUED";
   private static final String ACCOUNTING_FROZEN = "FROZEN";
   private static final String ENABLED_NOTICE =
-      "任务提交已开启；提交后只完成排队与次数冻结，AI 执行尚未开始。";
+      "任务提交与模拟渠道调度已开启；上游执行与结果交付分阶段进行。";
   private static final String DISABLED_NOTICE =
       "当前环境未开启任务提交；既有权益与任务仍可查询。";
+  private static final String SCHEDULING_PAUSED_NOTICE =
+      "任务提交已开启，但调度当前暂停；任务会排队等待，次数保持冻结。";
+  private static final String SIMULATOR_PAUSED_NOTICE =
+      "任务提交已开启，但模拟渠道当前关闭；任务会排队等待，次数保持冻结。";
+
   private final GenerationTaskMapper tasks;
   private final AiApplicationMapper applications;
   private final EntitlementGrantMapper grants;
   private final IMediaService media;
   private final IEntitlementReservationService reservations;
-  private final boolean submitEnabled;
+  private final ProviderAttemptMapper attempts;
+  private final ProviderChannelMapper channels;
+  private final GenerationQuotaMapper quotas;
+  private final IBusinessOutboxService outbox;
+  private final GenerationProperties properties;
 
   public GenerationTaskServiceImpl(
       GenerationTaskMapper tasks,
@@ -59,19 +77,42 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
       EntitlementGrantMapper grants,
       IMediaService media,
       IEntitlementReservationService reservations,
-      @Value("${app.generation.submit-enabled:false}") boolean submitEnabled) {
+      ProviderAttemptMapper attempts,
+      ProviderChannelMapper channels,
+      GenerationQuotaMapper quotas,
+      IBusinessOutboxService outbox,
+      GenerationProperties properties) {
     this.tasks = tasks;
     this.applications = applications;
     this.grants = grants;
     this.media = media;
     this.reservations = reservations;
-    this.submitEnabled = submitEnabled;
+    this.attempts = attempts;
+    this.channels = channels;
+    this.quotas = quotas;
+    this.outbox = outbox;
+    this.properties = properties;
   }
 
   @Override
   public GenerationStatusDTO status() {
-    return new GenerationStatusDTO(submitEnabled, false,
-        submitEnabled ? ENABLED_NOTICE : DISABLED_NOTICE);
+    ProviderChannel channel = channels.selectByCode(properties.getChannelCode());
+    boolean simulated = channel != null && "SIMULATED".equals(channel.getKind());
+    boolean scheduling = properties.isSchedulingEnabled() && properties.isSimulatorEnabled();
+    String notice;
+    if (!properties.isSubmitEnabled()) {
+      notice = DISABLED_NOTICE;
+    } else if (!properties.isSchedulingEnabled()) {
+      notice = SCHEDULING_PAUSED_NOTICE;
+    } else if (!properties.isSimulatorEnabled()) {
+      notice = SIMULATOR_PAUSED_NOTICE;
+    } else {
+      notice = ENABLED_NOTICE;
+    }
+    return new GenerationStatusDTO(properties.isSubmitEnabled(),
+        properties.isSchedulingEnabled(), scheduling, simulated,
+        channel == null ? null : channel.getCode(),
+        channel == null ? null : channel.getDisplayName(), notice);
   }
 
   @Override
@@ -91,7 +132,7 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     if (request.getTaskId() != null) {
       return detail(userId, request.getTaskId());
     }
-    if (!submitEnabled) {
+    if (!properties.isSubmitEnabled()) {
       throw new ApiException(ErrorCode.SUBMISSION_DISABLED);
     }
     Prepared prepared = prepare(form);
@@ -103,14 +144,17 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     // 素材先锁后选包：删除与提交在同一行锁上串行，已受理的输入不会留下悬空引用。
     media.lockOwnedAssets(userId, prepared.mediaIds());
     EntitlementGrant grant = reservations.lockGrantForSubmission(userId, prepared.spec());
+    // 队列占用与用户活动任务上限都使用条件更新；任一步失败都会回滚请求、权益与素材锁。
+    reserveCapacity(userId);
     GenerationTask task = task(userId, request, digest, prepared, grant);
     tasks.insertTask(task);
     reservations.freezeForTask(grant, task.getId(), FROZEN_UNITS);
     if (!prepared.mediaIds().isEmpty()) {
       tasks.insertTaskMedia(task.getId(), prepared.mediaIds());
     }
-    // 交接责任随任务同事务登记；本阶段没有消费者，由 N03 按任务身份接管。
+    // 交接责任与唤醒消息同事务登记；消息只唤醒调度，执行仍由数据库任务决定。
     tasks.insertHandoff(task.getId());
+    outbox.appendEvent(BusinessEventType.GENERATION_DISPATCH.name(), task.getId(), userId);
     if (tasks.bindRequestTask(request.getId(), task.getId()) != 1) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
@@ -118,7 +162,23 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     if (stored == null) {
       throw new ApiException(ErrorCode.UNAVAILABLE);
     }
-    return GenerationTaskDTO.from(stored, grant, prepared.mediaIds());
+    return GenerationTaskDTO.from(stored, grant, prepared.mediaIds(),
+        attempts.selectByTaskId(task.getId()),
+        channels.selectByCode(properties.getChannelCode()));
+  }
+
+  private void reserveCapacity(long userId) {
+    ProviderChannel channel = channels.selectByCode(properties.getChannelCode());
+    if (channel == null) {
+      throw new ApiException(ErrorCode.UNAVAILABLE);
+    }
+    if (channels.reserveQueueSlot(properties.getChannelCode()) != 1) {
+      throw new ApiException(ErrorCode.QUEUE_FULL);
+    }
+    quotas.ensureRow(userId);
+    if (quotas.tryReserve(userId, properties.getUserActiveLimit()) != 1) {
+      throw new ApiException(ErrorCode.TOO_MANY_ACTIVE_TASKS);
+    }
   }
 
   @Override
@@ -128,20 +188,32 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     LambdaQueryWrapper<GenerationTask> query = new LambdaQueryWrapper<>();
     query.eq(GenerationTask::getUserId, userId).orderByDesc(GenerationTask::getId);
     IPage<GenerationTask> result = tasks.selectPage(new Page<>(pageNo, pageSize), query);
-    Map<Long, EntitlementGrant> byId = new HashMap<>();
+    Map<Long, EntitlementGrant> grantsById = new HashMap<>();
     List<Long> grantIds = new ArrayList<>();
+    List<Long> taskIds = new ArrayList<>();
     for (GenerationTask task : result.getRecords()) {
       grantIds.add(task.getGrantId());
+      taskIds.add(task.getId());
     }
     if (!grantIds.isEmpty()) {
       for (EntitlementGrant grant : grants.selectBatchIds(grantIds)) {
-        byId.put(grant.getId(), grant);
+        grantsById.put(grant.getId(), grant);
       }
     }
+    Map<Long, ProviderAttempt> attemptsByTask = taskIds.isEmpty()
+        ? Collections.emptyMap()
+        : attempts.selectByTaskIds(taskIds).stream()
+            .collect(Collectors.toMap(ProviderAttempt::getTaskId, Function.identity(),
+                (left, right) -> left));
+    Map<Long, ProviderChannel> channelsById = channelMap(attemptsByTask.values());
+    ProviderChannel fallbackChannel = channels.selectByCode(properties.getChannelCode());
     List<GenerationTaskDTO> views = new ArrayList<>();
     for (GenerationTask task : result.getRecords()) {
-      views.add(GenerationTaskDTO.from(task, byId.get(task.getGrantId()),
-          Collections.<Long>emptyList()));
+      ProviderAttempt attempt = attemptsByTask.get(task.getId());
+      ProviderChannel channel = attempt == null ? fallbackChannel
+          : channelsById.getOrDefault(attempt.getChannelId(), fallbackChannel);
+      views.add(GenerationTaskDTO.from(task, grantsById.get(task.getGrantId()),
+          Collections.<Long>emptyList(), attempt, channel));
     }
     return Result.ok(views, result.getTotal());
   }
@@ -152,8 +224,26 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     if (task == null || !Objects.equals(task.getUserId(), userId)) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
+    ProviderAttempt attempt = attempts.selectByTaskId(taskId);
+    ProviderChannel channel = attempt == null ? channels.selectByCode(properties.getChannelCode())
+        : channels.selectById(attempt.getChannelId());
     return GenerationTaskDTO.from(task, grants.selectById(task.getGrantId()),
-        tasks.selectMediaIds(taskId));
+        tasks.selectMediaIds(taskId), attempt, channel);
+  }
+
+  private Map<Long, ProviderChannel> channelMap(Iterable<ProviderAttempt> attemptRows) {
+    List<Long> ids = new ArrayList<>();
+    for (ProviderAttempt attempt : attemptRows) {
+      ids.add(attempt.getChannelId());
+    }
+    if (ids.isEmpty()) {
+      return Collections.emptyMap();
+    }
+    Map<Long, ProviderChannel> byId = new HashMap<>();
+    for (ProviderChannel channel : channels.selectBatchIds(ids)) {
+      byId.put(channel.getId(), channel);
+    }
+    return byId;
   }
 
   private Prepared prepare(GenerationTaskForm form) {
@@ -200,8 +290,9 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     task.setNegativePrompt(prepared.negative());
     task.setGrantId(grant.getId());
     task.setFrozenUnits(FROZEN_UNITS);
-    task.setState(QUEUED);
+    task.setState(GenerationTaskState.QUEUED);
     task.setAccountingState(ACCOUNTING_FROZEN);
+    task.setStateNote("");
     return task;
   }
 

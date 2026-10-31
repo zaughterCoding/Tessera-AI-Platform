@@ -24,8 +24,12 @@ $taskHttpPort = @{ dev = 18080; test = 18081; load = 18082 }[$Environment]
 $taskProfile = @{ dev = 'local'; test = 'test'; load = 'load' }[$Environment]
 $taskDemoEnabled = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskMockPayment = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
-# 调度尚未接入：本地/测试显式开启提交用于验收，压力环境保持关闭。
+# 本地/测试开启提交与执行用于验收；压力环境保持关闭，避免模拟流量干扰。
 $taskGenerationSubmit = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
+$taskGenerationExecution = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
+# 演示故障控制只在本地/测试开放，正式部署默认关闭。
+$taskGenerationFaultControl = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
+$taskGenerationCallbackSecret = New-LocalSecret
 $taskCanalSlaveId = @{ dev = '12341'; test = '12342'; load = '12343' }[$Environment]
 $taskKafkaClusterId = @{
     dev = 'AQrkGJkvTTCsTVgElHWZDg'
@@ -65,6 +69,34 @@ $taskValues = @(
     "APP_ENTITLEMENT_EXPIRY_SCAN_MS=60000"
     "APP_ENTITLEMENT_EXPIRY_SCAN_BATCH=100"
     "APP_GENERATION_SUBMIT_ENABLED=$taskGenerationSubmit"
+    "APP_GENERATION_SCHEDULING_ENABLED=$taskGenerationExecution"
+    "APP_GENERATION_POLLING_ENABLED=$taskGenerationExecution"
+    "APP_GENERATION_SIMULATOR_ENABLED=$taskGenerationExecution"
+    "APP_GENERATION_SIMULATOR_FAULT_CONTROL_ENABLED=$taskGenerationFaultControl"
+    "APP_GENERATION_SIMULATOR_CALLBACK_ENABLED=false"
+    "APP_GENERATION_SIMULATOR_CALLBACK_URL="
+    "APP_GENERATION_CHANNEL_CODE=simulated-primary"
+    "APP_GENERATION_CHANNEL_MAX_IN_FLIGHT=4"
+    "APP_GENERATION_CHANNEL_QUEUE_CAPACITY=200"
+    "APP_GENERATION_QUEUE_TIMEOUT_SECONDS=1800"
+    "APP_GENERATION_USER_ACTIVE_LIMIT=5"
+    "APP_GENERATION_DISPATCH_BATCH=20"
+    "APP_GENERATION_POLL_BATCH=20"
+    "APP_GENERATION_DISPATCH_INTERVAL_MS=2000"
+    "APP_GENERATION_POLL_SCAN_INTERVAL_MS=2000"
+    "APP_GENERATION_LEASE_SECONDS=30"
+    "APP_GENERATION_SUBMIT_MAX_ATTEMPTS=5"
+    "APP_GENERATION_QUERY_MAX_ATTEMPTS=8"
+    "APP_GENERATION_RETRY_BASE_SECONDS=2"
+    "APP_GENERATION_RETRY_MAX_SECONDS=60"
+    "APP_GENERATION_POLL_INTERVAL_SECONDS=2"
+    "APP_GENERATION_REVIEW_POLL_SECONDS=300"
+    "APP_GENERATION_SIMULATOR_DEFAULT_DURATION_MS=3000"
+    "APP_GENERATION_SIMULATOR_QUERY_FAILURES=3"
+    "APP_GENERATION_SIMULATOR_CALLBACK_TIMEOUT_MS=2000"
+    "APP_GENERATION_CALLBACK_MAX_SKEW_SECONDS=300"
+    "APP_GENERATION_CALLBACK_MAX_BYTES=8192"
+    "APP_GENERATION_CALLBACK_SECRET=$taskGenerationCallbackSecret"
     "APP_ANALYTICS_ENABLED=true"
     "APP_ANALYTICS_TOPIC=ai-platform-$Environment-analytics"
     "APP_ANALYTICS_GROUP=ai-platform-$Environment-analytics"

@@ -43,12 +43,42 @@
   </insert>
 
   <insert id="insertHandoff">
-    INSERT INTO generation_task_handoff(task_id, state) VALUES (#{taskId}, 'PENDING')
+    INSERT INTO generation_task_handoff(task_id, state, next_attempt_at)
+    VALUES (#{taskId}, 'PENDING', NOW(3))
   </insert>
 
   <select id="selectMediaIds" resultType="long">
     SELECT media_id FROM generation_task_media
     WHERE task_id = #{taskId}
     ORDER BY position
+  </select>
+
+  <update id="updateStateIn">
+    UPDATE generation_task SET state = #{state}, state_note = #{note}
+    WHERE id = #{taskId} AND state IN
+    <foreach collection="states" item="allowed" open="(" separator="," close=")">
+      #{allowed}
+    </foreach>
+  </update>
+
+  <!-- 终态事实不能被晚到的运行态覆盖；REVIEW 仍可由回调或查询推进到终态。 -->
+  <update id="updateStateUnlessFinal">
+    UPDATE generation_task SET state = #{state}, state_note = #{note}
+    WHERE id = #{taskId}
+      AND state NOT IN ('RESULT_PENDING','FAILED_PENDING_FOLLOWUP',
+        'CANCELLED_PENDING_FOLLOWUP','QUEUE_TIMEOUT')
+  </update>
+
+  <select id="countByState" resultType="int">
+    SELECT COUNT(*) FROM generation_task WHERE state = #{state}
+  </select>
+
+  <select id="selectRecentTasks" resultType="com.aiplatform.generation.entity.GenerationTask">
+    SELECT * FROM generation_task
+    <where>
+      <if test="state != null">state = #{state}</if>
+    </where>
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
   </select>
 </mapper>

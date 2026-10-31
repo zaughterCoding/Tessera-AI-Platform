@@ -1,0 +1,185 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.generation.mapper.ProviderAttemptMapper">
+  <insert id="insertAttempt" useGeneratedKeys="true" keyProperty="attempt.id">
+    INSERT INTO provider_attempt(
+      task_id, channel_id, attempt_key, state, owner, lease_until, generation,
+      submit_attempts, query_attempts, next_attempt_at
+    ) VALUES (
+      #{attempt.taskId}, #{attempt.channelId}, #{attempt.attemptKey}, #{attempt.state},
+      #{attempt.owner},
+      DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND),
+      #{attempt.generation}, 0, 0, NOW(3)
+    )
+  </insert>
+
+  <select id="selectByTaskId" resultType="com.aiplatform.generation.entity.ProviderAttempt">
+    SELECT * FROM provider_attempt WHERE task_id = #{taskId}
+  </select>
+
+  <select id="selectByTaskIds" resultType="com.aiplatform.generation.entity.ProviderAttempt">
+    SELECT * FROM provider_attempt WHERE task_id IN
+    <foreach collection="taskIds" item="taskId" open="(" separator="," close=")">
+      #{taskId}
+    </foreach>
+  </select>
+
+  <select id="selectByAttemptKey"
+      resultType="com.aiplatform.generation.entity.ProviderAttempt">
+    SELECT * FROM provider_attempt WHERE attempt_key = #{attemptKey}
+  </select>
+
+  <select id="selectByAttemptKeyForUpdate"
+      resultType="com.aiplatform.generation.entity.ProviderAttempt">
+    SELECT * FROM provider_attempt WHERE attempt_key = #{attemptKey} FOR UPDATE
+  </select>
+
+  <select id="selectDueForPoll" resultType="com.aiplatform.generation.entity.ProviderAttempt">
+    SELECT * FROM provider_attempt
+    WHERE state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+      AND (next_attempt_at IS NULL OR next_attempt_at &lt;= NOW(3))
+      AND (lease_until IS NULL OR lease_until &lt; NOW(3))
+    ORDER BY id
+    LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <update id="claimForPoll">
+    UPDATE provider_attempt
+    SET owner = #{owner},
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND),
+        generation = generation + 1
+    WHERE id = #{id}
+      AND (lease_until IS NULL OR lease_until &lt; NOW(3))
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="confirmSubmit">
+    UPDATE provider_attempt
+    SET state = #{state},
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        submitted_at = COALESCE(submitted_at, NOW(3)),
+        last_contact_at = NOW(3),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{pollSeconds} SECOND),
+        owner = NULL, lease_until = NULL,
+        failure_code = NULL, failure_detail = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING')
+  </update>
+
+  <update id="markUncertain">
+    UPDATE provider_attempt
+    SET state = 'RECONCILING', submit_attempts = submit_attempts + 1,
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        owner = NULL, lease_until = NULL,
+        failure_code = #{code}, failure_detail = #{detail}
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING')
+  </update>
+
+  <update id="applyActive">
+    UPDATE provider_attempt
+    SET state = #{state},
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        query_attempts = 0,
+        last_contact_at = NOW(3),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{nextSeconds} SECOND),
+        owner = NULL, lease_until = NULL,
+        failure_code = NULL, failure_detail = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="applyTerminalWithLease">
+    UPDATE provider_attempt
+    SET state = #{state}, terminal_at = NOW(3), next_attempt_at = NULL,
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        result_ref = #{resultRef}, result_digest = #{resultDigest},
+        failure_code = #{failureCode}, failure_detail = #{failureDetail},
+        last_contact_at = NOW(3),
+        owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="markReview">
+    UPDATE provider_attempt
+    SET state = 'REVIEW',
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{nextSeconds} SECOND),
+        failure_detail = #{error}, owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="recordResubmit">
+    UPDATE provider_attempt
+    SET state = #{state},
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        submitted_at = COALESCE(submitted_at, NOW(3)),
+        submit_attempts = submit_attempts + 1,
+        last_contact_at = NOW(3),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{nextSeconds} SECOND),
+        owner = NULL, lease_until = NULL,
+        failure_code = NULL, failure_detail = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMITTING','RECONCILING','REVIEW')
+  </update>
+
+  <update id="recordQueryFailure">
+    UPDATE provider_attempt
+    SET query_attempts = query_attempts + 1,
+        state = IF(#{exhausted}, 'REVIEW', state),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        failure_detail = #{error}, owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="applyCallbackAccepted">
+    UPDATE provider_attempt
+    SET state = 'ACCEPTED',
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        last_contact_at = NOW(3),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{nextSeconds} SECOND)
+    WHERE id = #{id}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','REVIEW')
+  </update>
+
+  <update id="applyCallbackRunning">
+    UPDATE provider_attempt
+    SET state = 'RUNNING',
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        last_contact_at = NOW(3),
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{nextSeconds} SECOND)
+    WHERE id = #{id}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="applyCallbackTerminal">
+    UPDATE provider_attempt
+    SET state = #{state}, terminal_at = NOW(3), next_attempt_at = NULL,
+        provider_task_id = COALESCE(#{providerTaskId}, provider_task_id),
+        result_ref = #{resultRef}, result_digest = #{resultDigest},
+        failure_code = #{failureCode}, failure_detail = #{failureDetail},
+        last_contact_at = NOW(3),
+        owner = NULL, lease_until = NULL
+    WHERE id = #{id}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <update id="markReconcileNow">
+    UPDATE provider_attempt
+    SET next_attempt_at = NOW(3), owner = NULL, lease_until = NULL
+    WHERE id = #{id}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+  </update>
+
+  <select id="countByState" resultType="int">
+    SELECT COUNT(*) FROM provider_attempt WHERE state = #{state}
+  </select>
+
+  <select id="selectRecent" resultType="com.aiplatform.generation.entity.ProviderAttempt">
+    SELECT * FROM provider_attempt ORDER BY id DESC LIMIT #{limit}
+  </select>
+</mapper>

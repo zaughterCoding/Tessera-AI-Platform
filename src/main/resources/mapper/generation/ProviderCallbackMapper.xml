@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.generation.mapper.ProviderCallbackMapper">
+  <insert id="insertInboxIgnore">
+    INSERT IGNORE INTO provider_callback_inbox(
+      channel_id, event_key, event_type, attempt_id, payload_digest, payload_size, outcome
+    ) VALUES (
+      #{channelId}, #{eventKey}, #{eventType}, #{attemptId}, #{payloadDigest},
+      #{payloadSize}, #{outcome}
+    )
+  </insert>
+
+  <select id="selectInboxForUpdate"
+      resultType="com.aiplatform.generation.entity.ProviderCallbackEvent">
+    SELECT * FROM provider_callback_inbox
+    WHERE channel_id = #{channelId} AND event_key = #{eventKey}
+    FOR UPDATE
+  </select>
+
+  <update id="updateInboxOutcome">
+    UPDATE provider_callback_inbox SET outcome = #{outcome} WHERE id = #{id}
+  </update>
+
+  <insert id="insertConflictIgnore">
+    INSERT INTO provider_callback_conflict(
+      channel_id, event_key, existing_digest, incoming_digest, payload_size
+    ) VALUES (
+      #{channelId}, #{eventKey}, #{existingDigest}, #{incomingDigest}, #{payloadSize}
+    )
+    ON DUPLICATE KEY UPDATE channel_id = channel_id
+  </insert>
+
+  <select id="countConflicts" resultType="int">
+    SELECT COUNT(*) FROM provider_callback_conflict
+  </select>
+
+  <select id="selectRecent" resultType="com.aiplatform.generation.entity.ProviderCallbackEvent">
+    SELECT * FROM provider_callback_inbox ORDER BY id DESC LIMIT #{limit}
+  </select>
+</mapper>

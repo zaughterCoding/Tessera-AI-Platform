@@ -101,8 +101,36 @@ app:
     expiry-scan-ms: ${APP_ENTITLEMENT_EXPIRY_SCAN_MS:60000}
     expiry-scan-batch: ${APP_ENTITLEMENT_EXPIRY_SCAN_BATCH:100}
   generation:
-    # 调度与上游尚未接入时默认关闭新提交；本人任务与权益查询不受影响。
+    # 调度、轮询与模拟渠道默认受控启用；正式环境可显式关闭而不丢失已受理任务。
     submit-enabled: ${APP_GENERATION_SUBMIT_ENABLED:false}
+    scheduling-enabled: ${APP_GENERATION_SCHEDULING_ENABLED:true}
+    polling-enabled: ${APP_GENERATION_POLLING_ENABLED:true}
+    simulator-enabled: ${APP_GENERATION_SIMULATOR_ENABLED:true}
+    simulator-fault-control-enabled: ${APP_GENERATION_SIMULATOR_FAULT_CONTROL_ENABLED:false}
+    simulator-callback-enabled: ${APP_GENERATION_SIMULATOR_CALLBACK_ENABLED:false}
+    simulator-callback-url: ${APP_GENERATION_SIMULATOR_CALLBACK_URL:}
+    channel-code: ${APP_GENERATION_CHANNEL_CODE:simulated-primary}
+    channel-max-in-flight: ${APP_GENERATION_CHANNEL_MAX_IN_FLIGHT:4}
+    channel-queue-capacity: ${APP_GENERATION_CHANNEL_QUEUE_CAPACITY:200}
+    queue-timeout-seconds: ${APP_GENERATION_QUEUE_TIMEOUT_SECONDS:1800}
+    user-active-limit: ${APP_GENERATION_USER_ACTIVE_LIMIT:5}
+    dispatch-batch: ${APP_GENERATION_DISPATCH_BATCH:20}
+    poll-batch: ${APP_GENERATION_POLL_BATCH:20}
+    dispatch-interval-ms: ${APP_GENERATION_DISPATCH_INTERVAL_MS:2000}
+    poll-scan-interval-ms: ${APP_GENERATION_POLL_SCAN_INTERVAL_MS:2000}
+    lease-seconds: ${APP_GENERATION_LEASE_SECONDS:30}
+    submit-max-attempts: ${APP_GENERATION_SUBMIT_MAX_ATTEMPTS:5}
+    query-max-attempts: ${APP_GENERATION_QUERY_MAX_ATTEMPTS:8}
+    retry-base-seconds: ${APP_GENERATION_RETRY_BASE_SECONDS:2}
+    retry-max-seconds: ${APP_GENERATION_RETRY_MAX_SECONDS:60}
+    poll-interval-seconds: ${APP_GENERATION_POLL_INTERVAL_SECONDS:2}
+    review-poll-seconds: ${APP_GENERATION_REVIEW_POLL_SECONDS:300}
+    simulator-default-duration-ms: ${APP_GENERATION_SIMULATOR_DEFAULT_DURATION_MS:3000}
+    simulator-query-failures: ${APP_GENERATION_SIMULATOR_QUERY_FAILURES:3}
+    simulator-callback-timeout-ms: ${APP_GENERATION_SIMULATOR_CALLBACK_TIMEOUT_MS:2000}
+    callback-max-skew-seconds: ${APP_GENERATION_CALLBACK_MAX_SKEW_SECONDS:300}
+    callback-max-bytes: ${APP_GENERATION_CALLBACK_MAX_BYTES:8192}
+    callback-secret: ${APP_GENERATION_CALLBACK_SECRET:}
   campaign:
     fulfillment-mode: ${APP_CAMPAIGN_FULFILLMENT_MODE:stream}
     consumer-enabled: ${APP_CAMPAIGN_CONSUMER_ENABLED:true}

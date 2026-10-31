@@ -578,7 +578,7 @@ const AppDetailPage = {
           },
         });
         this.$root.clearPurchaseKey(scope);
-        this.$root.notify("任务已受理，次数已冻结；AI 执行尚未开始。");
+        this.$root.notify("任务已受理，次数已冻结；将由模拟渠道执行，可在任务详情查看进展。");
         this.go("#/tasks/" + encodeURIComponent(result.data.id));
       } catch (failure) {
         this.generationError = failure;
@@ -641,7 +641,7 @@ const AppDetailPage = {
               {{ purchaseError.message }}
               <span v-if="purchaseError.requestId" class="muted">请求编号 {{ purchaseError.requestId }}</span>
             </notice-box>
-            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；任务提交只冻结一次权益次数，AI 执行与结算尚未开放。</notice-box>
+            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；任务提交只冻结一次权益次数，生成结果交付与结算尚未开放。</notice-box>
           </section>
 
           <section class="section">
@@ -697,7 +697,7 @@ const AppDetailPage = {
                   <span v-if="generationError.requestId" class="muted">请求编号 {{ generationError.requestId }}</span>
                 </notice-box>
                 <notice-box tone="info" title="当前阶段边界">
-                  提交成功后任务进入排队，权益包冻结 1 次；AI 执行尚未开始。页面不轮询不存在的进度，也不提供取消、释放、结算或结果下载。
+                  提交成功后任务进入排队，权益包冻结 1 次；调度器会把任务交给模拟渠道执行，页面不自动轮询，可在“我的任务”查看真实状态。不提供取消、释放、结算或结果下载。
                 </notice-box>
                 <div class="actions" style="margin-top:12px">
                   <button class="button" type="button" :disabled="submitting" @click="submitGeneration">
@@ -746,7 +746,7 @@ const AppDetailPage = {
             </dl>
             <div class="muted">行为数据来自真实 Kafka 聚合；未开启分析时不会伪造 0。</div>
           </div>
-          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；已受理任务只排队并冻结次数，AI 执行、结算、真实支付、退款与评论尚未开放。</notice-box>
+          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；已受理任务会进入调度并由模拟渠道执行；结果交付、结算、真实支付、退款与评论尚未开放。</notice-box>
         </aside>
       </div>
     </div>
@@ -1270,7 +1270,7 @@ const OrderDetailPage = {
           </div>
           <p v-if="order.status === 'UNPAID' && expired" class="muted">已超过支付截止时间，等待服务端关闭订单。</p>
           <div v-if="order.status === 'PAID'" style="margin-top:12px">
-            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；可在应用详情按固定规格提交任务并冻结次数，AI 执行、结算与结果交付尚未开放。</notice-box>
+            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；可在应用详情按固定规格提交任务并冻结次数，生成结果交付与结算尚未开放。</notice-box>
           </div>
           <div v-if="order.status === 'CANCELLED'" style="margin-top:12px">
             <notice-box tone="warn" title="已关闭">订单已关闭，未发生支付；如需再次购买请重新下单。</notice-box>

@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.generation.mapper.GenerationHandoffMapper">
+  <select id="selectDueHandoffs"
+      resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$HandoffRow">
+    SELECT h.id AS handoff_id, h.task_id, t.user_id, t.application_id,
+           h.state AS handoff_state, t.state AS task_state, h.generation, h.attempts,
+           h.claim_owner, h.lease_until, h.enqueued_at, h.next_attempt_at, h.last_error
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    WHERE (h.state IN ('PENDING','RETRY')
+        AND (h.next_attempt_at IS NULL OR h.next_attempt_at &lt;= NOW(3)))
+       OR (h.state = 'CLAIMED' AND h.lease_until IS NOT NULL
+        AND h.lease_until &lt; NOW(3))
+    ORDER BY h.id
+    LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <update id="claimHandoff">
+    UPDATE generation_task_handoff
+    SET state = 'CLAIMED', claim_owner = #{owner},
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND),
+        generation = generation + 1, attempts = attempts + 1,
+        next_attempt_at = NULL, last_error = NULL
+    WHERE id = #{id} AND state IN ('PENDING','RETRY')
+  </update>
+
+  <update id="completeClaimedHandoff">
+    UPDATE generation_task_handoff
+    SET state = 'COMPLETED', completed_at = NOW(3), completion_reason = #{reason},
+        lease_until = NULL, next_attempt_at = NULL, last_error = NULL
+    WHERE id = #{id} AND state = 'CLAIMED' AND generation = #{generation}
+  </update>
+
+  <update id="completeWaitingHandoff">
+    UPDATE generation_task_handoff
+    SET state = 'COMPLETED', completed_at = NOW(3), completion_reason = #{reason},
+        lease_until = NULL, next_attempt_at = NULL, last_error = NULL
+    WHERE id = #{id} AND state = #{state}
+  </update>
+
+  <update id="markRetry">
+    UPDATE generation_task_handoff
+    SET state = 'RETRY',
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        claim_owner = NULL, lease_until = NULL, last_error = #{error}
+    WHERE id = #{id} AND state = #{state}
+  </update>
+
+  <update id="clearExpiredClaim">
+    UPDATE generation_task_handoff
+    SET claim_owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND state = 'CLAIMED' AND generation = #{generation}
+  </update>
+
+  <update id="wakeWaiting">
+    UPDATE generation_task_handoff SET next_attempt_at = NOW(3)
+    WHERE id = #{id} AND state IN ('PENDING','RETRY')
+  </update>
+
+  <select id="countByState" resultType="int">
+    SELECT COUNT(*) FROM generation_task_handoff WHERE state = #{state}
+  </select>
+
+  <select id="selectByTaskId"
+      resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$HandoffRow">
+    SELECT h.id AS handoff_id, h.task_id, t.user_id, t.application_id,
+           h.state AS handoff_state, t.state AS task_state, h.generation, h.attempts,
+           h.claim_owner, h.lease_until, h.enqueued_at, h.next_attempt_at, h.last_error
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    WHERE h.task_id = #{taskId}
+  </select>
+
+  <select id="selectRecent"
+      resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$HandoffRow">
+    SELECT h.id AS handoff_id, h.task_id, t.user_id, t.application_id,
+           h.state AS handoff_state, t.state AS task_state, h.generation, h.attempts,
+           h.claim_owner, h.lease_until, h.enqueued_at, h.next_attempt_at, h.last_error
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    ORDER BY h.id DESC
+    LIMIT #{limit}
+  </select>
+</mapper>

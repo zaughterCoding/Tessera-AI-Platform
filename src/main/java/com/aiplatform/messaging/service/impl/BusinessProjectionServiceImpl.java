@@ -14,6 +14,9 @@ import com.aiplatform.campaign.service.ICampaignRedisService;
 import com.aiplatform.catalog.mapper.UsageProductMapper;
 import com.aiplatform.community.service.IFeedService;
 import com.aiplatform.entitlement.service.IEntitlementGrantService;
+import com.aiplatform.generation.GenerationDispatchScheduler;
+import com.aiplatform.generation.entity.GenerationTask;
+import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.media.service.IMediaService;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.ProjectionResult;
@@ -45,6 +48,8 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
   private final BusinessOutboxMapper outbox;
   private final IAnalyticsJournalService analytics;
   private final IEntitlementGrantService entitlements;
+  private final GenerationTaskMapper generationTasks;
+  private final GenerationDispatchScheduler dispatchScheduler;
   private final String prefix;
   private final boolean outboxMode;
 
@@ -62,6 +67,8 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
       BusinessOutboxMapper outbox,
       IAnalyticsJournalService analytics,
       IEntitlementGrantService entitlements,
+      GenerationTaskMapper generationTasks,
+      GenerationDispatchScheduler dispatchScheduler,
       @Value("${app.redis.key-prefix}") String prefix,
       @Value("${app.campaign.fulfillment-mode:stream}") String campaignMode) {
     this.cache = cache;
@@ -77,6 +84,8 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     this.outbox = outbox;
     this.analytics = analytics;
     this.entitlements = entitlements;
+    this.generationTasks = generationTasks;
+    this.dispatchScheduler = dispatchScheduler;
     this.prefix = prefix;
     this.outboxMode = "outbox".equals(campaignMode);
   }
@@ -123,9 +132,21 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
       case ENTITLEMENT_GRANT:
         entitlements.grantForTask(task);
         return ProjectionResult.complete();
+      case GENERATION_DISPATCH:
+        wakeGenerationDispatch(task);
+        return ProjectionResult.complete();
       default:
         throw new IllegalArgumentException("没有可用的投影处理器");
     }
+  }
+
+  /** 消息只核对任务身份并唤醒有界扫描；是否提交由数据库交接行、容量与开关决定。 */
+  private void wakeGenerationDispatch(BusinessOutboxTask task) {
+    GenerationTask generation = generationTasks.selectById(task.getAggregateId());
+    if (generation == null || !Objects.equals(generation.getUserId(), task.getUserId())) {
+      throw new IllegalArgumentException("调度事件与任务身份不一致");
+    }
+    dispatchScheduler.wake();
   }
 
   private void projectMediaDelete(BusinessOutboxTask task) {

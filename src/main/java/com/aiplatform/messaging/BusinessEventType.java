@@ -14,7 +14,8 @@ public enum BusinessEventType {
   CAMPAIGN_RETRY("campaign-retry"),
   MEDIA_DELETE("media-lifecycle"),
   CREATION_PUBLISH("community-feed"),
-  ENTITLEMENT_GRANT("entitlement-grants");
+  ENTITLEMENT_GRANT("entitlement-grants"),
+  GENERATION_DISPATCH("generation-dispatch");
 
   private final String consumerGroup;
 

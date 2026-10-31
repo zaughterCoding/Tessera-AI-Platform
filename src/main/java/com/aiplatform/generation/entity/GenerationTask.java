@@ -28,6 +28,7 @@ public class GenerationTask {
   private Integer frozenUnits;
   private String state;
   private String accountingState;
+  private String stateNote;
   private LocalDateTime createdAt;
   private LocalDateTime updatedAt;
 }

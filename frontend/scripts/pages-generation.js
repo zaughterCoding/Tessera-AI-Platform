@@ -1,8 +1,30 @@
 import { pageCommon } from "./pages-more.js";
 
-// 当前阶段只展示已受理与已冻结事实；没有进度轮询、取消、结算或结果入口。
+// 只展示服务端记录的调度事实；没有结果下载、取消、退款或结算入口。
 const TASK_STATE_LABELS = {
   QUEUED: "排队中",
+  DISPATCHING: "调度中",
+  SUBMITTED: "上游已受理",
+  RUNNING: "上游执行中",
+  RECONCILING: "对账中",
+  RESULT_PENDING: "待交付",
+  FAILED_PENDING_FOLLOWUP: "上游失败·待处理",
+  CANCELLED_PENDING_FOLLOWUP: "上游取消·待处理",
+  QUEUE_TIMEOUT: "排队超时·待处理",
+  REVIEW: "人工核对",
+};
+
+const STATE_BADGES = {
+  QUEUED: "processing",
+  DISPATCHING: "processing",
+  SUBMITTED: "processing",
+  RUNNING: "processing",
+  RECONCILING: "processing",
+  RESULT_PENDING: "success",
+  FAILED_PENDING_FOLLOWUP: "ended",
+  CANCELLED_PENDING_FOLLOWUP: "ended",
+  QUEUE_TIMEOUT: "ended",
+  REVIEW: "review",
 };
 
 const ACCOUNTING_LABELS = {
@@ -18,6 +40,10 @@ const LEDGER_TYPE_LABELS = {
 
 function taskStateLabel(state) {
   return TASK_STATE_LABELS[state] || state || "未知";
+}
+
+function stateBadge(state) {
+  return STATE_BADGES[state] || "unknown";
 }
 
 function accountingLabel(state) {
@@ -75,6 +101,7 @@ const TasksPage = {
       return "#/tasks/" + encodeURIComponent(item.id);
     },
     stateLabel: taskStateLabel,
+    stateBadge,
     accountingLabel,
   },
   computed: {
@@ -86,10 +113,13 @@ const TasksPage = {
     <div>
       <div class="section-head">
         <h2>我的任务</h2>
-        <span class="muted">共 {{ total }} 个；本页不轮询排队状态</span>
+        <span class="muted">共 {{ total }} 个；本页不自动轮询，可刷新查看进展</span>
       </div>
       <notice-box v-if="submitStatus && !submitStatus.submitEnabled" tone="warn" title="提交当前未开启">
         {{ submitStatus.notice }}已提交任务的次数冻结与查询不受影响。
+      </notice-box>
+      <notice-box v-else-if="submitStatus && !submitStatus.schedulingEnabled" tone="warn" title="调度当前暂停">
+        {{ submitStatus.notice }}
       </notice-box>
       <error-block v-if="error" :error="error" @retry="load"></error-block>
       <loading-block v-if="loading"></loading-block>
@@ -97,8 +127,9 @@ const TasksPage = {
         <div v-for="item in records" :key="item.id" class="order-row">
           <div>
             <div class="meta-line">
-              <status-badge status="queued" :label="stateLabel(item.state)"></status-badge>
+              <status-badge :status="stateBadge(item.state)" :label="stateLabel(item.state)"></status-badge>
               <status-badge status="frozen" :label="accountingLabel(item.accountingState)"></status-badge>
+              <span v-if="item.simulatedChannel" class="chip">模拟渠道</span>
               <span class="muted">任务号 {{ item.id }}</span>
             </div>
             <h3 style="margin:6px 0 2px">{{ item.applicationName }} · 版本 {{ item.applicationVersion }}</h3>
@@ -107,7 +138,7 @@ const TasksPage = {
               <span>冻结 {{ item.frozenUnits }} 次</span>
               <span>{{ $formatTime(item.createdAt) }}</span>
             </div>
-            <div class="muted">AI 执行尚未开始；当前不提供结果、取消或结算。</div>
+            <div class="muted">{{ item.executionNotice }}</div>
           </div>
           <a class="button ghost small" :href="taskLink(item)">查看详情</a>
         </div>
@@ -151,6 +182,7 @@ const TaskDetailPage = {
       return "#/entitlements/" + encodeURIComponent(this.task.grantId);
     },
     stateLabel: taskStateLabel,
+    stateBadge,
     accountingLabel,
   },
   template: `
@@ -161,8 +193,9 @@ const TaskDetailPage = {
       <div v-if="task" class="grid grid-2">
         <div class="card">
           <div class="meta-line">
-            <status-badge status="queued" :label="stateLabel(task.state)"></status-badge>
+            <status-badge :status="stateBadge(task.state)" :label="stateLabel(task.state)"></status-badge>
             <status-badge status="frozen" :label="accountingLabel(task.accountingState)"></status-badge>
+            <span v-if="task.simulatedChannel" class="chip">模拟渠道</span>
             <span class="muted">任务号 {{ task.id }}</span>
           </div>
           <h3 style="margin:10px 0 4px">{{ task.applicationName }}</h3>
@@ -170,6 +203,8 @@ const TaskDetailPage = {
             <dt>应用版本</dt><dd>{{ task.applicationVersion }}</dd>
             <dt>模型版本</dt><dd>{{ task.modelVersion }}</dd>
             <dt>输出规格</dt><dd>{{ task.imageSize }} · {{ task.outputCount }} 张</dd>
+            <dt>执行渠道</dt><dd>{{ task.channelDisplayName || '调度中' }}</dd>
+            <dt>上游尝试</dt><dd>{{ task.attemptState || '尚未创建' }}</dd>
             <dt>冻结次数</dt><dd>{{ task.frozenUnits }}</dd>
             <dt>提交时间</dt><dd>{{ $formatTime(task.createdAt) }}</dd>
           </dl>
@@ -266,7 +301,7 @@ const EntitlementsPage = {
           </div>
           <div class="card">
             <h3 style="margin-top:0">余额口径</h3>
-            <p class="muted">总次数 = 可用 + 冻结 + 已消费 + 已过期。冻结表示任务已受理但尚未结算；本阶段不执行 AI、不消费冻结次数。</p>
+            <p class="muted">总次数 = 可用 + 冻结 + 已消费 + 已过期。冻结表示任务已受理但尚未结算；上游执行与对账阶段不会提前消费或释放冻结次数。</p>
             <p class="muted">到期扫描只回收可用次数，不会改动已冻结次数；是否过期以真实查询结果为准。</p>
           </div>
         </div>
