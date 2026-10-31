@@ -40,11 +40,17 @@ public class EntitlementQueryServiceImpl implements IEntitlementQueryService {
   }
 
   @Override
-  public Result<List<EntitlementGrantDTO>> list(long userId, int page, int size) {
+  public Result<List<EntitlementGrantDTO>> list(
+      long userId, Long applicationId, int page, int size) {
     int pageNo = Math.max(1, page);
     int pageSize = Math.max(1, Math.min(size, MAX_PAGE_SIZE));
     LambdaQueryWrapper<EntitlementGrant> query = new LambdaQueryWrapper<>();
-    query.eq(EntitlementGrant::getUserId, userId).orderByDesc(EntitlementGrant::getId);
+    // 应用筛选只缩小本人范围，不开放客户端指定用户；省略参数时保持既有全账户语义。
+    query.eq(EntitlementGrant::getUserId, userId);
+    if (applicationId != null) {
+      query.eq(EntitlementGrant::getApplicationId, applicationId);
+    }
+    query.orderByDesc(EntitlementGrant::getId);
     IPage<EntitlementGrant> result = grants.selectPage(new Page<>(pageNo, pageSize), query);
     LocalDateTime now = grants.selectDatabaseNow();
     List<EntitlementGrantDTO> views = new ArrayList<>();

@@ -10,7 +10,13 @@ import java.util.Map;
 
 /** 本人只读查询；归属由服务端会话用户决定，查询绝不触发发放。 */
 public interface IEntitlementQueryService {
-  Result<List<EntitlementGrantDTO>> list(long userId, int page, int size);
+  /** 按本人查询权益包；applicationId 非空时只返回该应用，用户身份始终来自会话。 */
+  Result<List<EntitlementGrantDTO>> list(
+      long userId, Long applicationId, int page, int size);
+
+  default Result<List<EntitlementGrantDTO>> list(long userId, int page, int size) {
+    return list(userId, null, page, size);
+  }
 
   EntitlementGrantDTO detail(long userId, long grantId);
 

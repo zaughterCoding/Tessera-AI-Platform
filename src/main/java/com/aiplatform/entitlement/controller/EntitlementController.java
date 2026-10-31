@@ -32,8 +32,9 @@ public class EntitlementController {
   @GetMapping("/grants")
   public Result<List<EntitlementGrantDTO>> grants(
       @RequestParam(defaultValue = "1") int page,
-      @RequestParam(defaultValue = "10") int size) {
-    return entitlements.list(currentUserId(), page, size);
+      @RequestParam(defaultValue = "10") int size,
+      @RequestParam(required = false) @Positive Long applicationId) {
+    return entitlements.list(currentUserId(), applicationId, page, size);
   }
 
   @GetMapping("/grants/{id}")

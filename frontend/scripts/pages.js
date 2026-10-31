@@ -427,8 +427,7 @@ const AppDetailPage = {
       }
       if (this.$root.user) {
         try {
-          const grants = await this.$api("/entitlement/grants", { params: { size: 50 } });
-          this.grants = grants.data || [];
+          this.grants = await this.loadApplicationGrants();
           this.specOptions = this.buildSpecOptions();
           if (this.specOptions.length) this.generation.selected = this.specOptions[0].key;
         } catch (failure) {
@@ -443,28 +442,60 @@ const AppDetailPage = {
       }
       this.generationLoading = false;
     },
-    // 固定规格只从已到账权益包快照推导；页面不提供模型、张数或冻结次数的自选。
+    // 只取当前应用的权益并翻完全部分页，避免把全账户第一页当成当前应用的完整清单。
+    async loadApplicationGrants() {
+      const pageSize = 50;
+      const maxPages = 100;
+      const grants = [];
+      const seen = {};
+      let total = 0;
+      for (let page = 1; page <= maxPages; page += 1) {
+        const result = await this.$api("/entitlement/grants", {
+          params: { applicationId: this.id, page, size: pageSize },
+        });
+        const batch = result.data || [];
+        total = Number(result.total || 0);
+        batch.forEach((grant) => {
+          const identity = String(grant.id);
+          if (seen[identity]) return;
+          seen[identity] = true;
+          grants.push(grant);
+        });
+        if (!batch.length || grants.length >= total) return grants;
+      }
+      throw new Error("当前应用权益包过多，暂时无法准确汇总可用次数；请稍后重试。");
+    },
+    // 固定规格只从当前应用已到账权益包快照推导；同规格多包合计可用次数并标明包数。
     buildSpecOptions() {
+      const applicationId = String(this.id);
       const seen = {};
       const options = [];
       (this.grants || []).forEach((grant) => {
+        // 双保险：其他应用的权益不能生成可提交规格，也不能覆盖当前应用的可用次数。
+        if (String(grant.applicationId) !== applicationId) return;
         if (grant.status !== "ACTIVE" || Number(grant.availableCredits) <= 0) return;
         const key = [
+          applicationId,
           grant.applicationVersion,
           grant.modelVersion,
           grant.imageSize,
           grant.outputCount,
         ].join("|");
-        if (seen[key]) return;
-        seen[key] = true;
-        options.push({
+        if (seen[key]) {
+          seen[key].available += Number(grant.availableCredits);
+          seen[key].packages += 1;
+          return;
+        }
+        seen[key] = {
           key,
           applicationVersion: grant.applicationVersion,
           modelVersion: grant.modelVersion,
           imageSize: grant.imageSize,
           outputCount: grant.outputCount,
           available: Number(grant.availableCredits),
-        });
+          packages: 1,
+        };
+        options.push(seen[key]);
       });
       return options;
     },
@@ -535,7 +566,8 @@ const AppDetailPage = {
           method: "POST",
           body: {
             requestKey: key,
-            applicationId: Number(this.detail.id),
+            // 长整型应用 ID 必须原样传递；转 Number 会改变真实身份。
+            applicationId: this.id,
             applicationVersion: spec.applicationVersion,
             modelVersion: spec.modelVersion,
             imageSize: spec.imageSize,
@@ -625,16 +657,21 @@ const AppDetailPage = {
             </notice-box>
             <loading-block v-if="isLoggedIn && generationLoading" text="读取本人权益与素材…"></loading-block>
             <div v-else-if="isLoggedIn && generationEnabled" class="card">
-              <empty-block v-if="!specOptions.length" text="当前应用没有可用权益；购买或领取到账后可提交"></empty-block>
+              <notice-box v-if="!specOptions.length && generationError" tone="danger" title="权益读取未完成">
+                {{ generationMessage(generationError) }}
+                <span v-if="generationError.requestId" class="muted">请求编号 {{ generationError.requestId }}</span>
+              </notice-box>
+              <empty-block v-else-if="!specOptions.length" text="当前应用没有可用权益；购买或领取到账后可提交"></empty-block>
               <template v-else>
                 <label class="field">
-                  <span>固定规格（来自已到账权益包，模型与张数不可修改）</span>
+                  <span>固定规格（来自本应用已到账权益包，模型与张数不可修改）</span>
                   <select v-model="generation.selected">
                     <option v-for="spec in specOptions" :key="spec.key" :value="spec.key">
-                      版本 {{ spec.applicationVersion }} · {{ spec.modelVersion }} · {{ spec.imageSize }} · {{ spec.outputCount }} 张 · 可用 {{ spec.available }} 次
+                      版本 {{ spec.applicationVersion }} · {{ spec.modelVersion }} · {{ spec.imageSize }} · {{ spec.outputCount }} 张 · 可用 {{ spec.available }} 次{{ spec.packages > 1 ? '（' + spec.packages + ' 个权益包合计）' : '' }}
                     </option>
                   </select>
                 </label>
+                <p class="muted">可用次数为当前应用同规格有效权益包的合计；每次提交仍只从一个权益包冻结 1 个使用单位。</p>
                 <label class="field" style="margin-top:12px">
                   <span>提示词（必填，最多 2000 字符）</span>
                   <textarea v-model="generation.prompt" maxlength="2000" placeholder="描述希望生成的内容"></textarea>
