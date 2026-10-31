@@ -100,6 +100,9 @@ app:
     expiry-scan-enabled: ${APP_ENTITLEMENT_EXPIRY_SCAN_ENABLED:true}
     expiry-scan-ms: ${APP_ENTITLEMENT_EXPIRY_SCAN_MS:60000}
     expiry-scan-batch: ${APP_ENTITLEMENT_EXPIRY_SCAN_BATCH:100}
+  generation:
+    # 调度与上游尚未接入时默认关闭新提交；本人任务与权益查询不受影响。
+    submit-enabled: ${APP_GENERATION_SUBMIT_ENABLED:false}
   campaign:
     fulfillment-mode: ${APP_CAMPAIGN_FULFILLMENT_MODE:stream}
     consumer-enabled: ${APP_CAMPAIGN_CONSUMER_ENABLED:true}

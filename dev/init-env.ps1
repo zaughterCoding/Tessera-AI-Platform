@@ -24,6 +24,8 @@ $taskHttpPort = @{ dev = 18080; test = 18081; load = 18082 }[$Environment]
 $taskProfile = @{ dev = 'local'; test = 'test'; load = 'load' }[$Environment]
 $taskDemoEnabled = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskMockPayment = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
+# 调度尚未接入：本地/测试显式开启提交用于验收，压力环境保持关闭。
+$taskGenerationSubmit = @{ dev = 'true'; test = 'true'; load = 'false' }[$Environment]
 $taskCanalSlaveId = @{ dev = '12341'; test = '12342'; load = '12343' }[$Environment]
 $taskKafkaClusterId = @{
     dev = 'AQrkGJkvTTCsTVgElHWZDg'
@@ -62,6 +64,7 @@ $taskValues = @(
     "APP_ENTITLEMENT_EXPIRY_SCAN_ENABLED=true"
     "APP_ENTITLEMENT_EXPIRY_SCAN_MS=60000"
     "APP_ENTITLEMENT_EXPIRY_SCAN_BATCH=100"
+    "APP_GENERATION_SUBMIT_ENABLED=$taskGenerationSubmit"
     "APP_ANALYTICS_ENABLED=true"
     "APP_ANALYTICS_TOPIC=ai-platform-$Environment-analytics"
     "APP_ANALYTICS_GROUP=ai-platform-$Environment-analytics"

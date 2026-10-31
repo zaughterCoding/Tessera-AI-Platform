@@ -35,6 +35,50 @@
     SELECT * FROM entitlement_grant WHERE id = #{id} FOR UPDATE
   </select>
 
+  <select id="selectForUpdateNowait"
+      resultType="com.aiplatform.entitlement.entity.EntitlementGrant">
+    SELECT * FROM entitlement_grant WHERE id = #{id} FOR UPDATE NOWAIT
+  </select>
+
+  <!-- 只读候选按固定有效期与主键排序；真正使用时再单行加锁并复核全部条件。 -->
+  <select id="selectSubmissionCandidateIds" resultType="long">
+    SELECT id FROM entitlement_grant
+    WHERE user_id = #{userId}
+      AND status = 'ACTIVE'
+      AND effective_from &lt;= NOW(3)
+      AND expires_at &gt; NOW(3)
+      AND available_credits &gt;= 1
+      AND application_id = #{applicationId}
+      AND application_version = #{applicationVersion}
+      AND BINARY model_version = BINARY #{modelVersion}
+      AND BINARY image_size = BINARY #{imageSize}
+      AND output_count = #{outputCount}
+    ORDER BY expires_at, id
+    LIMIT #{limit}
+  </select>
+
+  <select id="countMatchingGrants" resultType="long">
+    SELECT COUNT(*) FROM entitlement_grant
+    WHERE user_id = #{userId}
+      AND application_id = #{applicationId}
+      AND application_version = #{applicationVersion}
+      AND BINARY model_version = BINARY #{modelVersion}
+      AND BINARY image_size = BINARY #{imageSize}
+      AND output_count = #{outputCount}
+  </select>
+
+  <!-- 可用转冻结是同一行条件更新；余额恒等式仍由表级 CHECK 复核。 -->
+  <update id="freezeAvailable">
+    UPDATE entitlement_grant
+    SET available_credits = available_credits - #{units},
+        frozen_credits = frozen_credits + #{units}
+    WHERE id = #{id}
+      AND status = 'ACTIVE'
+      AND effective_from &lt;= NOW(3)
+      AND expires_at &gt; NOW(3)
+      AND available_credits &gt;= #{units}
+  </update>
+
   <select id="selectDatabaseNow" resultType="java.time.LocalDateTime">
     SELECT NOW(3)
   </select>

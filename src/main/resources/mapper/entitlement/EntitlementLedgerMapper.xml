@@ -6,12 +6,13 @@
     INSERT INTO entitlement_ledger(
       grant_id, user_id, order_id, item_key, operation_key, operation_type,
       delta_total, delta_available, delta_frozen, delta_consumed, delta_expired,
-      total_after, available_after, frozen_after, consumed_after, expired_after, reason
+      total_after, available_after, frozen_after, consumed_after, expired_after, reason,
+      reference_type, reference_id
     ) VALUES (
       #{grantId}, #{userId}, #{orderId}, #{itemKey}, #{operationKey}, #{operationType},
       #{deltaTotal}, #{deltaAvailable}, #{deltaFrozen}, #{deltaConsumed}, #{deltaExpired},
       #{totalAfter}, #{availableAfter}, #{frozenAfter}, #{consumedAfter}, #{expiredAfter},
-      #{reason}
+      #{reason}, #{referenceType}, #{referenceId}
     )
   </insert>
 

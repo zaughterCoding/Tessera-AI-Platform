@@ -20,4 +20,9 @@ public final class EntitlementKeys {
     long epochMillis = expiresAt.toInstant(ZoneOffset.UTC).toEpochMilli();
     return "EXPIRE:" + grantId + ":" + epochMillis;
   }
+
+  /** 一个任务只冻结一次；任务身份就是稳定的业务操作键。 */
+  public static String freezeOperation(long taskId) {
+    return "FREEZE:task:" + taskId + ":" + EntitlementItems.CREDITS;
+  }
 }

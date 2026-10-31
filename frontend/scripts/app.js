@@ -38,6 +38,12 @@ import {
   MinePage,
   NotFoundPage,
 } from "./pages-more.js";
+import {
+  EntitlementDetailPage,
+  EntitlementsPage,
+  TaskDetailPage,
+  TasksPage,
+} from "./pages-generation.js";
 import { AdminPage } from "./admin.js";
 
 const { createApp, reactive } = window.Vue;
@@ -47,6 +53,8 @@ const ROUTE_TITLES = {
   apps: "AI 应用",
   campaigns: "限量活动",
   orders: "我的订单",
+  tasks: "我的任务",
+  entitlements: "我的权益",
   community: "作品社区",
   creations: "作品详情",
   create: "发布作品",
@@ -96,6 +104,10 @@ function resolvePage(route) {
       return second ? CampaignDetailPage : CampaignsPage;
     case "orders":
       return second ? OrderDetailPage : OrdersPage;
+    case "tasks":
+      return second ? TaskDetailPage : TasksPage;
+    case "entitlements":
+      return second ? EntitlementDetailPage : EntitlementsPage;
     case "community":
       return CommunityPage;
     case "creations":
@@ -117,7 +129,7 @@ function resolvePage(route) {
 
 function protectedPath(route) {
   const first = route.segments[0];
-  return ["orders", "media", "mine", "create", "admin"].indexOf(first) >= 0;
+  return ["orders", "tasks", "entitlements", "media", "mine", "create", "admin"].indexOf(first) >= 0;
 }
 
 // 路由状态在应用级共享：根实例与所有页面读取同一响应式对象，hash 变化时就地更新。
@@ -301,6 +313,8 @@ const app = createApp({
             <a class="avatar" href="#/mine" :title="user.nickName">{{ initial }}</a>
             <a href="#/mine">{{ user.nickName }}</a>
             <a href="#/orders">订单</a>
+            <a href="#/tasks">任务</a>
+            <a href="#/entitlements">权益</a>
             <a v-if="isAdmin" href="#/admin">运营台</a>
             <button class="button ghost small" type="button" @click="logout">退出</button>
           </template>
@@ -321,7 +335,7 @@ const app = createApp({
       </main>
 
       <footer class="site-footer">
-        当前版本提供应用浏览、使用包购买、限量活动、模拟支付、作品与素材管理；购买或领取完成后异步发放权益，是否到账、是否过期以真实查询结果为准，已支付不等于已到账；AI 生成任务、权益消费、真实支付、退款与评论尚未开放。
+        当前版本提供应用浏览、使用包购买、限量活动、模拟支付、作品与素材管理，以及固定规格提交、排队与次数冻结；购买或领取完成后异步发放权益，是否到账、是否过期以真实查询结果为准，已支付不等于已到账；AI 执行、结算、真实支付、退款与评论尚未开放。
       </footer>
 
       <div v-if="toast" class="toast" :class="toast.tone" role="status">{{ toast.text }}</div>

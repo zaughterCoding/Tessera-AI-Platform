@@ -337,10 +337,21 @@ const AppDetailPage = {
       activityError: null,
       buying: "",
       purchaseError: null,
+      generationStatus: null,
+      generationStatusError: null,
+      generationLoading: false,
+      generationError: null,
+      grants: [],
+      specOptions: [],
+      generation: { selected: "", prompt: "", negativePrompt: "", mediaIds: [] },
+      generationAssets: [],
+      generationAssetsError: null,
+      submitting: false,
     };
   },
   created() {
     this.load();
+    this.loadGeneration();
   },
   methods: {
     async load() {
@@ -406,6 +417,153 @@ const AppDetailPage = {
     offerLink(offer) {
       return "#/campaigns/" + encodeURIComponent(offer.id);
     },
+    async loadGeneration() {
+      this.generationLoading = true;
+      try {
+        const status = await this.$api("/generation/status");
+        this.generationStatus = status.data;
+      } catch (failure) {
+        this.generationStatusError = failure;
+      }
+      if (this.$root.user) {
+        try {
+          const grants = await this.$api("/entitlement/grants", { params: { size: 50 } });
+          this.grants = grants.data || [];
+          this.specOptions = this.buildSpecOptions();
+          if (this.specOptions.length) this.generation.selected = this.specOptions[0].key;
+        } catch (failure) {
+          this.generationError = failure;
+        }
+        try {
+          const assets = await this.$api("/media/mine", { params: { limit: 50, offset: 0 } });
+          this.generationAssets = (assets.data || []).filter((asset) => asset.state === "ACTIVE");
+        } catch (failure) {
+          this.generationAssetsError = failure;
+        }
+      }
+      this.generationLoading = false;
+    },
+    // 固定规格只从已到账权益包快照推导；页面不提供模型、张数或冻结次数的自选。
+    buildSpecOptions() {
+      const seen = {};
+      const options = [];
+      (this.grants || []).forEach((grant) => {
+        if (grant.status !== "ACTIVE" || Number(grant.availableCredits) <= 0) return;
+        const key = [
+          grant.applicationVersion,
+          grant.modelVersion,
+          grant.imageSize,
+          grant.outputCount,
+        ].join("|");
+        if (seen[key]) return;
+        seen[key] = true;
+        options.push({
+          key,
+          applicationVersion: grant.applicationVersion,
+          modelVersion: grant.modelVersion,
+          imageSize: grant.imageSize,
+          outputCount: grant.outputCount,
+          available: Number(grant.availableCredits),
+        });
+      });
+      return options;
+    },
+    toggleGenerationMedia(id) {
+      const index = this.generation.mediaIds.indexOf(id);
+      if (index >= 0) {
+        this.generation.mediaIds.splice(index, 1);
+        return;
+      }
+      if (this.generation.mediaIds.length >= 4) {
+        this.$root.notify("最多选择 4 个参考素材。", "error");
+        return;
+      }
+      this.generation.mediaIds.push(id);
+    },
+    // 同一业务请求的重试必须复用同一请求键；内容或规格变化后自然换新键。
+    generationScope() {
+      const spec = this.selectedSpec;
+      const signature = [
+        "generation",
+        String(this.id),
+        spec ? spec.applicationVersion : "",
+        spec ? spec.modelVersion : "",
+        spec ? spec.imageSize : "",
+        spec ? String(spec.outputCount) : "",
+        (this.generation.prompt || "").trim(),
+        (this.generation.negativePrompt || "").trim(),
+        this.generation.mediaIds.join(","),
+      ];
+      return "generation:" + JSON.stringify(signature);
+    },
+    generationMessage(failure) {
+      const code = failure && failure.code;
+      if (code === "REQUEST_CONFLICT") return "该请求键已用于不同的业务请求；请修改内容后重新提交。";
+      if (code === "INSUFFICIENT_CREDITS") return "当前规格没有可用的权益次数；请先购买或等待发放。";
+      if (code === "SPEC_MISMATCH") return "没有与所选应用、版本和固定规格匹配的权益包。";
+      if (code === "APPLICATION_UNAVAILABLE") return "该应用或版本当前不可提交，请返回应用列表重试。";
+      if (code === "SUBMISSION_BUSY") return "提交请求繁忙，请稍后重试；同一请求重试不会重复冻结。";
+      if (code === "SUBMISSION_DISABLED") return "当前环境未开启任务提交。";
+      if (code === "INVALID_REQUEST") return "请求参数不合法，请检查提示词、素材与所选规格。";
+      return (failure && failure.message) || "提交未完成";
+    },
+    async submitGeneration() {
+      if (!this.isLoggedIn) {
+        this.go(this.loginLink());
+        return;
+      }
+      const spec = this.selectedSpec;
+      const prompt = (this.generation.prompt || "").trim();
+      if (!spec) {
+        this.$root.notify("没有可用的固定规格权益包。", "error");
+        return;
+      }
+      if (!prompt) {
+        this.$root.notify("请填写提示词。", "error");
+        return;
+      }
+      if (!this.generationStatus || !this.generationStatus.submitEnabled) {
+        this.$root.notify("当前环境未开启任务提交。", "error");
+        return;
+      }
+      this.submitting = true;
+      this.generationError = null;
+      const scope = this.generationScope();
+      const key = this.$root.purchaseKey(scope);
+      try {
+        const result = await this.$api("/generation/tasks", {
+          method: "POST",
+          body: {
+            requestKey: key,
+            applicationId: Number(this.detail.id),
+            applicationVersion: spec.applicationVersion,
+            modelVersion: spec.modelVersion,
+            imageSize: spec.imageSize,
+            outputCount: spec.outputCount,
+            prompt,
+            negativePrompt: (this.generation.negativePrompt || "").trim(),
+            mediaIds: this.generation.mediaIds.slice(),
+          },
+        });
+        this.$root.clearPurchaseKey(scope);
+        this.$root.notify("任务已受理，次数已冻结；AI 执行尚未开始。");
+        this.go("#/tasks/" + encodeURIComponent(result.data.id));
+      } catch (failure) {
+        this.generationError = failure;
+        if (failure.status === 401) this.fail(failure);
+        else this.$root.notify(this.generationMessage(failure), "error");
+      } finally {
+        this.submitting = false;
+      }
+    },
+  },
+  computed: {
+    selectedSpec() {
+      return this.specOptions.find((spec) => spec.key === this.generation.selected) || null;
+    },
+    generationEnabled() {
+      return Boolean(this.generationStatus && this.generationStatus.submitEnabled);
+    },
   },
   template: `
     <div>
@@ -451,7 +609,67 @@ const AppDetailPage = {
               {{ purchaseError.message }}
               <span v-if="purchaseError.requestId" class="muted">请求编号 {{ purchaseError.requestId }}</span>
             </notice-box>
-            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；AI 生成任务与权益消费尚未开放。</notice-box>
+            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；任务提交只冻结一次权益次数，AI 执行与结算尚未开放。</notice-box>
+          </section>
+
+          <section class="section">
+            <div class="section-head"><h2>提交生成任务</h2><a href="#/tasks">我的任务</a></div>
+            <notice-box v-if="!isLoggedIn" tone="info" title="需要登录">
+              <a :href="loginLink()">登录</a>后可用本人已到账权益提交固定规格请求。
+            </notice-box>
+            <notice-box v-else-if="generationStatusError" tone="warn" title="提交状态未知">
+              暂时无法确认提交开关；请稍后重试。既有任务与权益仍可查询。
+            </notice-box>
+            <notice-box v-else-if="generationStatus && !generationStatus.submitEnabled" tone="warn" title="提交当前未开启">
+              {{ generationStatus.notice }}既有任务、冻结与权益仍可查询。
+            </notice-box>
+            <loading-block v-if="isLoggedIn && generationLoading" text="读取本人权益与素材…"></loading-block>
+            <div v-else-if="isLoggedIn && generationEnabled" class="card">
+              <empty-block v-if="!specOptions.length" text="当前应用没有可用权益；购买或领取到账后可提交"></empty-block>
+              <template v-else>
+                <label class="field">
+                  <span>固定规格（来自已到账权益包，模型与张数不可修改）</span>
+                  <select v-model="generation.selected">
+                    <option v-for="spec in specOptions" :key="spec.key" :value="spec.key">
+                      版本 {{ spec.applicationVersion }} · {{ spec.modelVersion }} · {{ spec.imageSize }} · {{ spec.outputCount }} 张 · 可用 {{ spec.available }} 次
+                    </option>
+                  </select>
+                </label>
+                <label class="field" style="margin-top:12px">
+                  <span>提示词（必填，最多 2000 字符）</span>
+                  <textarea v-model="generation.prompt" maxlength="2000" placeholder="描述希望生成的内容"></textarea>
+                </label>
+                <label class="field" style="margin-top:12px">
+                  <span>排除内容（可选，最多 1000 字符）</span>
+                  <textarea v-model="generation.negativePrompt" maxlength="1000" style="min-height:70px" placeholder="不希望出现的内容"></textarea>
+                </label>
+                <div v-if="generationAssets.length" style="margin-top:12px">
+                  <p class="muted">参考素材（本人有效素材，最多 4 个；素材保持私有，不会被公开）</p>
+                  <div class="grid grid-3">
+                    <button v-for="asset in generationAssets" :key="asset.id" type="button" class="app-card" :class="{ 'is-selected': generation.mediaIds.indexOf(asset.id) >= 0 }" style="cursor:pointer;text-align:left;padding:0" @click="toggleGenerationMedia(asset.id)">
+                      <app-image :src="asset.url" :alt="asset.originalName"></app-image>
+                      <div class="body"><div class="muted">{{ asset.originalName }}</div></div>
+                    </button>
+                  </div>
+                </div>
+                <notice-box v-if="generationAssetsError" tone="warn" title="素材未加载">
+                  暂时无法读取本人素材；可先不带素材提交。
+                </notice-box>
+                <notice-box v-if="generationError" tone="danger" title="提交未完成">
+                  {{ generationMessage(generationError) }}
+                  <span v-if="generationError.requestId" class="muted">请求编号 {{ generationError.requestId }}</span>
+                </notice-box>
+                <notice-box tone="info" title="当前阶段边界">
+                  提交成功后任务进入排队，权益包冻结 1 次；AI 执行尚未开始。页面不轮询不存在的进度，也不提供取消、释放、结算或结果下载。
+                </notice-box>
+                <div class="actions" style="margin-top:12px">
+                  <button class="button" type="button" :disabled="submitting" @click="submitGeneration">
+                    {{ submitting ? '提交中…' : '提交任务' }}
+                  </button>
+                  <span class="muted">网络失败后保留原请求键重试；成功回执只返回同一个任务，不会重复冻结。</span>
+                </div>
+              </template>
+            </div>
           </section>
 
           <section v-if="offers.length" class="section">
@@ -491,7 +709,7 @@ const AppDetailPage = {
             </dl>
             <div class="muted">行为数据来自真实 Kafka 聚合；未开启分析时不会伪造 0。</div>
           </div>
-          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；AI 生成任务、权益消费、真实支付、退款与评论尚未开放。</notice-box>
+          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；已受理任务只排队并冻结次数，AI 执行、结算、真实支付、退款与评论尚未开放。</notice-box>
         </aside>
       </div>
     </div>
@@ -1015,7 +1233,7 @@ const OrderDetailPage = {
           </div>
           <p v-if="order.status === 'UNPAID' && expired" class="muted">已超过支付截止时间，等待服务端关闭订单。</p>
           <div v-if="order.status === 'PAID'" style="margin-top:12px">
-            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；权益消费与 AI 生成任务尚未开放。</notice-box>
+            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；可在应用详情按固定规格提交任务并冻结次数，AI 执行、结算与结果交付尚未开放。</notice-box>
           </div>
           <div v-if="order.status === 'CANCELLED'" style="margin-top:12px">
             <notice-box tone="warn" title="已关闭">订单已关闭，未发生支付；如需再次购买请重新下单。</notice-box>

@@ -21,6 +21,8 @@ public class EntitlementLedgerDTO {
   private Integer consumedAfter;
   private Integer expiredAfter;
   private String reason;
+  private String referenceType;
+  private Long referenceId;
   private LocalDateTime createdAt;
 
   public static EntitlementLedgerDTO from(EntitlementLedger ledger) {
@@ -39,6 +41,8 @@ public class EntitlementLedgerDTO {
     view.setConsumedAfter(ledger.getConsumedAfter());
     view.setExpiredAfter(ledger.getExpiredAfter());
     view.setReason(ledger.getReason());
+    view.setReferenceType(ledger.getReferenceType());
+    view.setReferenceId(ledger.getReferenceId());
     view.setCreatedAt(ledger.getCreatedAt());
     return view;
   }

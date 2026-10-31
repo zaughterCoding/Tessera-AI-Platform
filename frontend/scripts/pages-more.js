@@ -771,6 +771,8 @@ const MinePage = {
           <div class="actions" style="margin-top:12px">
             <button class="button" type="button" :disabled="savingProfile" @click="saveProfile">保存昵称</button>
             <a class="button ghost" href="#/orders">我的订单</a>
+            <a class="button ghost" href="#/tasks">我的任务</a>
+            <a class="button ghost" href="#/entitlements">我的权益</a>
           </div>
           <p class="muted">用户 ID {{ $root.user.id }} · 角色 {{ ($root.user.roles || []).join(', ') }}</p>
         </div>

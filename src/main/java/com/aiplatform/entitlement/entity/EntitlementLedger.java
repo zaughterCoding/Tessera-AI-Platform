@@ -29,5 +29,7 @@ public class EntitlementLedger {
   private Integer consumedAfter;
   private Integer expiredAfter;
   private String reason;
+  private String referenceType = "";
+  private Long referenceId;
   private LocalDateTime createdAt;
 }

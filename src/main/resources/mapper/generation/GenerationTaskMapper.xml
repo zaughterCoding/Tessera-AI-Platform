@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.generation.mapper.GenerationTaskMapper">
+  <insert id="insertRequestIfAbsent">
+    INSERT INTO generation_request(user_id, request_key, request_digest)
+    VALUES (#{userId}, #{requestKey}, #{requestDigest})
+    ON DUPLICATE KEY UPDATE user_id = user_id
+  </insert>
+
+  <select id="selectRequestForUpdate"
+      resultType="com.aiplatform.generation.entity.GenerationRequest">
+    SELECT * FROM generation_request
+    WHERE user_id = #{userId} AND request_key = #{requestKey}
+    FOR UPDATE
+  </select>
+
+  <update id="bindRequestTask">
+    UPDATE generation_request SET task_id = #{taskId}
+    WHERE id = #{requestId} AND task_id IS NULL
+  </update>
+
+  <insert id="insertTask" useGeneratedKeys="true" keyProperty="task.id">
+    INSERT INTO generation_task(
+      user_id, request_id, request_key, request_digest,
+      application_id, application_name, application_version,
+      model_version, image_size, output_count, prompt, negative_prompt,
+      grant_id, frozen_units, state, accounting_state
+    ) VALUES (
+      #{task.userId}, #{task.requestId}, #{task.requestKey}, #{task.requestDigest},
+      #{task.applicationId}, #{task.applicationName}, #{task.applicationVersion},
+      #{task.modelVersion}, #{task.imageSize}, #{task.outputCount}, #{task.prompt},
+      #{task.negativePrompt}, #{task.grantId}, #{task.frozenUnits},
+      #{task.state}, #{task.accountingState}
+    )
+  </insert>
+
+  <insert id="insertTaskMedia">
+    INSERT INTO generation_task_media(task_id, media_id, position) VALUES
+    <foreach collection="mediaIds" item="mediaId" index="position" separator=",">
+      (#{taskId}, #{mediaId}, #{position})
+    </foreach>
+  </insert>
+
+  <insert id="insertHandoff">
+    INSERT INTO generation_task_handoff(task_id, state) VALUES (#{taskId}, 'PENDING')
+  </insert>
+
+  <select id="selectMediaIds" resultType="long">
+    SELECT media_id FROM generation_task_media
+    WHERE task_id = #{taskId}
+    ORDER BY position
+  </select>
+</mapper>

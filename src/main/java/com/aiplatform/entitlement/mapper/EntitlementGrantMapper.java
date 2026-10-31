@@ -16,6 +16,27 @@ public interface EntitlementGrantMapper extends BaseMapper<EntitlementGrant> {
 
   EntitlementGrant selectForUpdate(@Param("id") long id);
 
+  /** 选包时只锁定单个候选行；拿不到锁由调用方按繁忙处理，不误报余额不足。 */
+  EntitlementGrant selectForUpdateNowait(@Param("id") long id);
+
+  List<Long> selectSubmissionCandidateIds(@Param("userId") long userId,
+      @Param("applicationId") long applicationId,
+      @Param("applicationVersion") int applicationVersion,
+      @Param("modelVersion") String modelVersion,
+      @Param("imageSize") String imageSize,
+      @Param("outputCount") int outputCount,
+      @Param("limit") int limit);
+
+  /** 统计同规格权益包，用于区分“从未购买该规格”和“当前无可用次数”。 */
+  long countMatchingGrants(@Param("userId") long userId,
+      @Param("applicationId") long applicationId,
+      @Param("applicationVersion") int applicationVersion,
+      @Param("modelVersion") String modelVersion,
+      @Param("imageSize") String imageSize,
+      @Param("outputCount") int outputCount);
+
+  int freezeAvailable(@Param("id") long id, @Param("units") int units);
+
   LocalDateTime selectDatabaseNow();
 
   List<PurchaseOrder> selectPaidOrdersAfter(@Param("afterOrderId") long afterOrderId,

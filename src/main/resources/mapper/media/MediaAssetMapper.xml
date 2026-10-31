@@ -74,9 +74,10 @@
     WHERE user_id = #{userId} AND state IN ('PENDING','ACTIVE','DELETING')
   </select>
 
-  <!-- 任何发布（含未公开）都构成删除保护；公开读取另按 PUBLISHED 判断。 -->
+  <!-- 任何发布（含未公开）与已受理任务都构成删除保护；公开读取另按 PUBLISHED 判断。 -->
   <select id="countAllReferences" resultType="long">
-    SELECT COUNT(*) FROM creation_media WHERE media_id = #{mediaId}
+    SELECT (SELECT COUNT(*) FROM creation_media WHERE media_id = #{mediaId})
+      + (SELECT COUNT(*) FROM generation_task_media WHERE media_id = #{mediaId})
   </select>
 
   <select id="countPublicReferences" resultType="long">

@@ -89,6 +89,8 @@ $taskValues = @(
     "APP_ENTITLEMENT_EXPIRY_SCAN_ENABLED=true"
     "APP_ENTITLEMENT_EXPIRY_SCAN_MS=60000"
     "APP_ENTITLEMENT_EXPIRY_SCAN_BATCH=100"
+    # 调度与上游未接入前，正式发布默认不接受新任务提交。
+    "APP_GENERATION_SUBMIT_ENABLED=false"
     "APP_ANALYTICS_ENABLED=true"
     "APP_ANALYTICS_TOPIC=ai-platform-$Environment-analytics"
     "APP_ANALYTICS_GROUP=ai-platform-$Environment-analytics"
