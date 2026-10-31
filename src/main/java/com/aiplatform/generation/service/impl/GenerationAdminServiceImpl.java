@@ -5,6 +5,7 @@ import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderAttemptState;
 import com.aiplatform.generation.config.GenerationProperties;
+import com.aiplatform.generation.config.SimulatorFaultControlPolicy;
 import com.aiplatform.generation.dto.GenerationAdminOverviewDTO;
 import com.aiplatform.generation.dto.GenerationAdminSettingsDTO;
 import com.aiplatform.generation.dto.GenerationAdminTaskDTO;
@@ -72,11 +73,12 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
   private final ProviderCallbackMapper callbacks;
   private final SimulatedProviderMapper simulator;
   private final GenerationProperties properties;
+  private final SimulatorFaultControlPolicy faultControlPolicy;
 
   public GenerationAdminServiceImpl(GenerationTaskMapper tasks, ProviderAttemptMapper attempts,
       ProviderChannelMapper channels, GenerationHandoffMapper handoffs,
       ProviderCallbackMapper callbacks, SimulatedProviderMapper simulator,
-      GenerationProperties properties) {
+      GenerationProperties properties, SimulatorFaultControlPolicy faultControlPolicy) {
     this.tasks = tasks;
     this.attempts = attempts;
     this.channels = channels;
@@ -84,6 +86,7 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
     this.callbacks = callbacks;
     this.simulator = simulator;
     this.properties = properties;
+    this.faultControlPolicy = faultControlPolicy;
   }
 
   @Override
@@ -169,8 +172,8 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
 
   @Override
   public void addSimulatorFault(SimulatorFaultForm form) {
-    // 未显式开启时按不存在处理，避免暴露演示控制面。
-    if (!properties.isSimulatorFaultControlEnabled()) {
+    // 开关与运行环境双重限制；正式环境即使误开开关也按不存在处理。
+    if (!properties.isSimulatorFaultControlEnabled() || !faultControlPolicy.allowed()) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
     if (form == null || form.getMode() == null || !FAULT_MODES.contains(form.getMode())) {

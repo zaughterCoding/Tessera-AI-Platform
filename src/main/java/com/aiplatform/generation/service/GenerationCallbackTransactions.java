@@ -100,6 +100,13 @@ public class GenerationCallbackTransactions {
       }
     }
     if (changed != 1) {
+      // 历史缺陷快照可能已进入 RESULT_PENDING 但缺少结果元数据；完整成功事件只补事实，
+      // 不改终态、不重复释放容量，也不重新写任务状态说明。
+      if ("SUCCEEDED".equals(payload.eventType())
+          && ProviderAttemptState.RESULT_PENDING.equals(attempt.getState())) {
+        return attempts.completePendingResult(attempt.getId(), payload.providerTaskId(),
+            payload.resultRef(), payload.resultDigest());
+      }
       return 0;
     }
     String attemptState = switch (payload.eventType()) {

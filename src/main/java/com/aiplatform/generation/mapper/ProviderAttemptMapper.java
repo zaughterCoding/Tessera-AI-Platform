@@ -69,6 +69,20 @@ public interface ProviderAttemptMapper extends BaseMapper<ProviderAttempt> {
       @Param("resultDigest") String resultDigest, @Param("failureCode") String failureCode,
       @Param("failureDetail") String failureDetail);
 
+  /** 历史成功快照缺失结果元数据时只补字段，不改变终态与容量。 */
+  int completePendingResult(@Param("id") long id, @Param("providerTaskId") String providerTaskId,
+      @Param("resultRef") String resultRef, @Param("resultDigest") String resultDigest);
+
+  /** 查询补全使用同一 owner + generation 围栏，避免覆盖接管后的尝试。 */
+  int completePendingResultWithLease(@Param("id") long id, @Param("owner") String owner,
+      @Param("generation") long generation, @Param("providerTaskId") String providerTaskId,
+      @Param("resultRef") String resultRef, @Param("resultDigest") String resultDigest);
+
+  /** 上游仍无法给出完整结果时只延后补查，不改变终态、不释放容量。 */
+  int delayPendingResultRepair(@Param("id") long id, @Param("owner") String owner,
+      @Param("generation") long generation, @Param("delaySeconds") int delaySeconds,
+      @Param("detail") String detail);
+
   int markReconcileNow(@Param("id") long id);
 
   int countByState(@Param("state") String state);

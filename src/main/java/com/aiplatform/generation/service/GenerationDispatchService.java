@@ -2,6 +2,7 @@ package com.aiplatform.generation.service;
 
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderAttemptState;
+import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
@@ -185,7 +186,10 @@ public class GenerationDispatchService {
       if (task == null) {
         continue;
       }
-      if (GenerationTaskState.isUpstreamFinal(task.getState())) {
+      // 终态任务仍可能需要补齐历史成功快照缺失的结果元数据。
+      boolean repairable = ProviderAttemptState.RESULT_PENDING.equals(fresh.getState())
+          && ProviderResultMetadata.isMissing(fresh);
+      if (GenerationTaskState.isUpstreamFinal(task.getState()) && !repairable) {
         continue;
       }
       claims.add(claim(fresh, task, 0, 0));
@@ -219,6 +223,11 @@ public class GenerationDispatchService {
     }
     try {
       ProviderQueryResult result = adapter.query(claim.attemptKey(), claim.providerTaskId());
+      if (ProviderAttemptState.RESULT_PENDING.equals(claim.state())) {
+        // 既有成功终态只允许补全元数据或延后补查，任何查询结果都不能逆转或重复释放。
+        upstream.terminal(claim, result);
+        return;
+      }
       switch (result.status()) {
         case ACCEPTED, RUNNING -> upstream.active(claim, result);
         case SUCCEEDED, FAILED, CANCELLED -> upstream.terminal(claim, result);
@@ -233,6 +242,11 @@ public class GenerationDispatchService {
   }
 
   private void handleNotFound(AttemptClaim claim) {
+    if (ProviderAttemptState.RESULT_PENDING.equals(claim.state())) {
+      // 终态已成立却不能重提；只延后补查，保留冻结与既有容量事实。
+      upstream.delayResultRepair(claim, "UPSTREAM_RESULT_NOT_FOUND", "查询不到原任务");
+      return;
+    }
     ProviderCapabilities capabilities = adapter.capabilities();
     if (!capabilities.idempotentSubmit() || !capabilities.queryByAttempt()) {
       upstream.review(claim, "CAPABILITY_UNCERTAIN", "渠道缺少幂等或按尝试查询能力");
@@ -259,6 +273,10 @@ public class GenerationDispatchService {
   }
 
   private void queryFailure(AttemptClaim claim, String code, String detail) {
+    if (ProviderAttemptState.RESULT_PENDING.equals(claim.state())) {
+      upstream.delayResultRepair(claim, code, detail == null ? "查询失败" : detail);
+      return;
+    }
     boolean exhausted = claim.queryAttempts() + 1 >= properties.getQueryMaxAttempts();
     upstream.queryFailure(claim, code, detail == null ? "查询失败" : detail, exhausted);
   }

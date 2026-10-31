@@ -2,6 +2,7 @@ package com.aiplatform.generation.service;
 
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderAttemptState;
+import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
@@ -79,6 +80,22 @@ public class GenerationUpstreamTransactions {
 
   @Transactional
   public void terminal(AttemptClaim claim, ProviderQueryResult result) {
+    if (ProviderAttemptState.RESULT_PENDING.equals(claim.state())) {
+      repairPendingResult(claim, result);
+      return;
+    }
+    if (result.status() == ProviderQueryResult.QueryStatus.SUCCEEDED
+        && !ProviderResultMetadata.isComplete(result.resultRef(), result.resultDigest())) {
+      // 成功但结果元数据不完整：不能进入“元数据已记录”的终态，也不能释放在途预算。
+      int changed = attempts.markReview(claim.attemptId(), claim.owner(), claim.generation(),
+          "RESULT_METADATA_INCOMPLETE: 上游成功事件缺少结果引用或摘要",
+          properties.getReviewPollSeconds());
+      if (changed == 1) {
+        tasks.updateStateUnlessFinal(claim.taskId(), GenerationTaskState.REVIEW,
+            GenerationFactApplier.noteFor(ProviderAttemptState.REVIEW));
+      }
+      return;
+    }
     String state = switch (result.status()) {
       case SUCCEEDED -> ProviderAttemptState.RESULT_PENDING;
       case FAILED -> ProviderAttemptState.FAILED;
@@ -91,6 +108,27 @@ public class GenerationUpstreamTransactions {
     if (changed == 1) {
       facts.confirmedTerminal(claim.taskId(), claim.userId(), claim.channelId(), state);
     }
+  }
+
+  /** 终态已成立时只允许补齐缺失元数据；任何迟到或退化事实都不能反转状态或重复释放。 */
+  private void repairPendingResult(AttemptClaim claim, ProviderQueryResult result) {
+    if (result.status() == ProviderQueryResult.QueryStatus.SUCCEEDED
+        && ProviderResultMetadata.isComplete(result.resultRef(), result.resultDigest())) {
+      int changed = attempts.completePendingResultWithLease(claim.attemptId(), claim.owner(),
+          claim.generation(), result.providerTaskId(), truncate(result.resultRef()),
+          result.resultDigest());
+      if (changed == 1) {
+        return;
+      }
+    }
+    attempts.delayPendingResultRepair(claim.attemptId(), claim.owner(), claim.generation(),
+        properties.getReviewPollSeconds(), "RESULT_METADATA_PENDING: 上游结果元数据尚未补齐");
+  }
+
+  @Transactional
+  public void delayResultRepair(AttemptClaim claim, String code, String detail) {
+    attempts.delayPendingResultRepair(claim.attemptId(), claim.owner(), claim.generation(),
+        properties.getReviewPollSeconds(), truncate(code + ": " + detail));
   }
 
   @Transactional

@@ -2,6 +2,7 @@ package com.aiplatform.generation.dto;
 
 import com.aiplatform.entitlement.entity.EntitlementGrant;
 import com.aiplatform.generation.GenerationTaskState;
+import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.entity.ProviderChannel;
@@ -36,6 +37,11 @@ public class GenerationTaskDTO {
   private LocalDateTime createdAt;
   private String executionNotice;
 
+  private static final String INCOMPLETE_RESULT_NOTE =
+      "上游已返回成功，但结果元数据不完整；系统将继续核对，冻结次数保留";
+  private static final String INCOMPLETE_RESULT_NOTICE =
+      "上游已返回成功，但结果元数据不完整，系统会继续核对；当前不能下载或消费次数。";
+
   public static GenerationTaskDTO from(GenerationTask task, EntitlementGrant grant,
       List<Long> mediaIds) {
     return from(task, grant, mediaIds, null, null);
@@ -57,7 +63,7 @@ public class GenerationTaskDTO {
     view.setFrozenUnits(task.getFrozenUnits());
     view.setState(task.getState());
     view.setAccountingState(task.getAccountingState());
-    view.setStateNote(task.getStateNote());
+    view.setStateNote(stateNoteFor(task.getState(), task.getStateNote(), attempt));
     view.setAttemptState(attempt == null ? null : attempt.getState());
     if (channel != null) {
       view.setChannelCode(channel.getCode());
@@ -68,8 +74,17 @@ public class GenerationTaskDTO {
     view.setGrantExpiresAt(grant == null ? null : grant.getExpiresAt());
     view.setMediaIds(mediaIds);
     view.setCreatedAt(task.getCreatedAt());
-    view.setExecutionNotice(noticeFor(task.getState(), view.getSimulatedChannel()));
+    boolean incompleteResult =
+        ProviderResultMetadata.successMetadataMissing(task.getState(), attempt);
+    view.setExecutionNotice(incompleteResult ? INCOMPLETE_RESULT_NOTICE
+        : noticeFor(task.getState(), view.getSimulatedChannel()));
     return view;
+  }
+
+  /** 历史成功快照缺少结果元数据时，展示说明必须如实报告不完整，不能沿用旧文案。 */
+  public static String stateNoteFor(String state, String storedNote, ProviderAttempt attempt) {
+    return ProviderResultMetadata.successMetadataMissing(state, attempt)
+        ? INCOMPLETE_RESULT_NOTE : storedNote;
   }
 
   public static String noticeFor(String state, Boolean simulated) {

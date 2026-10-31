@@ -2,6 +2,7 @@ package com.aiplatform.generation.service;
 
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
+import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.dto.ProviderCallbackResultDTO;
 import com.aiplatform.generation.provider.ProviderCallbackPayload;
@@ -16,7 +17,6 @@ import tools.jackson.databind.ObjectMapper;
 public class GenerationCallbackService {
   private static final Pattern EVENT_KEY = Pattern.compile("[A-Za-z0-9._:-]{1,64}");
   private static final Pattern ATTEMPT_KEY = Pattern.compile("[A-Za-z0-9._:-]{1,64}");
-  private static final Pattern DIGEST = Pattern.compile("[0-9a-f]{64}");
 
   private final GenerationProperties properties;
   private final GenerationCallbackTransactions transactions;
@@ -97,8 +97,28 @@ public class GenerationCallbackService {
         || tooLong(payload.failureDetail(), 255)) {
       throw new ApiException(ErrorCode.CALLBACK_INVALID);
     }
-    if (payload.resultDigest() != null
-        && !DIGEST.matcher(payload.resultDigest()).matches()) {
+    // 事件契约要求的业务字段必须完整；缺失或占位值不能进入终态事实。
+    switch (payload.eventType()) {
+      case "ACCEPTED", "RUNNING", "CANCELLED" -> requireProviderTaskId(payload);
+      case "SUCCEEDED" -> {
+        requireProviderTaskId(payload);
+        if (!ProviderResultMetadata.isComplete(payload.resultRef(),
+            payload.resultDigest())) {
+          throw new ApiException(ErrorCode.CALLBACK_INVALID);
+        }
+      }
+      case "FAILED" -> {
+        requireProviderTaskId(payload);
+        if (payload.failureCode() == null || payload.failureCode().isBlank()) {
+          throw new ApiException(ErrorCode.CALLBACK_INVALID);
+        }
+      }
+      default -> throw new ApiException(ErrorCode.CALLBACK_INVALID);
+    }
+  }
+
+  private void requireProviderTaskId(ProviderCallbackPayload payload) {
+    if (payload.providerTaskId() == null || payload.providerTaskId().isBlank()) {
       throw new ApiException(ErrorCode.CALLBACK_INVALID);
     }
   }

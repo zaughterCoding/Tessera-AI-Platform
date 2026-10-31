@@ -36,7 +36,9 @@ public record GenerationAdminTaskDTO(
   public static GenerationAdminTaskDTO from(GenerationTask task, ProviderAttempt attempt,
       ProviderChannel channel, HandoffRow handoff) {
     return new GenerationAdminTaskDTO(task.getId(), task.getUserId(), task.getApplicationId(),
-        task.getApplicationName(), task.getState(), task.getStateNote(), task.getAccountingState(),
+        task.getApplicationName(), task.getState(),
+        GenerationTaskDTO.stateNoteFor(task.getState(), task.getStateNote(), attempt),
+        task.getAccountingState(),
         task.getGrantId(), task.getFrozenUnits(), task.getCreatedAt(),
         channel == null ? null : channel.getCode(),
         attempt == null ? null : attempt.getState(),

@@ -35,9 +35,13 @@
     SELECT * FROM provider_attempt WHERE attempt_key = #{attemptKey} FOR UPDATE
   </select>
 
+  <!-- 历史成功快照缺少结果元数据时仍需按同一尝试身份重新核对上游。 -->
   <select id="selectDueForPoll" resultType="com.aiplatform.generation.entity.ProviderAttempt">
     SELECT * FROM provider_attempt
-    WHERE state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+    WHERE (state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+      OR (state = 'RESULT_PENDING'
+        AND (result_ref IS NULL OR result_ref = ''
+          OR result_digest IS NULL OR result_digest = '')))
       AND (next_attempt_at IS NULL OR next_attempt_at &lt;= NOW(3))
       AND (lease_until IS NULL OR lease_until &lt; NOW(3))
     ORDER BY id
@@ -52,7 +56,10 @@
         generation = generation + 1
     WHERE id = #{id}
       AND (lease_until IS NULL OR lease_until &lt; NOW(3))
-      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+      AND (state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+        OR (state = 'RESULT_PENDING'
+          AND (result_ref IS NULL OR result_ref = ''
+            OR result_digest IS NULL OR result_digest = '')))
   </update>
 
   <update id="confirmSubmit">
@@ -168,11 +175,46 @@
       AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
   </update>
 
+  <update id="completePendingResult">
+    UPDATE provider_attempt
+    SET result_ref = #{resultRef}, result_digest = #{resultDigest},
+        provider_task_id = COALESCE(provider_task_id, #{providerTaskId}),
+        last_contact_at = NOW(3), owner = NULL, lease_until = NULL
+    WHERE id = #{id}
+      AND state = 'RESULT_PENDING'
+      AND (result_ref IS NULL OR result_ref = ''
+        OR result_digest IS NULL OR result_digest = '')
+  </update>
+
+  <update id="completePendingResultWithLease">
+    UPDATE provider_attempt
+    SET result_ref = #{resultRef}, result_digest = #{resultDigest},
+        provider_task_id = COALESCE(provider_task_id, #{providerTaskId}),
+        last_contact_at = NOW(3), owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state = 'RESULT_PENDING'
+      AND (result_ref IS NULL OR result_ref = ''
+        OR result_digest IS NULL OR result_digest = '')
+  </update>
+
+  <update id="delayPendingResultRepair">
+    UPDATE provider_attempt
+    SET next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        failure_detail = #{detail}, owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state = 'RESULT_PENDING'
+      AND (result_ref IS NULL OR result_ref = ''
+        OR result_digest IS NULL OR result_digest = '')
+  </update>
+
   <update id="markReconcileNow">
     UPDATE provider_attempt
     SET next_attempt_at = NOW(3), owner = NULL, lease_until = NULL
     WHERE id = #{id}
-      AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+      AND (state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+        OR (state = 'RESULT_PENDING'
+          AND (result_ref IS NULL OR result_ref = ''
+            OR result_digest IS NULL OR result_digest = '')))
   </update>
 
   <select id="countByState" resultType="int">
