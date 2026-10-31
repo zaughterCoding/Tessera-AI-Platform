@@ -66,6 +66,11 @@ public interface BusinessOutboxMapper {
       @Param("userId") long userId,
       @Param("idempotencyKey") String idempotencyKey);
 
+  /** 发放任务按来源订单与权益项幂等；实时投影和补发竞争只会留下一条任务。 */
+  int insertEntitlementGrant(@Param("orderId") long orderId,
+      @Param("userId") long userId,
+      @Param("idempotencyKey") String idempotencyKey);
+
   /** 粉丝分批未完成时，以已处理到的粉丝边 id 建立续传任务。 */
   int insertFeedContinuation(@Param("creationId") long creationId,
       @Param("userId") long userId,

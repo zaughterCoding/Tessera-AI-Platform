@@ -19,6 +19,7 @@ import com.aiplatform.campaign.service.ICampaignAdmissionService;
 import com.aiplatform.campaign.service.ICampaignRedisService;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
+import com.aiplatform.entitlement.service.IEntitlementQueryService;
 import com.aiplatform.trade.dto.PurchaseOrderDTO;
 import com.aiplatform.trade.entity.PurchaseOrder;
 import com.aiplatform.trade.enums.OrderStatus;
@@ -39,7 +40,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
   private static final int LOCK_SECONDS = 5;
-  private static final String ENTITLEMENT_NOTICE = "权益使用功能尚未开放";
+  private static final String ENTITLEMENT_NOTICE = "权益尚未发放";
   private final LimitedCampaignMapper campaigns;
   private final CampaignReservationMapper reservations;
   private final PurchaseOrderMapper orders;
@@ -48,6 +49,7 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
   private final StringRedisTemplate redisTemplate;
   private final CampaignSellability sellability;
   private final CampaignEntryGuard entryGuard;
+  private final IEntitlementQueryService entitlements;
   private final String namespace;
   private final boolean consumerEnabled;
 
@@ -60,6 +62,7 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
       StringRedisTemplate redisTemplate,
       CampaignSellability sellability,
       CampaignEntryGuard entryGuard,
+      IEntitlementQueryService entitlements,
       @Value("${app.namespace}") String namespace,
       @Value("${app.campaign.consumer-enabled:true}") boolean consumerEnabled) {
     this.campaigns = campaigns;
@@ -70,6 +73,7 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
     this.redisTemplate = redisTemplate;
     this.sellability = sellability;
     this.entryGuard = entryGuard;
+    this.entitlements = entitlements;
     this.namespace = namespace;
     this.consumerEnabled = consumerEnabled;
   }
@@ -289,7 +293,9 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
       view.setReservationNotice("预约状态待核对，请勿重复提交");
       return view;
     }
-    view.setOrder(PurchaseOrderDTO.from(order));
+    String entitlementNotice = entitlements.noticeFor(order);
+    view.setOrder(PurchaseOrderDTO.from(order, entitlementNotice));
+    view.setEntitlementNotice(entitlementNotice);
     view.setReservationNotice(reservationNotice(reservation.getState(), order));
     if (!ReservationState.SUCCESS.name().equals(reservation.getState())) {
       view.setConsistencyNotice("订单已存在但预约状态未同步，等待人工核对");
@@ -342,7 +348,7 @@ public class CampaignAdmissionServiceImpl implements ICampaignAdmissionService {
       return "已受理，订单正在创建；不代表建单成功或已付款";
     }
     if (OrderStatus.PAID.name().equals(order.getStatus())) {
-      return "预约建单成功，订单已支付；不代表权益已到账";
+      return "预约建单成功，订单已支付；权益状态以到账提示为准";
     }
     if (OrderStatus.CANCELLED.name().equals(order.getStatus())) {
       return "预约订单已关闭，名额已释放；不表示发生过支付";

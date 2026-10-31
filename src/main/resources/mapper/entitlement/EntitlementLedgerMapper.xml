@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.entitlement.mapper.EntitlementLedgerMapper">
+  <insert id="insert" useGeneratedKeys="true" keyProperty="id">
+    INSERT INTO entitlement_ledger(
+      grant_id, user_id, order_id, item_key, operation_key, operation_type,
+      delta_total, delta_available, delta_frozen, delta_consumed, delta_expired,
+      total_after, available_after, frozen_after, consumed_after, expired_after, reason
+    ) VALUES (
+      #{grantId}, #{userId}, #{orderId}, #{itemKey}, #{operationKey}, #{operationType},
+      #{deltaTotal}, #{deltaAvailable}, #{deltaFrozen}, #{deltaConsumed}, #{deltaExpired},
+      #{totalAfter}, #{availableAfter}, #{frozenAfter}, #{consumedAfter}, #{expiredAfter},
+      #{reason}
+    )
+  </insert>
+
+  <select id="selectByGrant"
+      resultType="com.aiplatform.entitlement.entity.EntitlementLedger">
+    SELECT * FROM entitlement_ledger
+    WHERE grant_id = #{grantId}
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <select id="countByGrant" resultType="long">
+    SELECT COUNT(*) FROM entitlement_ledger WHERE grant_id = #{grantId}
+  </select>
+</mapper>

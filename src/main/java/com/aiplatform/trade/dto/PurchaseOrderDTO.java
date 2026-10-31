@@ -39,6 +39,11 @@ public class PurchaseOrderDTO {
   private String settlementNotice;
 
   public static PurchaseOrderDTO from(PurchaseOrder order) {
+    return from(order, null);
+  }
+
+  /** 订单提示由真实权益包状态决定；没有权益服务上下文时只宣称待发放。 */
+  public static PurchaseOrderDTO from(PurchaseOrder order, String entitlementNotice) {
     PurchaseOrderDTO view = new PurchaseOrderDTO();
     view.setId(order.getId());
     view.setCampaignId(order.getCampaignId());
@@ -66,19 +71,21 @@ public class PurchaseOrderDTO {
     view.setPaidAt(order.getPaidAt());
     view.setClosedAt(order.getClosedAt());
     view.setCreatedAt(order.getCreatedAt());
-    view.setEntitlementNotice(entitlementNotice(order.getStatus()));
+    view.setEntitlementNotice(entitlementNotice == null
+        ? defaultEntitlementNotice(order) : entitlementNotice);
     view.setSettlementNotice(settlementNotice(order.getStatus(), order.getFunding()));
     return view;
   }
 
-  private static String entitlementNotice(String status) {
-    if (OrderStatus.PAID.matches(status)) {
-      return "已购买，权益使用功能尚未开放";
+  private static String defaultEntitlementNotice(PurchaseOrder order) {
+    if (OrderStatus.PAID.matches(order.getStatus())) {
+      return FundingChannel.FREE.name().equals(order.getFunding())
+          ? "领取完成，权益待发放" : "购买完成，权益待发放";
     }
-    if (OrderStatus.CANCELLED.matches(status)) {
-      return "订单已关闭，权益使用功能尚未开放";
+    if (OrderStatus.CANCELLED.matches(order.getStatus())) {
+      return "订单已关闭，权益未发放";
     }
-    return "支付完成前不会开通权益，权益使用功能尚未开放";
+    return "支付完成前不会发放权益";
   }
 
   private static String settlementNotice(String status, String funding) {

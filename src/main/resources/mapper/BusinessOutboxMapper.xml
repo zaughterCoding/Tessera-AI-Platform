@@ -143,6 +143,15 @@
     )
   </insert>
 
+  <!-- 权益发放使用独立消费组与稳定来源键；重复登记不会生成第二条任务。 -->
+  <insert id="insertEntitlementGrant">
+    INSERT IGNORE INTO business_outbox(
+      kind, aggregate_id, user_id, state, next_attempt_at, idempotency_key
+    ) VALUES (
+      'ENTITLEMENT_GRANT', #{orderId}, #{userId}, 'PENDING', NOW(3), #{idempotencyKey}
+    )
+  </insert>
+
   <select id="selectCampaignFulfillment"
       resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
     SELECT * FROM business_outbox

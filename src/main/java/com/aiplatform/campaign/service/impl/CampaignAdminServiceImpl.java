@@ -24,6 +24,7 @@ import com.aiplatform.campaign.service.ICampaignReconciliationService;
 import com.aiplatform.campaign.service.ICampaignRedisService;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
+import com.aiplatform.entitlement.service.IEntitlementQueryService;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.mapper.BusinessOutboxMapper;
 import com.aiplatform.messaging.service.IBusinessOutboxService;
@@ -56,7 +57,7 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
   private static final int REASON_LIMIT = 255;
   private static final int LOCK_SECONDS = 10;
   private static final int MAX_REVIEW_LIMIT = 200;
-  private static final String ENTITLEMENT_NOTICE = "权益使用功能尚未开放";
+  private static final String ENTITLEMENT_NOTICE = "权益尚未发放";
   private static final String PREPARING = "PREPARING";
   private final LimitedCampaignMapper campaigns;
   private final CampaignReservationMapper reservations;
@@ -68,6 +69,7 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
   private final ICampaignReconciliationService reconciliation;
   private final CampaignSellability sellability;
   private final CampaignEntryGuard entryGuard;
+  private final IEntitlementQueryService entitlements;
   private final StringRedisTemplate redisTemplate;
   private final TransactionTemplate transaction;
   private final String namespace;
@@ -83,6 +85,7 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
       ICampaignReconciliationService reconciliation,
       CampaignSellability sellability,
       CampaignEntryGuard entryGuard,
+      IEntitlementQueryService entitlements,
       StringRedisTemplate redisTemplate,
       PlatformTransactionManager transactionManager,
       @Value("${app.namespace}") String namespace) {
@@ -96,6 +99,7 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
     this.reconciliation = reconciliation;
     this.sellability = sellability;
     this.entryGuard = entryGuard;
+    this.entitlements = entitlements;
     this.redisTemplate = redisTemplate;
     this.transaction = new TransactionTemplate(transactionManager);
     this.namespace = namespace;
@@ -447,7 +451,9 @@ public class CampaignAdminServiceImpl implements ICampaignAdminService {
         && Objects.equals(order.getUserId(), reservation.getUserId())
         && Objects.equals(order.getCampaignId(), reservation.getCampaignId())
         && Objects.equals(order.getCampaignGeneration(), reservation.getGeneration())) {
-      view.setOrder(PurchaseOrderDTO.from(order));
+      String entitlementNotice = entitlements.noticeFor(order);
+      view.setOrder(PurchaseOrderDTO.from(order, entitlementNotice));
+      view.setEntitlementNotice(entitlementNotice);
       view.setReservationNotice(ReservationState.SUCCESS.name().equals(reservation.getState())
           ? "预约建单成功" : "预约状态与订单待核对");
     } else if (ReservationState.FAILED.name().equals(reservation.getState())) {

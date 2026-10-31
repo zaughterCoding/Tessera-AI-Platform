@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.entitlement.mapper.EntitlementAnomalyMapper">
+  <!-- 同一来源同一异常只保留一条；重复补发扫描不会制造重复告警。 -->
+  <insert id="upsert">
+    INSERT INTO entitlement_anomaly(
+      order_id, user_id, item_key, anomaly_type, detail, status
+    ) VALUES (
+      #{orderId}, #{userId}, #{itemKey}, #{anomalyType}, #{detail}, 'OPEN'
+    )
+    ON DUPLICATE KEY UPDATE
+      detail = VALUES(detail), status = 'OPEN', resolved_at = NULL, updated_at = NOW(3)
+  </insert>
+
+  <update id="resolve">
+    UPDATE entitlement_anomaly
+    SET status = 'RESOLVED', resolved_at = NOW(3)
+    WHERE order_id = #{orderId} AND item_key = #{itemKey} AND status = 'OPEN'
+  </update>
+
+  <select id="selectList"
+      resultType="com.aiplatform.entitlement.entity.EntitlementAnomaly">
+    SELECT * FROM entitlement_anomaly
+    <where>
+      <if test="status != null and status != ''">
+        status = #{status}
+      </if>
+    </where>
+    ORDER BY id DESC
+    LIMIT #{limit}
+  </select>
+
+  <select id="countOpen" resultType="long">
+    SELECT COUNT(*) FROM entitlement_anomaly WHERE status = 'OPEN'
+  </select>
+</mapper>

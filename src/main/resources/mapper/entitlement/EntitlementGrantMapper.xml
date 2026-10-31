@@ -1,0 +1,196 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.entitlement.mapper.EntitlementGrantMapper">
+  <!-- 可信来源必须同时具备已支付订单、完整快照和匹配的支付或免费领取完成事实。 -->
+  <sql id="eligibleOrder">
+    o.status = 'PAID'
+    AND o.funding IN ('FREE','MOCK')
+    AND o.paid_at IS NOT NULL
+    AND o.credits &gt; 0
+    AND o.valid_days &gt; 0
+    AND o.output_count &gt; 0
+    AND EXISTS (
+      SELECT 1 FROM purchase_payment p
+      WHERE p.order_id = o.id
+        AND p.user_id = o.user_id
+        AND p.paid_at = o.paid_at
+        AND (
+          (o.funding = 'FREE' AND p.channel = 'FREE' AND p.amount = 0 AND p.simulated = 0)
+          OR
+          (o.funding = 'MOCK' AND p.channel = 'MOCK' AND p.amount = o.amount
+            AND p.simulated = 1)
+        )
+    )
+  </sql>
+
+  <select id="selectBySource"
+      resultType="com.aiplatform.entitlement.entity.EntitlementGrant">
+    SELECT * FROM entitlement_grant
+    WHERE order_id = #{orderId} AND item_key = #{itemKey}
+  </select>
+
+  <select id="selectForUpdate"
+      resultType="com.aiplatform.entitlement.entity.EntitlementGrant">
+    SELECT * FROM entitlement_grant WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <select id="selectDatabaseNow" resultType="java.time.LocalDateTime">
+    SELECT NOW(3)
+  </select>
+
+  <!-- 历史补发按订单主键稳定推进，扫描范围只到本批末尾。 -->
+  <select id="selectPaidOrdersAfter" resultType="com.aiplatform.trade.entity.PurchaseOrder">
+    SELECT * FROM purchase_order
+    WHERE status = 'PAID' AND id &gt; #{afterOrderId}
+    ORDER BY id
+    LIMIT #{limit}
+  </select>
+
+  <select id="countPaidOrdersAfter" resultType="long">
+    SELECT COUNT(*) FROM purchase_order
+    WHERE status = 'PAID' AND id &gt; #{afterOrderId}
+  </select>
+
+  <select id="countTaskByOrder" resultType="long">
+    SELECT COUNT(*) FROM business_outbox
+    WHERE kind = 'ENTITLEMENT_GRANT' AND aggregate_id = #{orderId}
+  </select>
+
+  <!-- 只移动剩余可用次数；冻结、已消费和已过期分量不被到期任务改写。 -->
+  <update id="expireAvailable">
+    UPDATE entitlement_grant
+    SET available_credits = available_credits - #{amount},
+        expired_credits = expired_credits + #{amount},
+        status = 'EXPIRED'
+    WHERE id = #{id} AND available_credits = #{amount} AND expires_at &lt;= NOW(3)
+  </update>
+
+  <update id="markExpired">
+    UPDATE entitlement_grant
+    SET status = 'EXPIRED'
+    WHERE id = #{id} AND status = 'ACTIVE' AND expires_at &lt;= NOW(3)
+  </update>
+
+  <select id="selectDueIds" resultType="long">
+    SELECT id FROM entitlement_grant
+    WHERE expires_at &lt;= NOW(3) AND (status = 'ACTIVE' OR available_credits &gt; 0)
+    ORDER BY expires_at, id
+    LIMIT #{limit}
+  </select>
+
+  <select id="selectBalance"
+      resultType="com.aiplatform.entitlement.dto.EntitlementBalanceDTO">
+    SELECT
+      COALESCE(SUM(total_credits), 0) AS total_credits,
+      COALESCE(SUM(CASE WHEN status = 'EXPIRED' OR expires_at &lt;= NOW(3) THEN 0
+        ELSE available_credits END), 0) AS available_credits,
+      COALESCE(SUM(frozen_credits), 0) AS frozen_credits,
+      COALESCE(SUM(consumed_credits), 0) AS consumed_credits,
+      COALESCE(SUM(expired_credits + CASE
+        WHEN status = 'EXPIRED' OR expires_at &lt;= NOW(3) THEN available_credits
+        ELSE 0 END), 0) AS expired_credits,
+      COALESCE(SUM(status = 'ACTIVE' AND expires_at &gt; NOW(3)), 0) AS active_grants,
+      COALESCE(SUM(status = 'EXPIRED' OR expires_at &lt;= NOW(3)), 0) AS expired_grants
+    FROM entitlement_grant
+    WHERE user_id = #{userId}
+  </select>
+
+  <select id="countEligibleOrderItems" resultType="long">
+    SELECT COUNT(*) FROM purchase_order o WHERE <include refid="eligibleOrder"/>
+  </select>
+
+  <select id="countRegisteredTasks" resultType="long">
+    SELECT COUNT(*) FROM business_outbox WHERE kind = 'ENTITLEMENT_GRANT'
+  </select>
+
+  <select id="countIssuedGrants" resultType="long">
+    SELECT COUNT(*) FROM entitlement_grant
+  </select>
+
+  <select id="countPendingTasks" resultType="long">
+    SELECT COUNT(*) FROM business_outbox
+    WHERE kind = 'ENTITLEMENT_GRANT' AND state IN ('PENDING','SENDING','SENT')
+  </select>
+
+  <select id="countReviewTasks" resultType="long">
+    SELECT COUNT(*) FROM business_outbox
+    WHERE kind = 'ENTITLEMENT_GRANT' AND state = 'REVIEW'
+  </select>
+
+  <!-- 只统计尚未恢复的失败证据；任务重试成功或完成复核后不再让对账永久失真。 -->
+  <select id="countFailedMessages" resultType="long">
+    SELECT COUNT(*) FROM message_failure f
+    WHERE f.consumer_group = 'entitlement-grants'
+      AND (f.event_id IS NULL OR EXISTS (
+        SELECT 1 FROM business_outbox o
+        WHERE o.id = f.event_id AND o.state &lt;&gt; 'DONE'
+      ))
+  </select>
+
+  <select id="countExpiredGrants" resultType="long">
+    SELECT COUNT(*) FROM entitlement_grant
+    WHERE status = 'EXPIRED' OR expires_at &lt;= NOW(3)
+  </select>
+
+  <!-- 已发放但任务被保留策略清理属于正常；缺任务只统计既无包又无任务的订单。 -->
+  <select id="countMissingTasks" resultType="long">
+    SELECT COUNT(*) FROM purchase_order o
+    WHERE <include refid="eligibleOrder"/>
+      AND NOT EXISTS (
+        SELECT 1 FROM entitlement_grant g
+        WHERE g.order_id = o.id AND g.item_key = 'credits'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM business_outbox t
+        WHERE t.kind = 'ENTITLEMENT_GRANT' AND t.aggregate_id = o.id
+      )
+  </select>
+
+  <select id="countDoneWithoutGrant" resultType="long">
+    SELECT COUNT(*) FROM business_outbox t
+    WHERE t.kind = 'ENTITLEMENT_GRANT' AND t.state = 'DONE'
+      AND NOT EXISTS (
+        SELECT 1 FROM entitlement_grant g
+        WHERE g.order_id = t.aggregate_id AND g.item_key = 'credits'
+      )
+  </select>
+
+  <select id="countDuplicateGrants" resultType="long">
+    SELECT COUNT(*) FROM (
+      SELECT order_id, item_key FROM entitlement_grant
+      GROUP BY order_id, item_key HAVING COUNT(*) &gt; 1
+    ) duplicates
+  </select>
+
+  <select id="countBalanceViolations" resultType="long">
+    SELECT COUNT(*) FROM entitlement_grant
+    WHERE total_credits &lt;&gt;
+      available_credits + frozen_credits + consumed_credits + expired_credits
+  </select>
+
+  <!-- 每个分量的流水增量之和、最后一条操作后余额都必须与权益包当前余额一致。 -->
+  <select id="countLedgerMismatches" resultType="long">
+    SELECT COUNT(*) FROM entitlement_grant g
+    WHERE g.total_credits &lt;&gt; COALESCE((
+        SELECT SUM(l.delta_total) FROM entitlement_ledger l WHERE l.grant_id = g.id), 0)
+      OR g.available_credits &lt;&gt; COALESCE((
+        SELECT SUM(l.delta_available) FROM entitlement_ledger l WHERE l.grant_id = g.id), 0)
+      OR g.frozen_credits &lt;&gt; COALESCE((
+        SELECT SUM(l.delta_frozen) FROM entitlement_ledger l WHERE l.grant_id = g.id), 0)
+      OR g.consumed_credits &lt;&gt; COALESCE((
+        SELECT SUM(l.delta_consumed) FROM entitlement_ledger l WHERE l.grant_id = g.id), 0)
+      OR g.expired_credits &lt;&gt; COALESCE((
+        SELECT SUM(l.delta_expired) FROM entitlement_ledger l WHERE l.grant_id = g.id), 0)
+      OR EXISTS (
+        SELECT 1 FROM entitlement_ledger l
+        WHERE l.grant_id = g.id
+          AND l.id = (SELECT MAX(l2.id) FROM entitlement_ledger l2 WHERE l2.grant_id = g.id)
+          AND (l.total_after &lt;&gt; g.total_credits
+            OR l.available_after &lt;&gt; g.available_credits
+            OR l.frozen_after &lt;&gt; g.frozen_credits
+            OR l.consumed_after &lt;&gt; g.consumed_credits
+            OR l.expired_after &lt;&gt; g.expired_credits)
+      )
+  </select>
+</mapper>

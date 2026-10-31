@@ -13,6 +13,7 @@ import com.aiplatform.campaign.service.ICampaignFulfillmentService;
 import com.aiplatform.campaign.service.ICampaignRedisService;
 import com.aiplatform.catalog.mapper.UsageProductMapper;
 import com.aiplatform.community.service.IFeedService;
+import com.aiplatform.entitlement.service.IEntitlementGrantService;
 import com.aiplatform.media.service.IMediaService;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.ProjectionResult;
@@ -43,6 +44,7 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
   private final IFeedService feed;
   private final BusinessOutboxMapper outbox;
   private final IAnalyticsJournalService analytics;
+  private final IEntitlementGrantService entitlements;
   private final String prefix;
   private final boolean outboxMode;
 
@@ -59,6 +61,7 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
       IFeedService feed,
       BusinessOutboxMapper outbox,
       IAnalyticsJournalService analytics,
+      IEntitlementGrantService entitlements,
       @Value("${app.redis.key-prefix}") String prefix,
       @Value("${app.campaign.fulfillment-mode:stream}") String campaignMode) {
     this.cache = cache;
@@ -73,6 +76,7 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     this.feed = feed;
     this.outbox = outbox;
     this.analytics = analytics;
+    this.entitlements = entitlements;
     this.prefix = prefix;
     this.outboxMode = "outbox".equals(campaignMode);
   }
@@ -116,6 +120,9 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
         return ProjectionResult.complete();
       case CREATION_PUBLISH:
         return projectCreationPublish(task);
+      case ENTITLEMENT_GRANT:
+        entitlements.grantForTask(task);
+        return ProjectionResult.complete();
       default:
         throw new IllegalArgumentException("没有可用的投影处理器");
     }
@@ -178,6 +185,11 @@ public class BusinessProjectionServiceImpl implements IBusinessProjectionService
     orders.insertOrderEvent(task.getId(), order.getId(), task.getKind(), task.getCreatedAt());
     // 分析任务与订单历史投影同事务登记；分析关闭时不产生任何记录。
     analytics.appendOrderFact(order, task);
+    if (BusinessEventType.ORDER_PAID.name().equals(task.getKind())
+        || BusinessEventType.ORDER_CLAIMED.name().equals(task.getKind())) {
+      // 发放任务独立成组，和订单历史投影各自完成自己的 DONE 状态。
+      entitlements.registerForOrder(order);
+    }
   }
 
   private void projectCampaignFulfillment(BusinessOutboxTask task) {

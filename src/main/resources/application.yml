@@ -95,6 +95,11 @@ app:
     expiry-scan-enabled: ${APP_TRADE_EXPIRY_SCAN_ENABLED:true}
     expiry-scan-ms: ${APP_TRADE_EXPIRY_SCAN_MS:5000}
     expiry-scan-batch: ${APP_TRADE_EXPIRY_SCAN_BATCH:50}
+  entitlement:
+    # 到期扫描只做余额清理兜底；查询始终按数据库时间隐藏已过期的可用次数。
+    expiry-scan-enabled: ${APP_ENTITLEMENT_EXPIRY_SCAN_ENABLED:true}
+    expiry-scan-ms: ${APP_ENTITLEMENT_EXPIRY_SCAN_MS:60000}
+    expiry-scan-batch: ${APP_ENTITLEMENT_EXPIRY_SCAN_BATCH:100}
   campaign:
     fulfillment-mode: ${APP_CAMPAIGN_FULFILLMENT_MODE:stream}
     consumer-enabled: ${APP_CAMPAIGN_CONSUMER_ENABLED:true}

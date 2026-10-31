@@ -13,7 +13,8 @@ public enum BusinessEventType {
   CAMPAIGN_STOCK_RELEASED("campaign-events"),
   CAMPAIGN_RETRY("campaign-retry"),
   MEDIA_DELETE("media-lifecycle"),
-  CREATION_PUBLISH("community-feed");
+  CREATION_PUBLISH("community-feed"),
+  ENTITLEMENT_GRANT("entitlement-grants");
 
   private final String consumerGroup;
 

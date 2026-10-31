@@ -4,6 +4,7 @@ import cn.hutool.crypto.digest.DigestUtil;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
+import com.aiplatform.entitlement.service.IEntitlementQueryService;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.service.IBusinessOutboxService;
 import com.aiplatform.trade.dto.OrderProductSnapshot;
@@ -24,6 +25,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -40,6 +42,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
   private final PurchasePaymentMapper payments;
   private final IBusinessOutboxService outbox;
   private final IOrderLifecycleService lifecycle;
+  private final IEntitlementQueryService entitlements;
   private final int timeoutMinutes;
   private final boolean mockEnabled;
 
@@ -48,12 +51,14 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
       PurchasePaymentMapper payments,
       IBusinessOutboxService outbox,
       IOrderLifecycleService lifecycle,
+      IEntitlementQueryService entitlements,
       @Value("${app.trade.order-timeout-minutes:15}") int timeoutMinutes,
       @Value("${app.trade.mock-payment-enabled:false}") boolean mockEnabled) {
     this.orders = orders;
     this.payments = payments;
     this.outbox = outbox;
     this.lifecycle = lifecycle;
+    this.entitlements = entitlements;
     this.timeoutMinutes = timeoutMinutes;
     this.mockEnabled = mockEnabled;
   }
@@ -83,7 +88,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
       if (existing == null || !Long.valueOf(userId).equals(existing.getUserId())) {
         throw new ApiException(ErrorCode.UNAVAILABLE);
       }
-      return PurchaseOrderDTO.from(existing);
+      return view(existing);
     }
     boolean free = product.getPrice() != null && product.getPrice() == 0L;
     PurchaseOrder order = snapshot(userId, request.getId(), product);
@@ -103,7 +108,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
     if (orders.bindRequestOrder(request.getId(), stored.getId()) != 1) {
       throw new ApiException(ErrorCode.CONFLICT);
     }
-    return PurchaseOrderDTO.from(stored);
+    return view(stored);
   }
 
   @Override
@@ -120,7 +125,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
       throw new ApiException(ErrorCode.CONFLICT);
     }
     if (OrderStatus.PAID.matches(order.getStatus())) {
-      return PurchaseOrderDTO.from(order);
+      return view(order);
     }
     if (!OrderStatus.UNPAID.matches(order.getStatus())) {
       throw new ApiException(ErrorCode.CONFLICT);
@@ -142,7 +147,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
     payment.setPaidAt(paid.getPaidAt());
     payments.insert(payment);
     outbox.appendEvent(BusinessEventType.ORDER_PAID.name(), orderId, userId);
-    return PurchaseOrderDTO.from(paid);
+    return view(paid);
   }
 
   @Override
@@ -152,7 +157,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
     if (order == null || !Long.valueOf(userId).equals(order.getUserId())) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
-    return PurchaseOrderDTO.from(order);
+    return view(order);
   }
 
   @Override
@@ -161,7 +166,7 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
     if (order == null || !Long.valueOf(userId).equals(order.getUserId())) {
       throw new ApiException(ErrorCode.NOT_FOUND);
     }
-    return PurchaseOrderDTO.from(order);
+    return view(order);
   }
 
   @Override
@@ -171,11 +176,16 @@ public class TradeOrderServiceImpl implements ITradeOrderService {
     LambdaQueryWrapper<PurchaseOrder> query = new LambdaQueryWrapper<>();
     query.eq(PurchaseOrder::getUserId, userId).orderByDesc(PurchaseOrder::getId);
     IPage<PurchaseOrder> page = orders.selectPage(new Page<>(pageNo, size), query);
+    Map<Long, String> notices = entitlements.noticesFor(page.getRecords());
     List<PurchaseOrderDTO> views = new ArrayList<>();
     for (PurchaseOrder order : page.getRecords()) {
-      views.add(PurchaseOrderDTO.from(order));
+      views.add(PurchaseOrderDTO.from(order, notices.get(order.getId())));
     }
     return Result.ok(views, page.getTotal());
+  }
+
+  private PurchaseOrderDTO view(PurchaseOrder order) {
+    return PurchaseOrderDTO.from(order, entitlements.noticeFor(order));
   }
 
   @Override
