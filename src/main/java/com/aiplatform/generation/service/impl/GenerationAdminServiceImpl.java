@@ -2,26 +2,41 @@ package com.aiplatform.generation.service.impl;
 
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
+import com.aiplatform.entitlement.mapper.GenerationSettlementMapper;
+import com.aiplatform.generation.GenerationCancelState;
+import com.aiplatform.generation.GenerationResultState;
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderAttemptState;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.config.SimulatorFaultControlPolicy;
+import com.aiplatform.generation.dto.GenerationAdminActionResultDTO;
+import com.aiplatform.generation.dto.GenerationAdminDeliveryDTO;
 import com.aiplatform.generation.dto.GenerationAdminOverviewDTO;
+import com.aiplatform.generation.dto.GenerationAdminResultDTO;
 import com.aiplatform.generation.dto.GenerationAdminSettingsDTO;
 import com.aiplatform.generation.dto.GenerationAdminTaskDTO;
+import com.aiplatform.generation.dto.GenerationCancelDTO;
 import com.aiplatform.generation.dto.GenerationChannelDTO;
 import com.aiplatform.generation.dto.GenerationReconcileResultDTO;
+import com.aiplatform.generation.dto.GenerationSettlementDTO;
 import com.aiplatform.generation.dto.SimulatorFaultForm;
+import com.aiplatform.generation.entity.GenerationCancelRequest;
+import com.aiplatform.generation.entity.GenerationResult;
 import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.entity.ProviderChannel;
+import com.aiplatform.generation.mapper.GenerationCancelMapper;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper.HandoffRow;
+import com.aiplatform.generation.mapper.GenerationResultMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.mapper.ProviderCallbackMapper;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
 import com.aiplatform.generation.mapper.SimulatedProviderMapper;
+import com.aiplatform.generation.service.GenerationCancelTransactions;
+import com.aiplatform.generation.service.GenerationResultTransactions;
+import com.aiplatform.generation.service.GenerationSettlementTransactions;
 import com.aiplatform.generation.service.IGenerationAdminService;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -46,14 +61,26 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
       GenerationTaskState.RECONCILING, GenerationTaskState.RESULT_PENDING,
       GenerationTaskState.FAILED_PENDING_FOLLOWUP,
       GenerationTaskState.CANCELLED_PENDING_FOLLOWUP,
-      GenerationTaskState.QUEUE_TIMEOUT, GenerationTaskState.REVIEW);
+      GenerationTaskState.QUEUE_TIMEOUT, GenerationTaskState.REVIEW,
+      GenerationTaskState.CANCEL_REQUESTED, GenerationTaskState.SUCCEEDED,
+      GenerationTaskState.FAILED, GenerationTaskState.CANCELLED);
   private static final List<String> TASK_ORDER = List.of(
       GenerationTaskState.QUEUED, GenerationTaskState.DISPATCHING,
       GenerationTaskState.SUBMITTED, GenerationTaskState.RUNNING,
       GenerationTaskState.RECONCILING, GenerationTaskState.RESULT_PENDING,
       GenerationTaskState.FAILED_PENDING_FOLLOWUP,
       GenerationTaskState.CANCELLED_PENDING_FOLLOWUP,
-      GenerationTaskState.QUEUE_TIMEOUT, GenerationTaskState.REVIEW);
+      GenerationTaskState.QUEUE_TIMEOUT, GenerationTaskState.REVIEW,
+      GenerationTaskState.CANCEL_REQUESTED, GenerationTaskState.SUCCEEDED,
+      GenerationTaskState.FAILED, GenerationTaskState.CANCELLED);
+  private static final List<String> RESULT_ORDER = List.of(
+      GenerationResultState.PENDING, GenerationResultState.SAVING,
+      GenerationResultState.SAVED, GenerationResultState.DELIVERED,
+      GenerationResultState.FAILED);
+  private static final List<String> CANCEL_ORDER = List.of(
+      GenerationCancelState.PENDING, GenerationCancelState.RETRYING,
+      GenerationCancelState.RESOLVED, GenerationCancelState.REJECTED,
+      GenerationCancelState.UNSUPPORTED);
   private static final List<String> ATTEMPT_ORDER = List.of(
       ProviderAttemptState.SUBMIT_PENDING, ProviderAttemptState.SUBMITTING,
       ProviderAttemptState.ACCEPTED, ProviderAttemptState.RUNNING,
@@ -72,19 +99,35 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
   private final GenerationHandoffMapper handoffs;
   private final ProviderCallbackMapper callbacks;
   private final SimulatedProviderMapper simulator;
+  private final GenerationResultMapper results;
+  private final GenerationCancelMapper cancels;
+  private final GenerationSettlementMapper settlements;
+  private final GenerationResultTransactions resultTransactions;
+  private final GenerationSettlementTransactions settlementTransactions;
+  private final GenerationCancelTransactions cancelTransactions;
   private final GenerationProperties properties;
   private final SimulatorFaultControlPolicy faultControlPolicy;
 
   public GenerationAdminServiceImpl(GenerationTaskMapper tasks, ProviderAttemptMapper attempts,
       ProviderChannelMapper channels, GenerationHandoffMapper handoffs,
       ProviderCallbackMapper callbacks, SimulatedProviderMapper simulator,
-      GenerationProperties properties, SimulatorFaultControlPolicy faultControlPolicy) {
+      GenerationResultMapper results, GenerationCancelMapper cancels,
+      GenerationSettlementMapper settlements, GenerationResultTransactions resultTransactions,
+      GenerationSettlementTransactions settlementTransactions,
+      GenerationCancelTransactions cancelTransactions, GenerationProperties properties,
+      SimulatorFaultControlPolicy faultControlPolicy) {
     this.tasks = tasks;
     this.attempts = attempts;
     this.channels = channels;
     this.handoffs = handoffs;
     this.callbacks = callbacks;
     this.simulator = simulator;
+    this.results = results;
+    this.cancels = cancels;
+    this.settlements = settlements;
+    this.resultTransactions = resultTransactions;
+    this.settlementTransactions = settlementTransactions;
+    this.cancelTransactions = cancelTransactions;
     this.properties = properties;
     this.faultControlPolicy = faultControlPolicy;
   }
@@ -103,12 +146,21 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
     for (String state : HANDOFF_ORDER) {
       handoffCounts.put(state, handoffs.countByState(state));
     }
+    Map<String, Integer> resultCounts = new LinkedHashMap<>();
+    for (String state : RESULT_ORDER) {
+      resultCounts.put(state, (int) results.countByState(state));
+    }
+    Map<String, Integer> cancelCounts = new LinkedHashMap<>();
+    for (String state : CANCEL_ORDER) {
+      cancelCounts.put(state, (int) cancels.countByState(state));
+    }
     List<GenerationChannelDTO> channelViews = new ArrayList<>();
     for (ProviderChannel channel : channels.selectList(null)) {
       channelViews.add(GenerationChannelDTO.from(channel));
     }
-    return new GenerationAdminOverviewDTO(taskCounts, attemptCounts, handoffCounts, channelViews,
-        callbacks.countConflicts(), simulator.countJobs(), settings());
+    return new GenerationAdminOverviewDTO(taskCounts, attemptCounts, handoffCounts,
+        resultCounts, cancelCounts, channelViews, callbacks.countConflicts(),
+        simulator.countJobs(), settings());
   }
 
   @Override
@@ -168,6 +220,84 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
     }
     return new GenerationReconcileResultDTO(taskId, "HANDOFF",
         handoffs.wakeWaiting(handoff.getHandoffId()));
+  }
+
+  @Override
+  public GenerationAdminDeliveryDTO delivery(long taskId) {
+    GenerationTask row = requireTask(taskId);
+    List<GenerationResult> rows = results.selectByTaskId(taskId);
+    List<GenerationAdminResultDTO> views = new ArrayList<>();
+    for (GenerationResult result : rows) {
+      views.add(GenerationAdminResultDTO.from(result));
+    }
+    int outputCount = row.getOutputCount() == null ? 0 : row.getOutputCount();
+    return new GenerationAdminDeliveryDTO(taskId, row.getState(), row.getAccountingState(),
+        outputCount, savedCount(rows), views,
+        GenerationCancelDTO.from(cancels.selectByTaskId(taskId)),
+        GenerationSettlementDTO.from(settlements.selectByTaskId(taskId)));
+  }
+
+  @Override
+  @Transactional
+  public GenerationAdminActionResultDTO retryResult(long taskId) {
+    GenerationTask row = requireTask(taskId);
+    if (!"FROZEN".equals(row.getAccountingState())) {
+      return new GenerationAdminActionResultDTO(taskId, "RETRY_RESULT", "ALREADY_SETTLED",
+          false);
+    }
+    if (!GenerationTaskState.RESULT_PENDING.equals(row.getState())
+        && !GenerationTaskState.REVIEW.equals(row.getState())) {
+      return new GenerationAdminActionResultDTO(taskId, "RETRY_RESULT", "NOT_DELIVERY_STATE",
+          false);
+    }
+    boolean applied = resultTransactions.resetFailed(taskId);
+    return new GenerationAdminActionResultDTO(taskId, "RETRY_RESULT",
+        applied ? "RESULT_SAVE_RETRY_SCHEDULED" : "NO_FAILED_RESULT", applied);
+  }
+
+  @Override
+  @Transactional
+  public GenerationAdminActionResultDTO recoverSettlement(long taskId) {
+    GenerationTask row = requireTask(taskId);
+    GenerationSettlementTransactions.SettlementOutcome outcome =
+        settlementTransactions.recover(taskId);
+    if (outcome.settled()) {
+      return new GenerationAdminActionResultDTO(taskId, "RECOVER_SETTLEMENT", "SETTLED", true);
+    }
+    String result = "FROZEN".equals(row.getAccountingState()) ? "NO_TRUSTED_FACT"
+        : "ALREADY_SETTLED";
+    return new GenerationAdminActionResultDTO(taskId, "RECOVER_SETTLEMENT", result, false);
+  }
+
+  @Override
+  @Transactional
+  public GenerationAdminActionResultDTO cancelTask(long taskId, String reason) {
+    requireTask(taskId);
+    GenerationCancelRequest request = cancelTransactions.requestAsAdmin(taskId, reason);
+    String state = request == null ? null : request.getState();
+    boolean applied = GenerationCancelState.isOpen(state)
+        || GenerationCancelState.RESOLVED.equals(state);
+    return new GenerationAdminActionResultDTO(taskId, "CANCEL_REQUEST",
+        state == null ? "UNAVAILABLE" : state, applied);
+  }
+
+  private GenerationTask requireTask(long taskId) {
+    GenerationTask row = tasks.selectById(taskId);
+    if (row == null) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    return row;
+  }
+
+  private int savedCount(List<GenerationResult> rows) {
+    int saved = 0;
+    for (GenerationResult row : rows) {
+      if (GenerationResultState.SAVED.equals(row.getState())
+          || GenerationResultState.DELIVERED.equals(row.getState())) {
+        saved++;
+      }
+    }
+    return saved;
   }
 
   @Override

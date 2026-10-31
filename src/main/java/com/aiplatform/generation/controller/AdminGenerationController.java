@@ -1,8 +1,11 @@
 package com.aiplatform.generation.controller;
 
 import com.aiplatform.common.api.Result;
+import com.aiplatform.generation.dto.GenerationAdminActionResultDTO;
+import com.aiplatform.generation.dto.GenerationAdminDeliveryDTO;
 import com.aiplatform.generation.dto.GenerationAdminOverviewDTO;
 import com.aiplatform.generation.dto.GenerationAdminTaskDTO;
+import com.aiplatform.generation.dto.GenerationCancelForm;
 import com.aiplatform.generation.dto.GenerationReconcileResultDTO;
 import com.aiplatform.generation.dto.SimulatorFaultForm;
 import com.aiplatform.generation.service.IGenerationAdminService;
@@ -58,6 +61,31 @@ public class AdminGenerationController {
   @AuditOperation(action = "generation.reconcile", objectType = "generation-task")
   public Result<GenerationReconcileResultDTO> reconcile(@PathVariable @Positive Long id) {
     return Result.ok(generations.reconcile(id));
+  }
+
+  @GetMapping("/tasks/{id}/delivery")
+  public Result<GenerationAdminDeliveryDTO> delivery(@PathVariable @Positive Long id) {
+    return Result.ok(generations.delivery(id));
+  }
+
+  @PostMapping("/tasks/{id}/results/retry")
+  @AuditOperation(action = "generation.result-retry", objectType = "generation-task")
+  public Result<GenerationAdminActionResultDTO> retryResult(@PathVariable @Positive Long id) {
+    return Result.ok(generations.retryResult(id));
+  }
+
+  @PostMapping("/tasks/{id}/settlement/recover")
+  @AuditOperation(action = "generation.settlement-recover", objectType = "generation-task")
+  public Result<GenerationAdminActionResultDTO> recoverSettlement(
+      @PathVariable @Positive Long id) {
+    return Result.ok(generations.recoverSettlement(id));
+  }
+
+  @PostMapping("/tasks/{id}/cancel")
+  @AuditOperation(action = "generation.cancel-request", objectType = "generation-task")
+  public Result<GenerationAdminActionResultDTO> cancel(@PathVariable @Positive Long id,
+      @RequestBody(required = false) GenerationCancelForm form) {
+    return Result.ok(generations.cancelTask(id, form == null ? null : form.getReason()));
   }
 
   @PostMapping("/simulator/faults")

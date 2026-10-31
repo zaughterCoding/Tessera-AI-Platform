@@ -8,6 +8,8 @@ public record GenerationAdminOverviewDTO(
     Map<String, Integer> taskStates,
     Map<String, Integer> attemptStates,
     Map<String, Integer> handoffStates,
+    Map<String, Integer> resultStates,
+    Map<String, Integer> cancelStates,
     List<GenerationChannelDTO> channels,
     int callbackConflicts,
     int simulatedJobs,

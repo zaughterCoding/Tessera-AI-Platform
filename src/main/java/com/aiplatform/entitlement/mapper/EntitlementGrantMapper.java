@@ -37,6 +37,15 @@ public interface EntitlementGrantMapper extends BaseMapper<EntitlementGrant> {
 
   int freezeAvailable(@Param("id") long id, @Param("units") int units);
 
+  /** 成功交付：冻结转已消费；过期不阻止已冻结数量的最终归属。 */
+  int consumeFrozen(@Param("id") long id, @Param("units") int units);
+
+  /** 确定失败或取消：有效期内冻结退回可用。 */
+  int releaseFrozenToAvailable(@Param("id") long id, @Param("units") int units);
+
+  /** 确定失败或取消：权益包已过期时冻结记入已过期，不再恢复可用。 */
+  int releaseFrozenToExpired(@Param("id") long id, @Param("units") int units);
+
   LocalDateTime selectDatabaseNow();
 
   List<PurchaseOrder> selectPaidOrdersAfter(@Param("afterOrderId") long afterOrderId,

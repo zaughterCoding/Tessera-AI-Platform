@@ -3,12 +3,15 @@ package com.aiplatform.generation.service;
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderAttemptState;
 import com.aiplatform.generation.ProviderResultMetadata;
+import com.aiplatform.generation.ResultManifest;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.provider.ProviderQueryResult;
+import com.aiplatform.generation.provider.ProviderResultRef;
 import com.aiplatform.generation.provider.ProviderSubmitResult;
+import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,15 +23,17 @@ public class GenerationUpstreamTransactions {
   private final GenerationHandoffMapper handoffs;
   private final GenerationTaskMapper tasks;
   private final GenerationFactApplier facts;
+  private final GenerationResultTransactions resultTx;
   private final GenerationProperties properties;
 
   public GenerationUpstreamTransactions(ProviderAttemptMapper attempts,
       GenerationHandoffMapper handoffs, GenerationTaskMapper tasks, GenerationFactApplier facts,
-      GenerationProperties properties) {
+      GenerationResultTransactions resultTx, GenerationProperties properties) {
     this.attempts = attempts;
     this.handoffs = handoffs;
     this.tasks = tasks;
     this.facts = facts;
+    this.resultTx = resultTx;
     this.properties = properties;
   }
 
@@ -106,23 +111,53 @@ public class GenerationUpstreamTransactions {
         claim.generation(), state, result.providerTaskId(), truncate(result.resultRef()),
         result.resultDigest(), truncate(result.failureCode()), truncate(result.failureDetail()));
     if (changed == 1) {
+      if (ProviderAttemptState.RESULT_PENDING.equals(state)) {
+        seedResults(claim.taskId(), claim.attemptId(), claim.outputCount(), result.results(),
+            result.resultRef(), result.resultDigest());
+      }
       facts.confirmedTerminal(claim.taskId(), claim.userId(), claim.channelId(), state);
     }
   }
 
   /** 终态已成立时只允许补齐缺失元数据；任何迟到或退化事实都不能反转状态或重复释放。 */
   private void repairPendingResult(AttemptClaim claim, ProviderQueryResult result) {
-    if (result.status() == ProviderQueryResult.QueryStatus.SUCCEEDED
-        && ProviderResultMetadata.isComplete(result.resultRef(), result.resultDigest())) {
-      int changed = attempts.completePendingResultWithLease(claim.attemptId(), claim.owner(),
-          claim.generation(), result.providerTaskId(), truncate(result.resultRef()),
-          result.resultDigest());
-      if (changed == 1) {
+    if (result.status() == ProviderQueryResult.QueryStatus.SUCCEEDED) {
+      int changed = 0;
+      if (ProviderResultMetadata.isComplete(result.resultRef(), result.resultDigest())) {
+        changed = attempts.completePendingResultWithLease(claim.attemptId(), claim.owner(),
+            claim.generation(), result.providerTaskId(), truncate(result.resultRef()),
+            result.resultDigest());
+      }
+      seedResults(claim.taskId(), claim.attemptId(), claim.outputCount(), result.results(),
+          result.resultRef(), result.resultDigest());
+      if (changed == 1 || resultTx.isComplete(claim.taskId(), claim.outputCount())) {
         return;
       }
     }
     attempts.delayPendingResultRepair(claim.attemptId(), claim.owner(), claim.generation(),
         properties.getReviewPollSeconds(), "RESULT_METADATA_PENDING: 上游结果元数据尚未补齐");
+  }
+
+  /** 只有清单完整时才登记结果；缺失时不释放容量、不生成占位文件，等待补查。 */
+  private void seedResults(long taskId, long attemptId, int outputCount,
+      List<ProviderResultRef> results, String ref, String digest) {
+    List<ProviderResultRef> manifest = ResultManifest.complete(results, outputCount);
+    if (manifest == null) {
+      manifest = ResultManifest.legacy(ref, digest, outputCount);
+    }
+    if (manifest != null) {
+      resultTx.seed(taskId, attemptId, outputCount, manifest);
+    }
+  }
+
+  /** 取消确认与容量、冻结释放同事务；失败时不改变任何既有事实。 */
+  @Transactional
+  public boolean confirmCancel(long taskId, long userId, long channelId, long attemptId) {
+    if (attempts.confirmUpstreamCancelled(attemptId) != 1) {
+      return false;
+    }
+    facts.confirmedTerminal(taskId, userId, channelId, ProviderAttemptState.CANCELLED);
+    return true;
   }
 
   @Transactional

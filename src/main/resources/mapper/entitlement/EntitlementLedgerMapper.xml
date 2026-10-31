@@ -24,6 +24,11 @@
     LIMIT #{limit} OFFSET #{offset}
   </select>
 
+  <select id="selectByOperationKey"
+      resultType="com.aiplatform.entitlement.entity.EntitlementLedger">
+    SELECT * FROM entitlement_ledger WHERE operation_key = #{operationKey}
+  </select>
+
   <select id="countByGrant" resultType="long">
     SELECT COUNT(*) FROM entitlement_ledger WHERE grant_id = #{grantId}
   </select>

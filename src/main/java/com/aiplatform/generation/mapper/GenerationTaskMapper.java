@@ -34,6 +34,28 @@ public interface GenerationTaskMapper extends BaseMapper<GenerationTask> {
   int updateStateUnlessFinal(@Param("taskId") long taskId, @Param("state") String state,
       @Param("note") String note);
 
+  /** 结果保存重试耗尽：仅把仍冻结的待交付任务转人工核对，不改账务。 */
+  int markReviewAfterSaveFailure(@Param("taskId") long taskId, @Param("note") String note);
+
+  GenerationTask selectByIdForUpdate(@Param("id") long id);
+
+  /** 任务账务终态只允许从冻结条件更新；唯一键与状态条件共同阻止双结算。 */
+  int finish(@Param("taskId") long taskId, @Param("state") String state,
+      @Param("accounting") String accounting, @Param("note") String note,
+      @Param("states") List<String> states);
+
+  /** 取消意图先落库并把未终结任务标为 CANCEL_REQUESTED；已有上游成功事实时不动。 */
+  int markCancelRequested(@Param("taskId") long taskId, @Param("note") String note);
+
+  /** 渠道不支持取消时恢复原执行状态，取消请求单独标记为不支持。 */
+  int restoreFromCancel(@Param("taskId") long taskId, @Param("state") String state,
+      @Param("note") String note);
+
+  /** 结算恢复扫描只返回仍冻结且可能已有最终决定的候选任务。 */
+  List<GenerationTask> selectSettlementCandidates(@Param("limit") int limit);
+
+  long countByAccounting(@Param("accounting") String accounting);
+
   int countByState(@Param("state") String state);
 
   /** 管理查询按状态过滤；只读，不参与调度或账务。 */

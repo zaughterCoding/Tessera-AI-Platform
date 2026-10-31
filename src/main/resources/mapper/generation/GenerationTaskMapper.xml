@@ -66,8 +66,60 @@
     UPDATE generation_task SET state = #{state}, state_note = #{note}
     WHERE id = #{taskId}
       AND state NOT IN ('RESULT_PENDING','FAILED_PENDING_FOLLOWUP',
-        'CANCELLED_PENDING_FOLLOWUP','QUEUE_TIMEOUT')
+        'CANCELLED_PENDING_FOLLOWUP','QUEUE_TIMEOUT','SUCCEEDED','FAILED','CANCELLED')
   </update>
+
+  <!-- 结果保存重试耗尽时转人工核对；只接受仍冻结的待交付状态，不覆盖已结算终态。 -->
+  <update id="markReviewAfterSaveFailure">
+    UPDATE generation_task SET state = 'REVIEW', state_note = #{note}
+    WHERE id = #{taskId} AND accounting_state = 'FROZEN'
+      AND state IN ('RESULT_PENDING','REVIEW')
+  </update>
+
+  <select id="selectByIdForUpdate"
+      resultType="com.aiplatform.generation.entity.GenerationTask">
+    SELECT * FROM generation_task WHERE id = #{id} FOR UPDATE
+  </select>
+
+  <update id="finish">
+    UPDATE generation_task
+    SET state = #{state}, accounting_state = #{accounting}, state_note = #{note},
+        delivered_at = IF(#{state} = 'SUCCEEDED', NOW(3), delivered_at),
+        settled_at = NOW(3)
+    WHERE id = #{taskId} AND accounting_state = 'FROZEN' AND state IN
+    <foreach collection="states" item="allowed" open="(" separator="," close=")">
+      #{allowed}
+    </foreach>
+  </update>
+
+  <!-- 上游已成功或已终态的任务不再进入取消；等待人工核对的仍可按可信查询结果处理。 -->
+  <update id="markCancelRequested">
+    UPDATE generation_task
+    SET state = 'CANCEL_REQUESTED', state_note = #{note}
+    WHERE id = #{taskId} AND accounting_state = 'FROZEN'
+      AND state NOT IN ('RESULT_PENDING','FAILED_PENDING_FOLLOWUP',
+        'CANCELLED_PENDING_FOLLOWUP','QUEUE_TIMEOUT','SUCCEEDED','FAILED','CANCELLED')
+  </update>
+
+  <update id="restoreFromCancel">
+    UPDATE generation_task
+    SET state = #{state}, state_note = #{note}
+    WHERE id = #{taskId} AND state = 'CANCEL_REQUESTED' AND accounting_state = 'FROZEN'
+  </update>
+
+  <select id="selectSettlementCandidates"
+      resultType="com.aiplatform.generation.entity.GenerationTask">
+    SELECT * FROM generation_task
+    WHERE accounting_state = 'FROZEN'
+      AND state IN ('FAILED_PENDING_FOLLOWUP','CANCELLED_PENDING_FOLLOWUP','QUEUE_TIMEOUT',
+        'RESULT_PENDING','REVIEW','CANCEL_REQUESTED','SUCCEEDED','FAILED','CANCELLED')
+    ORDER BY id
+    LIMIT #{limit}
+  </select>
+
+  <select id="countByAccounting" resultType="long">
+    SELECT COUNT(*) FROM generation_task WHERE accounting_state = #{accounting}
+  </select>
 
   <select id="countByState" resultType="int">
     SELECT COUNT(*) FROM generation_task WHERE state = #{state}

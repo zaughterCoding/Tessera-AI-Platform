@@ -40,6 +40,13 @@ const AdminPage = {
       cacheTrace: null,
       progressInput: "",
       progress: null,
+      generationState: "",
+      generationOffset: 0,
+      generationLimit: 20,
+      generationOverview: null,
+      generationTasks: [],
+      generationSelectedId: "",
+      generationDelivery: null,
     };
   },
   created() {
@@ -60,6 +67,7 @@ const AdminPage = {
         else if (this.tab === "analytics") await this.loadAnalytics();
         else if (this.tab === "operations") await this.loadOperations();
         else if (this.tab === "experience") await this.loadExperience();
+        else if (this.tab === "generation") await this.loadGeneration();
       } catch (failure) {
         this.error = failure;
       } finally {
@@ -80,6 +88,59 @@ const AdminPage = {
       if (!value) return null;
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 19);
+    },
+    async loadGeneration() {
+      const [overview, tasks] = await Promise.all([
+        this.$api("/admin/generation/overview"),
+        this.$api("/admin/generation/tasks", {
+          params: {
+            state: this.generationState || undefined,
+            limit: this.generationLimit,
+            offset: this.generationOffset,
+          },
+        }),
+      ]);
+      this.generationOverview = overview.data || null;
+      this.generationTasks = tasks.data || [];
+      if (this.generationSelectedId) await this.selectGeneration(this.generationSelectedId);
+    },
+    async selectGeneration(id) {
+      this.generationSelectedId = id;
+      const result = await this.$api("/admin/generation/tasks/" + encodeURIComponent(id)
+        + "/delivery");
+      this.generationDelivery = result.data || null;
+    },
+    filterGeneration() {
+      this.generationOffset = 0;
+      this.loadGeneration().catch((failure) => this.notifyError(failure));
+    },
+    generationPage(delta) {
+      const next = this.generationOffset + delta * this.generationLimit;
+      if (next < 0) return;
+      this.generationOffset = next;
+      this.loadGeneration().catch((failure) => this.notifyError(failure));
+    },
+    async generationAction(id, action) {
+      const paths = {
+        retry: "/admin/generation/tasks/" + encodeURIComponent(id) + "/results/retry",
+        recover: "/admin/generation/tasks/" + encodeURIComponent(id) + "/settlement/recover",
+        cancel: "/admin/generation/tasks/" + encodeURIComponent(id) + "/cancel",
+      };
+      this.acting = "generation-" + action + "-" + id;
+      try {
+        const result = await this.$api(paths[action], {
+          method: "POST",
+          body: action === "cancel" ? { reason: "运营台请求取消" } : undefined,
+        });
+        const data = result.data || {};
+        this.$root.notify(data.applied ? "操作已登记：" + data.outcome
+          : "当前事实不满足条件：" + data.outcome, data.applied ? "success" : "warn");
+        await this.loadGeneration();
+      } catch (failure) {
+        this.notifyError(failure);
+      } finally {
+        this.acting = "";
+      }
     },
     async loadCampaigns() {
       const [campaigns, deadLetters, streamMetrics] = await Promise.all([
@@ -496,6 +557,102 @@ const AdminPage = {
               </table>
             </div>
             <empty-block v-if="!failures.length" text="没有失败隔离记录"></empty-block>
+          </div>
+        </div>
+
+        <div v-if="!loading && tab === 'generation'" class="admin-section">
+          <div v-if="generationOverview" class="grid grid-3">
+            <div class="card">
+              <h3 style="margin-top:0">任务状态</h3>
+              <div v-for="(count, state) in generationOverview.taskStates" :key="'t' + state" class="meta-line">
+                <span>{{ state }}</span><strong>{{ count }}</strong>
+              </div>
+            </div>
+            <div class="card">
+              <h3 style="margin-top:0">结果状态</h3>
+              <div v-for="(count, state) in generationOverview.resultStates" :key="'r' + state" class="meta-line">
+                <span>{{ state }}</span><strong>{{ count }}</strong>
+              </div>
+            </div>
+            <div class="card">
+              <h3 style="margin-top:0">取消请求</h3>
+              <div v-for="(count, state) in generationOverview.cancelStates" :key="'c' + state" class="meta-line">
+                <span>{{ state }}</span><strong>{{ count }}</strong>
+              </div>
+            </div>
+          </div>
+          <div class="card" style="margin-top:16px">
+            <h3>任务交付</h3>
+            <div class="form-row" style="margin-bottom:12px">
+              <label class="field"><span>任务状态</span>
+                <select v-model="generationState" @change="filterGeneration">
+                  <option value="">全部</option>
+                  <option>QUEUED</option><option>DISPATCHING</option><option>SUBMITTED</option>
+                  <option>RUNNING</option><option>RECONCILING</option><option>RESULT_PENDING</option>
+                  <option>FAILED_PENDING_FOLLOWUP</option><option>CANCELLED_PENDING_FOLLOWUP</option>
+                  <option>QUEUE_TIMEOUT</option><option>REVIEW</option><option>CANCEL_REQUESTED</option>
+                  <option>SUCCEEDED</option><option>FAILED</option><option>CANCELLED</option>
+                </select>
+              </label>
+              <button class="button ghost" type="button" @click="filterGeneration">刷新</button>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>ID</th><th>用户</th><th>状态</th><th>账务</th><th>规格</th><th>时间</th><th>操作</th></tr></thead>
+                <tbody>
+                  <tr v-for="row in generationTasks" :key="row.id">
+                    <td>{{ row.id }}</td><td>{{ row.userId }}</td><td>{{ row.state }}</td>
+                    <td>{{ row.accountingState }}</td>
+                    <td>{{ row.attemptState || '—' }} / {{ row.frozenUnits }} 次</td>
+                    <td class="muted">{{ $formatTime(row.createdAt) }}</td>
+                    <td><button class="button ghost small" type="button" @click="selectGeneration(row.id)">核对</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <empty-block v-if="!generationTasks.length" text="没有符合条件的任务"></empty-block>
+            <div class="actions" style="margin-top:12px">
+              <button class="button ghost small" type="button" :disabled="generationOffset <= 0" @click="generationPage(-1)">上一页</button>
+              <span class="muted">偏移 {{ generationOffset }}</span>
+              <button class="button ghost small" type="button" :disabled="generationTasks.length < generationLimit" @click="generationPage(1)">下一页</button>
+            </div>
+          </div>
+          <div v-if="generationDelivery" class="card" style="margin-top:16px">
+            <h3>任务 {{ generationDelivery.taskId }} · {{ generationDelivery.taskState }} / {{ generationDelivery.accountingState }}</h3>
+            <p class="muted">已保存 {{ generationDelivery.savedCount }} / {{ generationDelivery.outputCount }}；重试只重置保存失败的结果，不会改写任务决定或余额。</p>
+            <div class="actions" style="margin-bottom:12px">
+              <button class="button small" type="button"
+                :disabled="acting === 'generation-retry-' + generationDelivery.taskId"
+                @click="generationAction(generationDelivery.taskId, 'retry')">重试结果保存</button>
+              <button class="button ghost small" type="button"
+                :disabled="acting === 'generation-recover-' + generationDelivery.taskId"
+                @click="generationAction(generationDelivery.taskId, 'recover')">按事实补结算</button>
+              <button class="button danger small" type="button"
+                :disabled="acting === 'generation-cancel-' + generationDelivery.taskId"
+                @click="generationAction(generationDelivery.taskId, 'cancel')">请求取消</button>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>序号</th><th>状态</th><th>尝试</th><th>媒体</th><th>摘要</th><th>最后错误</th><th>下次尝试</th></tr></thead>
+                <tbody>
+                  <tr v-for="result in generationDelivery.results" :key="result.id">
+                    <td>{{ result.position }}</td><td>{{ result.state }}</td>
+                    <td>{{ result.saveAttempts }}</td><td>{{ result.mediaId || '—' }}</td>
+                    <td class="muted">{{ result.contentDigest || result.expectedDigest || '—' }}</td>
+                    <td class="muted">{{ result.lastError || '—' }}</td>
+                    <td class="muted">{{ $formatTime(result.nextAttemptAt) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <empty-block v-if="!generationDelivery.results.length" text="尚未登记结果文件；旧版元数据任务保持冻结等待人工处理"></empty-block>
+            <p v-if="generationDelivery.cancelRequest" class="muted">
+              取消请求：{{ generationDelivery.cancelRequest.state }} /
+              {{ generationDelivery.cancelRequest.outcome || '等待确认' }}
+            </p>
+            <p v-if="generationDelivery.settlement" class="muted">
+              结算：{{ generationDelivery.settlement.description }}
+            </p>
           </div>
         </div>
 

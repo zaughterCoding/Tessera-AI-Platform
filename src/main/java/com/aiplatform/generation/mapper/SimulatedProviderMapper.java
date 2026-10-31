@@ -22,14 +22,16 @@ public interface SimulatedProviderMapper {
   int insertJobIgnore(@Param("attemptKey") String attemptKey,
       @Param("providerTaskId") String providerTaskId, @Param("state") String state,
       @Param("faultMode") String faultMode, @Param("durationMs") int durationMs,
-      @Param("queryFailures") int queryFailures);
+      @Param("outputCount") int outputCount, @Param("queryFailures") int queryFailures);
 
   int insertJob(@Param("attemptKey") String attemptKey,
       @Param("providerTaskId") String providerTaskId, @Param("state") String state,
       @Param("faultMode") String faultMode, @Param("durationMs") int durationMs,
-      @Param("queryFailures") int queryFailures);
+      @Param("outputCount") int outputCount, @Param("queryFailures") int queryFailures);
 
   SimulatedProviderJob selectJob(@Param("attemptKey") String attemptKey);
+
+  SimulatedProviderJob selectJobByProviderTaskId(@Param("providerTaskId") String providerTaskId);
 
   SimulatedProviderJob selectJobForUpdate(@Param("attemptKey") String attemptKey);
 

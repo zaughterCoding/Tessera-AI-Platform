@@ -22,14 +22,17 @@ public class SimulatedProviderStore {
 
   private final SimulatedProviderMapper mapper;
   private final GenerationProperties properties;
+  private final SimulatedResultFiles resultFiles;
 
-  public SimulatedProviderStore(SimulatedProviderMapper mapper, GenerationProperties properties) {
+  public SimulatedProviderStore(SimulatedProviderMapper mapper, GenerationProperties properties,
+      SimulatedResultFiles resultFiles) {
     this.mapper = mapper;
     this.properties = properties;
+    this.resultFiles = resultFiles;
   }
 
   @Transactional(propagation = Propagation.REQUIRES_NEW)
-  public Acceptance accept(String attemptKey, Long userId, Long applicationId) {
+  public Acceptance accept(String attemptKey, Long userId, Long applicationId, int outputCount) {
     SimulatedProviderFault fault = mapper.selectFaultForUpdate(attemptKey, userId, applicationId);
     String mode = fault == null ? NONE : fault.getMode();
     if (fault != null) {
@@ -44,7 +47,8 @@ public class SimulatedProviderStore {
       int duration = duration(mode, fault);
       int queryFailures = QUERY_FAILURE.equals(mode) ? properties.getSimulatorQueryFailures() : 0;
       // 幂等键竞争时由唯一键吸收；仍以数据库中的既有任务为唯一上游事实。
-      mapper.insertJobIgnore(attemptKey, providerTaskId, "RUNNING", mode, duration, queryFailures);
+      mapper.insertJobIgnore(attemptKey, providerTaskId, "RUNNING", mode, duration,
+          Math.max(1, outputCount), queryFailures);
       existing = mapper.selectJob(attemptKey);
     }
     return new Acceptance(existing, mode);
@@ -62,12 +66,16 @@ public class SimulatedProviderStore {
     }
     if ("RUNNING".equals(job.getState())) {
       String target = FAIL.equals(job.getFaultMode()) ? "FAILED" : "SUCCEEDED";
+      boolean realFiles = "SUCCEEDED".equals(target) && resultFiles.configured();
+      // 新任务写入可下载的真实文件引用；旧任务保留 simulated:// 元数据，绝不伪造文件。
       String resultRef = "SUCCEEDED".equals(target)
-          ? "simulated://result/" + job.getProviderTaskId() : null;
+          ? (realFiles ? resultFiles.resultUrl(job.getProviderTaskId(), 0)
+              : "simulated://result/" + job.getProviderTaskId()) : null;
       byte[] digestSource = (job.getProviderTaskId() + ":SUCCEEDED")
           .getBytes(java.nio.charset.StandardCharsets.UTF_8);
       String resultDigest = "SUCCEEDED".equals(target)
-          ? ProviderCallbackSignatures.sha256(digestSource) : null;
+          ? (realFiles ? resultFiles.digest(resultFiles.png(job.getProviderTaskId(), 0))
+              : ProviderCallbackSignatures.sha256(digestSource)) : null;
       String failureCode = "FAILED".equals(target) ? "SIMULATED_FAILURE" : null;
       String failureDetail = "FAILED".equals(target) ? "模拟上游返回失败" : null;
       if (mapper.completeJob(job.getId(), target, resultRef, resultDigest,

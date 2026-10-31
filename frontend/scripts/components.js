@@ -124,6 +124,7 @@ export function registerComponents(app) {
         tabs: [
           { key: "campaigns", label: "限量活动" },
           { key: "messaging", label: "可靠任务" },
+          { key: "generation", label: "生成交付" },
           { key: "analytics", label: "行为分析" },
           { key: "operations", label: "审计与保留" },
           { key: "experience", label: "技术体验" },

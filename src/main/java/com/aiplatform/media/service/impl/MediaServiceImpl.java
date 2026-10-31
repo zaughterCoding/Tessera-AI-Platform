@@ -15,6 +15,7 @@ import com.aiplatform.media.mapper.MediaQuotaMapper;
 import com.aiplatform.media.service.IMediaService;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.service.IBusinessOutboxService;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -79,6 +80,7 @@ public class MediaServiceImpl implements IMediaService {
     asset.setContentType(image.contentType());
     asset.setSizeBytes(image.size());
     asset.setState(MediaState.PENDING.name());
+    asset.setSource("UPLOAD");
     // 配额预占与登记同事务；登记失败不会留下未释放的配额。
     transactions.executeWithoutResult(tx -> {
       quotas.ensureQuota(userId);
@@ -106,6 +108,74 @@ public class MediaServiceImpl implements IMediaService {
       throw new ApiException(ErrorCode.UNAVAILABLE);
     }
     return MediaAssetDTO.owned(requireAsset(asset.getId()));
+  }
+
+  @Override
+  public MediaAsset storeGenerated(long userId, byte[] content, String contentType,
+      String extension, String originalName) {
+    if (content == null || content.length == 0 || content.length > config.maxFileBytes()) {
+      throw new ApiException(ErrorCode.PAYLOAD_TOO_LARGE);
+    }
+    String expectedType = TYPES.get(extension);
+    if (expectedType == null || !expectedType.equals(contentType)) {
+      throw new ApiException(ErrorCode.INVALID_REQUEST);
+    }
+    byte[] signature = new byte[12];
+    System.arraycopy(content, 0, signature, 0, Math.min(content.length, signature.length));
+    if (content.length < signature.length || !matches(extension, signature)) {
+      throw new ApiException(ErrorCode.INVALID_REQUEST);
+    }
+    String path = storage.allocatePath(userId, extension);
+    MediaAsset asset = new MediaAsset();
+    asset.setUserId(userId);
+    asset.setPath(path);
+    asset.setOriginalName(safeName(originalName == null ? "result." + extension : originalName,
+        extension));
+    asset.setContentType(contentType);
+    asset.setSizeBytes((long) content.length);
+    asset.setState(MediaState.PENDING.name());
+    asset.setSource("GENERATED");
+    transactions.executeWithoutResult(tx -> {
+      quotas.ensureQuota(userId);
+      if (quotas.reserve(userId, content.length, config.userByteQuota(),
+          config.userAssetQuota()) != 1) {
+        throw new ApiException(ErrorCode.QUOTA_EXCEEDED);
+      }
+      assets.insertPending(asset);
+    });
+    try (InputStream stream = new ByteArrayInputStream(content)) {
+      storage.store(path, stream);
+    } catch (IOException | RuntimeException failure) {
+      abortUpload(asset.getId(), userId, content.length, path);
+      throw new ApiException(ErrorCode.UNAVAILABLE);
+    }
+    try {
+      transactions.executeWithoutResult(tx -> {
+        if (assets.markActive(asset.getId()) != 1) {
+          throw new IllegalStateException("生成文件登记状态已变化");
+        }
+      });
+    } catch (RuntimeException failure) {
+      log.warn("生成文件登记完成失败，等待清理，assetId={}", asset.getId());
+      throw new ApiException(ErrorCode.UNAVAILABLE);
+    }
+    return requireAsset(asset.getId());
+  }
+
+  @Override
+  @Transactional
+  public void discardGenerated(long assetId) {
+    MediaAsset asset = assets.selectByIdForUpdate(assetId);
+    if (asset == null || !"GENERATED".equals(asset.getSource())
+        || !MediaState.ACTIVE.name().equals(asset.getState())) {
+      return;
+    }
+    if (assets.countAllReferences(assetId) > 0) {
+      return;
+    }
+    if (assets.markDeleting(assetId) == 1) {
+      outbox.appendEvent(BusinessEventType.MEDIA_DELETE.name(), assetId, asset.getUserId());
+    }
   }
 
   @Override

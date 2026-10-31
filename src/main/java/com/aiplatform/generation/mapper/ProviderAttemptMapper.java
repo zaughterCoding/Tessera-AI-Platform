@@ -69,6 +69,9 @@ public interface ProviderAttemptMapper extends BaseMapper<ProviderAttempt> {
       @Param("resultDigest") String resultDigest, @Param("failureCode") String failureCode,
       @Param("failureDetail") String failureDetail);
 
+  /** 上游确认取消时推进为终态；已存在结果或失败事实时拒绝覆盖。 */
+  int confirmUpstreamCancelled(@Param("id") long id);
+
   /** 历史成功快照缺失结果元数据时只补字段，不改变终态与容量。 */
   int completePendingResult(@Param("id") long id, @Param("providerTaskId") String providerTaskId,
       @Param("resultRef") String resultRef, @Param("resultDigest") String resultDigest);

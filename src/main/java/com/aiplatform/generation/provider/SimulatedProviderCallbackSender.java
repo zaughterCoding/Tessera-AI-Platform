@@ -7,6 +7,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -28,14 +29,15 @@ public class SimulatedProviderCallbackSender {
   }
 
   public void notifyTerminal(String attemptKey, String providerTaskId, String state,
-      String resultRef, String resultDigest, String failureCode, String failureDetail) {
+      String resultRef, String resultDigest, String failureCode, String failureDetail,
+      List<ProviderResultRef> results) {
     if (!properties.isSimulatorCallbackEnabled()) {
       return;
     }
     try {
       String eventKey = providerTaskId + ":" + state;
       ProviderCallbackPayload payload = new ProviderCallbackPayload(eventKey, state, attemptKey,
-          providerTaskId, resultRef, resultDigest, failureCode, failureDetail);
+          providerTaskId, resultRef, resultDigest, failureCode, failureDetail, results);
       byte[] body = json.writeValueAsBytes(payload);
       long timestamp = Instant.now().getEpochSecond();
       String signature = ProviderCallbackSignatures.sign(properties.getCallbackSecret(),

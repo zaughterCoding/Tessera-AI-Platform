@@ -1,5 +1,7 @@
 package com.aiplatform.generation.provider;
 
+import java.util.List;
+
 /** 查询结果只描述上游事实；结果地址仅作为不可下载的元数据保存。 */
 public record ProviderQueryResult(
     QueryStatus status,
@@ -7,7 +9,13 @@ public record ProviderQueryResult(
     String resultRef,
     String resultDigest,
     String failureCode,
-    String failureDetail) {
+    String failureDetail,
+    List<ProviderResultRef> results) {
+
+  public ProviderQueryResult(QueryStatus status, String providerTaskId, String resultRef,
+      String resultDigest, String failureCode, String failureDetail) {
+    this(status, providerTaskId, resultRef, resultDigest, failureCode, failureDetail, null);
+  }
 
   public enum QueryStatus {
     ACCEPTED,
@@ -19,6 +27,6 @@ public record ProviderQueryResult(
   }
 
   public static ProviderQueryResult of(QueryStatus status, String providerTaskId) {
-    return new ProviderQueryResult(status, providerTaskId, null, null, null, null);
+    return new ProviderQueryResult(status, providerTaskId, null, null, null, null, null);
   }
 }

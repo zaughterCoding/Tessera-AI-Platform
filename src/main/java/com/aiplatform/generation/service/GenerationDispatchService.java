@@ -10,6 +10,7 @@ import com.aiplatform.generation.entity.ProviderChannel;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper.HandoffRow;
 import com.aiplatform.generation.mapper.GenerationQuotaMapper;
+import com.aiplatform.generation.mapper.GenerationResultMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
@@ -41,12 +42,15 @@ public class GenerationDispatchService {
   private final GenerationQuotaMapper quotas;
   private final ProviderChannelAdapter adapter;
   private final GenerationUpstreamTransactions upstream;
+  private final GenerationSettlementTransactions settlements;
+  private final GenerationResultMapper results;
   private final GenerationProperties properties;
 
   public GenerationDispatchService(GenerationHandoffMapper handoffs,
       ProviderAttemptMapper attempts, ProviderChannelMapper channels, GenerationTaskMapper tasks,
       GenerationQuotaMapper quotas, ProviderChannelAdapter adapter,
-      GenerationUpstreamTransactions upstream, GenerationProperties properties) {
+      GenerationUpstreamTransactions upstream, GenerationSettlementTransactions settlements,
+      GenerationResultMapper results, GenerationProperties properties) {
     this.handoffs = handoffs;
     this.attempts = attempts;
     this.channels = channels;
@@ -54,6 +58,8 @@ public class GenerationDispatchService {
     this.quotas = quotas;
     this.adapter = adapter;
     this.upstream = upstream;
+    this.settlements = settlements;
+    this.results = results;
     this.properties = properties;
   }
 
@@ -122,6 +128,15 @@ public class GenerationDispatchService {
           "ATTEMPT_EXISTING");
       return null;
     }
+    // 先抢占任务状态再创建尝试：用户取消若已把任务改为 CANCEL_REQUESTED，本次认领作废。
+    if (tasks.updateStateIn(row.getTaskId(), GenerationTaskState.DISPATCHING,
+        GenerationFactApplier.noteFor(ProviderAttemptState.SUBMITTING),
+        List.of(GenerationTaskState.QUEUED)) != 1) {
+      channels.releaseInFlight(channel.getId());
+      handoffs.completeClaimedHandoff(row.getHandoffId(), row.getGeneration() + 1,
+          "TASK_STATE_CHANGED");
+      return null;
+    }
     ProviderAttempt attempt = new ProviderAttempt();
     attempt.setTaskId(row.getTaskId());
     attempt.setChannelId(channel.getId());
@@ -132,9 +147,6 @@ public class GenerationDispatchService {
     if (attempts.insertAttempt(attempt, properties.getLeaseSeconds()) != 1) {
       throw new IllegalStateException("稳定尝试写入失败");
     }
-    tasks.updateStateIn(row.getTaskId(), GenerationTaskState.DISPATCHING,
-        GenerationFactApplier.noteFor(ProviderAttemptState.SUBMITTING),
-        List.of(GenerationTaskState.QUEUED));
     GenerationTask task = tasks.selectById(row.getTaskId());
     if (task == null) {
       throw new IllegalStateException("已受理任务不存在");
@@ -143,13 +155,14 @@ public class GenerationDispatchService {
   }
 
   private void timeoutQueued(HandoffRow row, ProviderChannel channel) {
+    // 交接行完成是唯一的排队责任闸门：取消与超时只有一个能释放队列与用户名额。
     if (handoffs.completeWaitingHandoff(row.getHandoffId(), row.getHandoffState(),
         "QUEUE_TIMEOUT") != 1) {
       return;
     }
     channels.releaseQueue(channel.getId());
     quotas.release(row.getUserId());
-    tasks.updateStateIn(row.getTaskId(), GenerationTaskState.QUEUE_TIMEOUT,
+    settlements.release(row.getTaskId(), GenerationTaskState.QUEUE_TIMEOUT,
         GenerationFactApplier.terminalNote(GenerationTaskState.QUEUE_TIMEOUT),
         List.of(GenerationTaskState.QUEUED));
   }
@@ -159,10 +172,16 @@ public class GenerationDispatchService {
     handoffs.clearExpiredClaim(row.getHandoffId(), row.getGeneration());
     if (attempt != null) {
       // 尝试已持久化，责任转交查询恢复；交接行不再参与调度。
+      // 只接管仍停留在 DISPATCHING 的任务，避免覆盖取消请求或已推进的执行状态。
       handoffs.completeClaimedHandoff(row.getHandoffId(), row.getGeneration(),
           "LEASE_RECOVERED");
-      tasks.updateStateUnlessFinal(row.getTaskId(), GenerationTaskState.RECONCILING,
-          GenerationFactApplier.noteFor(ProviderAttemptState.RECONCILING));
+      tasks.updateStateIn(row.getTaskId(), GenerationTaskState.RECONCILING,
+          GenerationFactApplier.noteFor(ProviderAttemptState.RECONCILING),
+          List.of(GenerationTaskState.DISPATCHING));
+    } else if (!GenerationTaskState.QUEUED.equals(row.getTaskState())) {
+      // 任务已被取消等状态接管：本次认领作废，队列名额已由占用动作消耗，不再重复归还。
+      handoffs.completeClaimedHandoff(row.getHandoffId(), row.getGeneration(),
+          "TASK_STATE_CHANGED");
     } else {
       handoffs.markRetry(row.getHandoffId(), "CLAIMED", 2, "CLAIM_LEASE_EXPIRED");
     }
@@ -186,9 +205,11 @@ public class GenerationDispatchService {
       if (task == null) {
         continue;
       }
-      // 终态任务仍可能需要补齐历史成功快照缺失的结果元数据。
+      // 终态任务仍可能需要补齐历史成功快照缺失的结果元数据或完整结果清单。
+      int outputCount = task.getOutputCount() == null ? 0 : task.getOutputCount();
       boolean repairable = ProviderAttemptState.RESULT_PENDING.equals(fresh.getState())
-          && ProviderResultMetadata.isMissing(fresh);
+          && (ProviderResultMetadata.isMissing(fresh)
+              || results.countByTaskId(task.getId()) < outputCount);
       if (GenerationTaskState.isUpstreamFinal(task.getState()) && !repairable) {
         continue;
       }

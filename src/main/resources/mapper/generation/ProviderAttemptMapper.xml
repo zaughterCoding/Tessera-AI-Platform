@@ -175,6 +175,15 @@
       AND state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
   </update>
 
+  <!-- 取消确认只在上游仍处于非终态时生效；已成功或已失败的尝试不会被取消覆盖。 -->
+  <update id="confirmUpstreamCancelled">
+    UPDATE provider_attempt
+    SET state = 'CANCELLED', terminal_at = NOW(3), next_attempt_at = NULL,
+        last_contact_at = NOW(3), owner = NULL, lease_until = NULL
+    WHERE id = #{id}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING','ACCEPTED','RUNNING','RECONCILING','REVIEW')
+  </update>
+
   <update id="completePendingResult">
     UPDATE provider_attempt
     SET result_ref = #{resultRef}, result_digest = #{resultDigest},

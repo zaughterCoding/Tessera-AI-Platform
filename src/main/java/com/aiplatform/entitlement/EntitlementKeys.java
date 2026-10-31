@@ -25,4 +25,13 @@ public final class EntitlementKeys {
   public static String freezeOperation(long taskId) {
     return "FREEZE:task:" + taskId + ":" + EntitlementItems.CREDITS;
   }
+
+  /** 一个任务的最终结算只有一种去向；任务身份同时约束消费与释放。 */
+  public static String consumeOperation(long taskId) {
+    return "CONSUME:task:" + taskId + ":" + EntitlementItems.CREDITS;
+  }
+
+  public static String releaseOperation(long taskId) {
+    return "RELEASE:task:" + taskId + ":" + EntitlementItems.CREDITS;
+  }
 }

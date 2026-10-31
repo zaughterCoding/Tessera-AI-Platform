@@ -1,7 +1,9 @@
 package com.aiplatform.generation.service;
 
 import com.aiplatform.generation.ProviderAttemptState;
+import com.aiplatform.generation.ResultManifest;
 import com.aiplatform.generation.config.GenerationProperties;
+import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.entity.ProviderCallbackEvent;
 import com.aiplatform.generation.entity.ProviderChannel;
@@ -10,6 +12,8 @@ import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.mapper.ProviderCallbackMapper;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
 import com.aiplatform.generation.provider.ProviderCallbackPayload;
+import com.aiplatform.generation.provider.ProviderResultRef;
+import java.util.List;
 import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,16 +29,19 @@ public class GenerationCallbackTransactions {
   private final ProviderCallbackMapper callbacks;
   private final GenerationTaskMapper tasks;
   private final GenerationFactApplier facts;
+  private final GenerationResultTransactions resultTx;
   private final GenerationProperties properties;
 
   public GenerationCallbackTransactions(ProviderChannelMapper channels,
       ProviderAttemptMapper attempts, ProviderCallbackMapper callbacks, GenerationTaskMapper tasks,
-      GenerationFactApplier facts, GenerationProperties properties) {
+      GenerationFactApplier facts, GenerationResultTransactions resultTx,
+      GenerationProperties properties) {
     this.channels = channels;
     this.attempts = attempts;
     this.callbacks = callbacks;
     this.tasks = tasks;
     this.facts = facts;
+    this.resultTx = resultTx;
     this.properties = properties;
   }
 
@@ -80,6 +87,10 @@ public class GenerationCallbackTransactions {
   }
 
   private int applyFact(ProviderAttempt attempt, ProviderCallbackPayload payload) {
+    GenerationTask task = tasks.selectById(attempt.getTaskId());
+    if (task == null) {
+      return 0;
+    }
     int changed;
     switch (payload.eventType()) {
       case "ACCEPTED" -> changed = attempts.applyCallbackAccepted(attempt.getId(),
@@ -104,8 +115,13 @@ public class GenerationCallbackTransactions {
       // 不改终态、不重复释放容量，也不重新写任务状态说明。
       if ("SUCCEEDED".equals(payload.eventType())
           && ProviderAttemptState.RESULT_PENDING.equals(attempt.getState())) {
-        return attempts.completePendingResult(attempt.getId(), payload.providerTaskId(),
+        int repaired = attempts.completePendingResult(attempt.getId(), payload.providerTaskId(),
             payload.resultRef(), payload.resultDigest());
+        if (repaired == 1 || payload.results() != null) {
+          seedResults(task, attempt, payload.results(), payload.resultRef(),
+              payload.resultDigest());
+        }
+        return repaired;
       }
       return 0;
     }
@@ -117,9 +133,12 @@ public class GenerationCallbackTransactions {
       case "CANCELLED" -> ProviderAttemptState.CANCELLED;
       default -> throw new IllegalStateException("未知事件类型");
     };
+    if (ProviderAttemptState.RESULT_PENDING.equals(attemptState)) {
+      seedResults(task, attempt, payload.results(), payload.resultRef(), payload.resultDigest());
+    }
     if (ProviderAttemptState.isTerminal(attemptState)) {
-      facts.confirmedTerminal(attempt.getTaskId(),
-          taskUserId(attempt.getTaskId()), attempt.getChannelId(), attemptState);
+      facts.confirmedTerminal(attempt.getTaskId(), task.getUserId(), attempt.getChannelId(),
+          attemptState);
     } else {
       tasks.updateStateUnlessFinal(attempt.getTaskId(),
           ProviderAttemptState.taskState(attemptState),
@@ -128,12 +147,19 @@ public class GenerationCallbackTransactions {
     return changed;
   }
 
-  private long taskUserId(long taskId) {
-    var task = tasks.selectById(taskId);
-    if (task == null) {
-      throw new IllegalStateException("回调对应任务不存在");
+  /** 清单完整才登记；缺失时任务保持待补查，绝不释放冻结或生成占位结果。 */
+  private void seedResults(GenerationTask task, ProviderAttempt attempt,
+      List<ProviderResultRef> results, String ref, String digest) {
+    if (task.getOutputCount() == null) {
+      return;
     }
-    return task.getUserId();
+    List<ProviderResultRef> manifest = ResultManifest.complete(results, task.getOutputCount());
+    if (manifest == null) {
+      manifest = ResultManifest.legacy(ref, digest, task.getOutputCount());
+    }
+    if (manifest != null) {
+      resultTx.seed(task.getId(), attempt.getId(), task.getOutputCount(), manifest);
+    }
   }
 
   public static boolean supportedEvent(String eventType) {

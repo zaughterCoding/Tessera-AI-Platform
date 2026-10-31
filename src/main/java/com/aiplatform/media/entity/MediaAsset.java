@@ -18,6 +18,7 @@ public class MediaAsset {
   private String contentType;
   private Long sizeBytes;
   private String state;
+  private String source;
   private LocalDateTime createdAt;
   private LocalDateTime updatedAt;
   private LocalDateTime deletedAt;

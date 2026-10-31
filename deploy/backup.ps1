@@ -82,6 +82,15 @@ UNION ALL SELECT 'campaign_reservation', COUNT(*) FROM campaign_reservation
 UNION ALL SELECT 'campaign_dead_letter', COUNT(*) FROM campaign_dead_letter
 UNION ALL SELECT 'media_quota', COUNT(*) FROM media_quota
 UNION ALL SELECT 'media_asset', COUNT(*) FROM media_asset
+UNION ALL SELECT 'entitlement_grant', COUNT(*) FROM entitlement_grant
+UNION ALL SELECT 'entitlement_ledger', COUNT(*) FROM entitlement_ledger
+UNION ALL SELECT 'generation_task', COUNT(*) FROM generation_task
+UNION ALL SELECT 'generation_task_handoff', COUNT(*) FROM generation_task_handoff
+UNION ALL SELECT 'provider_attempt', COUNT(*) FROM provider_attempt
+UNION ALL SELECT 'generation_result', COUNT(*) FROM generation_result
+UNION ALL SELECT 'generation_settlement', COUNT(*) FROM generation_settlement
+UNION ALL SELECT 'generation_cancel_request', COUNT(*) FROM generation_cancel_request
+UNION ALL SELECT 'generation_user_quota', COUNT(*) FROM generation_user_quota
 UNION ALL SELECT 'creation', COUNT(*) FROM creation
 UNION ALL SELECT 'creation_media', COUNT(*) FROM creation_media
 UNION ALL SELECT 'creation_like', COUNT(*) FROM creation_like

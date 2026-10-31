@@ -7,23 +7,32 @@ import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
 import com.aiplatform.entitlement.GrantSpec;
 import com.aiplatform.entitlement.entity.EntitlementGrant;
+import com.aiplatform.entitlement.entity.GenerationSettlement;
 import com.aiplatform.entitlement.mapper.EntitlementGrantMapper;
+import com.aiplatform.entitlement.mapper.GenerationSettlementMapper;
 import com.aiplatform.entitlement.service.IEntitlementReservationService;
 import com.aiplatform.generation.GenerationRequestDigest;
+import com.aiplatform.generation.GenerationResultState;
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.dto.GenerationStatusDTO;
 import com.aiplatform.generation.dto.GenerationTaskDTO;
 import com.aiplatform.generation.dto.GenerationTaskForm;
+import com.aiplatform.generation.entity.GenerationCancelRequest;
 import com.aiplatform.generation.entity.GenerationRequest;
+import com.aiplatform.generation.entity.GenerationResult;
 import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.entity.ProviderChannel;
+import com.aiplatform.generation.mapper.GenerationCancelMapper;
 import com.aiplatform.generation.mapper.GenerationQuotaMapper;
+import com.aiplatform.generation.mapper.GenerationResultMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
+import com.aiplatform.generation.service.GenerationCancelTransactions;
 import com.aiplatform.generation.service.IGenerationTaskService;
+import com.aiplatform.media.dto.MediaContent;
 import com.aiplatform.media.service.IMediaService;
 import com.aiplatform.messaging.BusinessEventType;
 import com.aiplatform.messaging.service.IBusinessOutboxService;
@@ -68,6 +77,10 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
   private final ProviderAttemptMapper attempts;
   private final ProviderChannelMapper channels;
   private final GenerationQuotaMapper quotas;
+  private final GenerationResultMapper results;
+  private final GenerationCancelMapper cancels;
+  private final GenerationSettlementMapper settlements;
+  private final GenerationCancelTransactions cancelTransactions;
   private final IBusinessOutboxService outbox;
   private final GenerationProperties properties;
 
@@ -80,6 +93,10 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
       ProviderAttemptMapper attempts,
       ProviderChannelMapper channels,
       GenerationQuotaMapper quotas,
+      GenerationResultMapper results,
+      GenerationCancelMapper cancels,
+      GenerationSettlementMapper settlements,
+      GenerationCancelTransactions cancelTransactions,
       IBusinessOutboxService outbox,
       GenerationProperties properties) {
     this.tasks = tasks;
@@ -90,6 +107,10 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     this.attempts = attempts;
     this.channels = channels;
     this.quotas = quotas;
+    this.results = results;
+    this.cancels = cancels;
+    this.settlements = settlements;
+    this.cancelTransactions = cancelTransactions;
     this.outbox = outbox;
     this.properties = properties;
   }
@@ -207,13 +228,21 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
                 (left, right) -> left));
     Map<Long, ProviderChannel> channelsById = channelMap(attemptsByTask.values());
     ProviderChannel fallbackChannel = channels.selectByCode(properties.getChannelCode());
+    Map<Long, List<GenerationResult>> resultsByTask = resultMap(taskIds);
+    Map<Long, GenerationCancelRequest> cancelsByTask = cancelMap(taskIds);
+    Map<Long, GenerationSettlement> settlementsByTask = settlementMap(taskIds);
     List<GenerationTaskDTO> views = new ArrayList<>();
     for (GenerationTask task : result.getRecords()) {
       ProviderAttempt attempt = attemptsByTask.get(task.getId());
       ProviderChannel channel = attempt == null ? fallbackChannel
           : channelsById.getOrDefault(attempt.getChannelId(), fallbackChannel);
-      views.add(GenerationTaskDTO.from(task, grantsById.get(task.getGrantId()),
-          Collections.<Long>emptyList(), attempt, channel));
+      List<GenerationResult> rows = resultsByTask.getOrDefault(task.getId(),
+          Collections.<GenerationResult>emptyList());
+      GenerationTaskDTO view = GenerationTaskDTO.from(task, grantsById.get(task.getGrantId()),
+          Collections.<Long>emptyList(), attempt, channel, savedCount(rows));
+      view.attachDelivery(rows, cancelsByTask.get(task.getId()),
+          settlementsByTask.get(task.getId()));
+      views.add(view);
     }
     return Result.ok(views, result.getTotal());
   }
@@ -227,8 +256,78 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     ProviderAttempt attempt = attempts.selectByTaskId(taskId);
     ProviderChannel channel = attempt == null ? channels.selectByCode(properties.getChannelCode())
         : channels.selectById(attempt.getChannelId());
-    return GenerationTaskDTO.from(task, grants.selectById(task.getGrantId()),
-        tasks.selectMediaIds(taskId), attempt, channel);
+    List<GenerationResult> rows = results.selectByTaskId(taskId);
+    GenerationTaskDTO view = GenerationTaskDTO.from(task, grants.selectById(task.getGrantId()),
+        tasks.selectMediaIds(taskId), attempt, channel, savedCount(rows));
+    view.attachDelivery(rows, cancels.selectByTaskId(taskId),
+        settlements.selectByTaskId(taskId));
+    return view;
+  }
+
+  @Override
+  public MediaContent downloadResult(long userId, long taskId, long resultId) {
+    GenerationTask task = tasks.selectById(taskId);
+    if (task == null || !Objects.equals(task.getUserId(), userId)) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    GenerationResult result = results.selectById(resultId);
+    if (result == null || !Objects.equals(result.getTaskId(), taskId)
+        || result.getMediaId() == null
+        || (!GenerationResultState.SAVED.equals(result.getState())
+            && !GenerationResultState.DELIVERED.equals(result.getState()))) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+    return media.openOwned(userId, result.getMediaId());
+  }
+
+  @Override
+  public GenerationTaskDTO cancel(long userId, long taskId, String reason) {
+    cancelTransactions.request(userId, taskId, reason);
+    return detail(userId, taskId);
+  }
+
+  private int savedCount(List<GenerationResult> rows) {
+    int saved = 0;
+    for (GenerationResult row : rows) {
+      if (GenerationResultState.SAVED.equals(row.getState())
+          || GenerationResultState.DELIVERED.equals(row.getState())) {
+        saved++;
+      }
+    }
+    return saved;
+  }
+
+  private Map<Long, List<GenerationResult>> resultMap(List<Long> taskIds) {
+    Map<Long, List<GenerationResult>> byTask = new HashMap<>();
+    if (taskIds.isEmpty()) {
+      return byTask;
+    }
+    for (GenerationResult row : results.selectByTaskIds(taskIds)) {
+      byTask.computeIfAbsent(row.getTaskId(), key -> new ArrayList<>()).add(row);
+    }
+    return byTask;
+  }
+
+  private Map<Long, GenerationCancelRequest> cancelMap(List<Long> taskIds) {
+    Map<Long, GenerationCancelRequest> byTask = new HashMap<>();
+    if (taskIds.isEmpty()) {
+      return byTask;
+    }
+    for (GenerationCancelRequest row : cancels.selectByTaskIds(taskIds)) {
+      byTask.put(row.getTaskId(), row);
+    }
+    return byTask;
+  }
+
+  private Map<Long, GenerationSettlement> settlementMap(List<Long> taskIds) {
+    Map<Long, GenerationSettlement> byTask = new HashMap<>();
+    if (taskIds.isEmpty()) {
+      return byTask;
+    }
+    for (GenerationSettlement row : settlements.selectByTaskIds(taskIds)) {
+      byTask.put(row.getTaskId(), row);
+    }
+    return byTask;
   }
 
   private Map<Long, ProviderChannel> channelMap(Iterable<ProviderAttempt> attemptRows) {

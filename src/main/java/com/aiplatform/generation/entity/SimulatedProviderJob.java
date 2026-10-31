@@ -12,6 +12,7 @@ public class SimulatedProviderJob {
   private String state;
   private String faultMode;
   private Integer durationMs;
+  private Integer outputCount;
   private LocalDateTime completeAt;
   private Integer queryFailuresRemaining;
   private String resultRef;

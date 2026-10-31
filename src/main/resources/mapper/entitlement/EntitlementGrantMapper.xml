@@ -79,6 +79,27 @@
       AND available_credits &gt;= #{units}
   </update>
 
+  <update id="consumeFrozen">
+    UPDATE entitlement_grant
+    SET frozen_credits = frozen_credits - #{units},
+        consumed_credits = consumed_credits + #{units}
+    WHERE id = #{id} AND frozen_credits &gt;= #{units}
+  </update>
+
+  <update id="releaseFrozenToAvailable">
+    UPDATE entitlement_grant
+    SET frozen_credits = frozen_credits - #{units},
+        available_credits = available_credits + #{units}
+    WHERE id = #{id} AND frozen_credits &gt;= #{units}
+  </update>
+
+  <update id="releaseFrozenToExpired">
+    UPDATE entitlement_grant
+    SET frozen_credits = frozen_credits - #{units},
+        expired_credits = expired_credits + #{units}
+    WHERE id = #{id} AND frozen_credits &gt;= #{units}
+  </update>
+
   <select id="selectDatabaseNow" resultType="java.time.LocalDateTime">
     SELECT NOW(3)
   </select>

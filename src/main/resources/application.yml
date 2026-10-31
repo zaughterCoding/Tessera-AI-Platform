@@ -131,6 +131,33 @@ app:
     callback-max-skew-seconds: ${APP_GENERATION_CALLBACK_MAX_SKEW_SECONDS:300}
     callback-max-bytes: ${APP_GENERATION_CALLBACK_MAX_BYTES:8192}
     callback-secret: ${APP_GENERATION_CALLBACK_SECRET:}
+    result:
+      # 结果拉取与保存默认开启；模拟结果地址为空时保持旧版元数据，不伪造可下载文件。
+      enabled: ${APP_GENERATION_RESULT_ENABLED:true}
+      batch: ${APP_GENERATION_RESULT_BATCH:10}
+      lease-seconds: ${APP_GENERATION_RESULT_LEASE_SECONDS:60}
+      max-save-attempts: ${APP_GENERATION_RESULT_MAX_SAVE_ATTEMPTS:5}
+      retry-base-seconds: ${APP_GENERATION_RESULT_RETRY_BASE_SECONDS:2}
+      retry-max-seconds: ${APP_GENERATION_RESULT_RETRY_MAX_SECONDS:60}
+      scan-interval-ms: ${APP_GENERATION_RESULT_SCAN_INTERVAL_MS:2000}
+      settlement-batch: ${APP_GENERATION_RESULT_SETTLEMENT_BATCH:50}
+      settlement-interval-ms: ${APP_GENERATION_RESULT_SETTLEMENT_INTERVAL_MS:5000}
+      connect-timeout-ms: ${APP_GENERATION_RESULT_CONNECT_TIMEOUT_MS:2000}
+      read-timeout-ms: ${APP_GENERATION_RESULT_READ_TIMEOUT_MS:5000}
+      total-timeout-ms: ${APP_GENERATION_RESULT_TOTAL_TIMEOUT_MS:15000}
+      max-bytes: ${APP_GENERATION_RESULT_MAX_BYTES:10000000}
+      max-redirects: ${APP_GENERATION_RESULT_MAX_REDIRECTS:3}
+      allowed-hosts: ${APP_GENERATION_RESULT_ALLOWED_HOSTS:}
+      allow-private-hosts: ${APP_GENERATION_RESULT_ALLOW_PRIVATE_HOSTS:false}
+      download-secret: ${APP_GENERATION_RESULT_DOWNLOAD_SECRET:}
+      simulator-result-base-url: ${APP_GENERATION_RESULT_SIMULATOR_RESULT_BASE_URL:}
+      orphan-grace-seconds: ${APP_GENERATION_RESULT_ORPHAN_GRACE_SECONDS:3600}
+      orphan-batch: ${APP_GENERATION_RESULT_ORPHAN_BATCH:100}
+      orphan-scan-interval-ms: ${APP_GENERATION_RESULT_ORPHAN_SCAN_INTERVAL_MS:600000}
+      cancel-lease-seconds: ${APP_GENERATION_RESULT_CANCEL_LEASE_SECONDS:30}
+      cancel-batch: ${APP_GENERATION_RESULT_CANCEL_BATCH:10}
+      cancel-scan-interval-ms: ${APP_GENERATION_RESULT_CANCEL_SCAN_INTERVAL_MS:2000}
+      cancel-max-backoff-seconds: ${APP_GENERATION_RESULT_CANCEL_MAX_BACKOFF_SECONDS:300}
   campaign:
     fulfillment-mode: ${APP_CAMPAIGN_FULFILLMENT_MODE:stream}
     consumer-enabled: ${APP_CAMPAIGN_CONSUMER_ENABLED:true}

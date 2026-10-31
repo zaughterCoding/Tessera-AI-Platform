@@ -41,26 +41,33 @@
 
   <insert id="insertJobIgnore">
     INSERT IGNORE INTO simulated_provider_job(
-      attempt_key, provider_task_id, state, fault_mode, duration_ms, complete_at,
-      query_failures_remaining
+      attempt_key, provider_task_id, state, fault_mode, duration_ms, output_count,
+      complete_at, query_failures_remaining
     ) VALUES (
       #{attemptKey}, #{providerTaskId}, #{state}, #{faultMode}, #{durationMs},
-      TIMESTAMPADD(MICROSECOND, #{durationMs} * 1000, NOW(3)), #{queryFailures}
+      #{outputCount}, TIMESTAMPADD(MICROSECOND, #{durationMs} * 1000, NOW(3)),
+      #{queryFailures}
     )
   </insert>
 
   <insert id="insertJob">
     INSERT INTO simulated_provider_job(
-      attempt_key, provider_task_id, state, fault_mode, duration_ms, complete_at,
-      query_failures_remaining
+      attempt_key, provider_task_id, state, fault_mode, duration_ms, output_count,
+      complete_at, query_failures_remaining
     ) VALUES (
       #{attemptKey}, #{providerTaskId}, #{state}, #{faultMode}, #{durationMs},
-      TIMESTAMPADD(MICROSECOND, #{durationMs} * 1000, NOW(3)), #{queryFailures}
+      #{outputCount}, TIMESTAMPADD(MICROSECOND, #{durationMs} * 1000, NOW(3)),
+      #{queryFailures}
     )
   </insert>
 
   <select id="selectJob" resultType="com.aiplatform.generation.entity.SimulatedProviderJob">
     SELECT * FROM simulated_provider_job WHERE attempt_key = #{attemptKey}
+  </select>
+
+  <select id="selectJobByProviderTaskId"
+      resultType="com.aiplatform.generation.entity.SimulatedProviderJob">
+    SELECT * FROM simulated_provider_job WHERE provider_task_id = #{providerTaskId}
   </select>
 
   <select id="selectJobForUpdate"

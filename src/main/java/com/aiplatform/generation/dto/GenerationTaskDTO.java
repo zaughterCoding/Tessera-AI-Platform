@@ -1,16 +1,21 @@
 package com.aiplatform.generation.dto;
 
 import com.aiplatform.entitlement.entity.EntitlementGrant;
+import com.aiplatform.entitlement.entity.GenerationSettlement;
+import com.aiplatform.generation.GenerationCancelState;
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderResultMetadata;
+import com.aiplatform.generation.entity.GenerationCancelRequest;
+import com.aiplatform.generation.entity.GenerationResult;
 import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.entity.ProviderChannel;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import lombok.Data;
 
-/** 任务视图报告真实调度阶段；结果只标记待交付，不提供下载、取消或结算入口。 */
+/** 任务视图报告真实调度阶段；结果、取消与结算入口均由服务层登记事实驱动。 */
 @Data
 public class GenerationTaskDTO {
   private Long id;
@@ -34,6 +39,12 @@ public class GenerationTaskDTO {
   private String grantStatus;
   private LocalDateTime grantExpiresAt;
   private List<Long> mediaIds;
+  private List<GenerationResultDTO> results = new ArrayList<>();
+  private GenerationCancelDTO cancelRequest;
+  private GenerationSettlementDTO settlement;
+  private Boolean canCancel;
+  private LocalDateTime deliveredAt;
+  private LocalDateTime settledAt;
   private LocalDateTime createdAt;
   private String executionNotice;
 
@@ -49,7 +60,15 @@ public class GenerationTaskDTO {
 
   public static GenerationTaskDTO from(GenerationTask task, EntitlementGrant grant,
       List<Long> mediaIds, ProviderAttempt attempt, ProviderChannel channel) {
+    return from(task, grant, mediaIds, attempt, channel, 0);
+  }
+
+  public static GenerationTaskDTO from(GenerationTask task, EntitlementGrant grant,
+      List<Long> mediaIds, ProviderAttempt attempt, ProviderChannel channel,
+      int savedResultCount) {
     GenerationTaskDTO view = new GenerationTaskDTO();
+    int outputCount = task.getOutputCount() == null ? 0 : task.getOutputCount();
+    boolean resultsComplete = outputCount > 0 && savedResultCount >= outputCount;
     view.setId(task.getId());
     view.setApplicationId(task.getApplicationId());
     view.setApplicationName(task.getApplicationName());
@@ -63,7 +82,8 @@ public class GenerationTaskDTO {
     view.setFrozenUnits(task.getFrozenUnits());
     view.setState(task.getState());
     view.setAccountingState(task.getAccountingState());
-    view.setStateNote(stateNoteFor(task.getState(), task.getStateNote(), attempt));
+    view.setStateNote(stateNoteFor(task.getState(), task.getStateNote(), attempt,
+        resultsComplete));
     view.setAttemptState(attempt == null ? null : attempt.getState());
     if (channel != null) {
       view.setChannelCode(channel.getCode());
@@ -73,9 +93,12 @@ public class GenerationTaskDTO {
     view.setGrantStatus(grant == null ? null : grant.getStatus());
     view.setGrantExpiresAt(grant == null ? null : grant.getExpiresAt());
     view.setMediaIds(mediaIds);
+    view.setDeliveredAt(task.getDeliveredAt());
+    view.setSettledAt(task.getSettledAt());
     view.setCreatedAt(task.getCreatedAt());
     boolean incompleteResult =
-        ProviderResultMetadata.successMetadataMissing(task.getState(), attempt);
+        !resultsComplete && ProviderResultMetadata.successMetadataMissing(task.getState(),
+            attempt);
     view.setExecutionNotice(incompleteResult ? INCOMPLETE_RESULT_NOTICE
         : noticeFor(task.getState(), view.getSimulatedChannel()));
     return view;
@@ -83,8 +106,39 @@ public class GenerationTaskDTO {
 
   /** 历史成功快照缺少结果元数据时，展示说明必须如实报告不完整，不能沿用旧文案。 */
   public static String stateNoteFor(String state, String storedNote, ProviderAttempt attempt) {
-    return ProviderResultMetadata.successMetadataMissing(state, attempt)
+    return stateNoteFor(state, storedNote, attempt, false);
+  }
+
+  public static String stateNoteFor(String state, String storedNote, ProviderAttempt attempt,
+      boolean resultsComplete) {
+    return !resultsComplete && ProviderResultMetadata.successMetadataMissing(state, attempt)
         ? INCOMPLETE_RESULT_NOTE : storedNote;
+  }
+
+  /** 交付视图只由服务层登记事实生成；取消入口与结算说明都随任务返回。 */
+  public void attachDelivery(List<GenerationResult> resultRows,
+      GenerationCancelRequest cancel, GenerationSettlement settlementRow) {
+    List<GenerationResultDTO> views = new ArrayList<>();
+    for (GenerationResult row : resultRows) {
+      views.add(GenerationResultDTO.from(row));
+    }
+    this.setResults(views);
+    this.setCancelRequest(GenerationCancelDTO.from(cancel));
+    this.setSettlement(GenerationSettlementDTO.from(settlementRow));
+    this.setCanCancel(canCancel(state, accountingState, cancel));
+  }
+
+  private static boolean canCancel(String state, String accounting,
+      GenerationCancelRequest cancel) {
+    if (!"FROZEN".equals(accounting) || (cancel != null
+        && GenerationCancelState.isOpen(cancel.getState()))) {
+      return false;
+    }
+    return !GenerationTaskState.isSettledFinal(state)
+        && !GenerationTaskState.RESULT_PENDING.equals(state)
+        && !GenerationTaskState.FAILED_PENDING_FOLLOWUP.equals(state)
+        && !GenerationTaskState.CANCELLED_PENDING_FOLLOWUP.equals(state)
+        && !GenerationTaskState.QUEUE_TIMEOUT.equals(state);
   }
 
   public static String noticeFor(String state, Boolean simulated) {
@@ -110,6 +164,14 @@ public class GenerationTaskDTO {
           "排队超过时限，任务转入待处理；冻结次数保留，需后续处理。";
       case GenerationTaskState.REVIEW ->
           "上游状态无法确认，已转入人工核对；冻结次数保留。";
+      case GenerationTaskState.CANCEL_REQUESTED ->
+          "已登记取消请求，等待上游确认；确认前冻结次数保留。";
+      case GenerationTaskState.SUCCEEDED ->
+          "结果文件已保存并验证，任务完成；本次次数已消费。";
+      case GenerationTaskState.FAILED ->
+          "上游确认失败，任务结束；冻结次数已按权益包状态释放。";
+      case GenerationTaskState.CANCELLED ->
+          "任务已取消，未产生可用结果；冻结次数已按权益包状态释放。";
       default -> "任务状态以服务端记录为准。";
     };
   }

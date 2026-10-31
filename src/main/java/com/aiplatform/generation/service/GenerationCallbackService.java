@@ -3,6 +3,7 @@ package com.aiplatform.generation.service;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.generation.ProviderResultMetadata;
+import com.aiplatform.generation.ResultManifest;
 import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.dto.ProviderCallbackResultDTO;
 import com.aiplatform.generation.provider.ProviderCallbackPayload;
@@ -102,8 +103,11 @@ public class GenerationCallbackService {
       case "ACCEPTED", "RUNNING", "CANCELLED" -> requireProviderTaskId(payload);
       case "SUCCEEDED" -> {
         requireProviderTaskId(payload);
-        if (!ProviderResultMetadata.isComplete(payload.resultRef(),
-            payload.resultDigest())) {
+        // 多结果清单与 N03 单结果字段至少一种完整；清单只要出现就必须整体合法。
+        boolean legacy = ProviderResultMetadata.isComplete(payload.resultRef(),
+            payload.resultDigest());
+        boolean manifest = ResultManifest.structurallyValid(payload.results());
+        if ((!legacy && !manifest) || (payload.results() != null && !manifest)) {
           throw new ApiException(ErrorCode.CALLBACK_INVALID);
         }
       }

@@ -29,6 +29,8 @@ public class GenerationTask {
   private String state;
   private String accountingState;
   private String stateNote;
+  private LocalDateTime deliveredAt;
+  private LocalDateTime settledAt;
   private LocalDateTime createdAt;
   private LocalDateTime updatedAt;
 }

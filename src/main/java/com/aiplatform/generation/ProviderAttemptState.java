@@ -36,10 +36,10 @@ public final class ProviderAttemptState {
       return GenerationTaskState.RESULT_PENDING;
     }
     if (FAILED.equals(attemptState)) {
-      return GenerationTaskState.FAILED_PENDING_FOLLOWUP;
+      return GenerationTaskState.FAILED;
     }
     if (CANCELLED.equals(attemptState)) {
-      return GenerationTaskState.CANCELLED_PENDING_FOLLOWUP;
+      return GenerationTaskState.CANCELLED;
     }
     return GenerationTaskState.REVIEW;
   }

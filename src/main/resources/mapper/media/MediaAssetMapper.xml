@@ -4,9 +4,10 @@
 <mapper namespace="com.aiplatform.media.mapper.MediaAssetMapper">
   <insert id="insertPending" useGeneratedKeys="true" keyProperty="id">
     INSERT INTO media_asset(
-      user_id, path, original_name, content_type, size_bytes, state
+      user_id, path, original_name, content_type, size_bytes, state, source
     ) VALUES (
-      #{userId}, #{path}, #{originalName}, #{contentType}, #{sizeBytes}, 'PENDING'
+      #{userId}, #{path}, #{originalName}, #{contentType}, #{sizeBytes}, 'PENDING',
+      #{source}
     )
   </insert>
 
@@ -74,10 +75,11 @@
     WHERE user_id = #{userId} AND state IN ('PENDING','ACTIVE','DELETING')
   </select>
 
-  <!-- 任何发布（含未公开）与已受理任务都构成删除保护；公开读取另按 PUBLISHED 判断。 -->
+  <!-- 发布、任务输入与生成结果都构成删除保护；公开读取另按 PUBLISHED 判断。 -->
   <select id="countAllReferences" resultType="long">
     SELECT (SELECT COUNT(*) FROM creation_media WHERE media_id = #{mediaId})
       + (SELECT COUNT(*) FROM generation_task_media WHERE media_id = #{mediaId})
+      + (SELECT COUNT(*) FROM generation_result WHERE media_id = #{mediaId})
   </select>
 
   <select id="countPublicReferences" resultType="long">

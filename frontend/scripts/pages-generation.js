@@ -1,6 +1,6 @@
 import { pageCommon } from "./pages-more.js";
 
-// 只展示服务端记录的调度事实；没有结果下载、取消、退款或结算入口。
+// 只展示服务端记录的调度、交付与结算事实；下载与取消都走服务端登记的私有入口。
 const TASK_STATE_LABELS = {
   QUEUED: "排队中",
   DISPATCHING: "调度中",
@@ -12,6 +12,10 @@ const TASK_STATE_LABELS = {
   CANCELLED_PENDING_FOLLOWUP: "上游取消·待处理",
   QUEUE_TIMEOUT: "排队超时·待处理",
   REVIEW: "人工核对",
+  CANCEL_REQUESTED: "取消确认中",
+  SUCCEEDED: "已完成",
+  FAILED: "已失败",
+  CANCELLED: "已取消",
 };
 
 const STATE_BADGES = {
@@ -25,10 +29,32 @@ const STATE_BADGES = {
   CANCELLED_PENDING_FOLLOWUP: "ended",
   QUEUE_TIMEOUT: "ended",
   REVIEW: "review",
+  CANCEL_REQUESTED: "processing",
+  SUCCEEDED: "success",
+  FAILED: "ended",
+  CANCELLED: "ended",
+};
+
+const RESULT_STATE_LABELS = {
+  PENDING: "待保存",
+  SAVING: "保存中",
+  SAVED: "已保存",
+  DELIVERED: "已交付",
+  FAILED: "保存失败",
+};
+
+const CANCEL_STATE_LABELS = {
+  PENDING: "取消确认中",
+  RETRYING: "取消确认中·重试",
+  RESOLVED: "取消已生效",
+  REJECTED: "未取消",
+  UNSUPPORTED: "渠道不支持取消",
 };
 
 const ACCOUNTING_LABELS = {
   FROZEN: "次数已冻结",
+  CONSUMED: "次数已消费",
+  RELEASED: "次数已释放",
 };
 
 const LEDGER_TYPE_LABELS = {
@@ -52,6 +78,20 @@ function accountingLabel(state) {
 
 function ledgerTypeLabel(type) {
   return LEDGER_TYPE_LABELS[type] || type || "未知";
+}
+
+function resultStateLabel(state) {
+  return RESULT_STATE_LABELS[state] || state || "未知";
+}
+
+function cancelStateLabel(state) {
+  return CANCEL_STATE_LABELS[state] || state || "未知";
+}
+
+function resultExtension(contentType) {
+  if (contentType === "image/jpeg") return ".jpg";
+  if (contentType === "image/webp") return ".webp";
+  return ".png";
 }
 
 const TasksPage = {
@@ -136,6 +176,7 @@ const TasksPage = {
             <div class="meta-line">
               <span>{{ item.modelVersion }} / {{ item.imageSize }} / {{ item.outputCount }} 张</span>
               <span>冻结 {{ item.frozenUnits }} 次</span>
+              <span>结果 {{ (item.results || []).length }} / {{ item.outputCount }}</span>
               <span>{{ $formatTime(item.createdAt) }}</span>
             </div>
             <div class="muted">{{ item.executionNotice }}</div>
@@ -156,7 +197,13 @@ const TasksPage = {
 const TaskDetailPage = {
   mixins: [pageCommon],
   data() {
-    return { id: this.$route.id, task: null };
+    return {
+      id: this.$route.id,
+      task: null,
+      cancelReason: "",
+      canceling: false,
+      downloadingId: null,
+    };
   },
   created() {
     if (!this.$root.user) {
@@ -181,9 +228,51 @@ const TaskDetailPage = {
     grantLink() {
       return "#/entitlements/" + encodeURIComponent(this.task.grantId);
     },
+    async downloadResult(result) {
+      if (!result.downloadAvailable) return;
+      this.downloadingId = result.id;
+      try {
+        const response = await fetch(
+          "/api/generation/tasks/" + encodeURIComponent(this.task.id)
+            + "/results/" + encodeURIComponent(result.id) + "/content",
+          { headers: this.$authorizedHeaders(), credentials: "same-origin" },
+        );
+        if (!response.ok) throw new Error("结果下载失败");
+        const objectUrl = URL.createObjectURL(await response.blob());
+        const link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = "generation-" + this.task.id + "-" + result.position
+          + resultExtension(result.contentType);
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.requestAnimationFrame(() => URL.revokeObjectURL(objectUrl));
+      } catch (failure) {
+        this.$root.notify((failure && failure.message) || "结果下载失败", "error");
+      } finally {
+        this.downloadingId = null;
+      }
+    },
+    async cancelTask() {
+      this.canceling = true;
+      try {
+        const result = await this.$api(
+          "/generation/tasks/" + encodeURIComponent(this.task.id) + "/cancel",
+          { method: "POST", body: { reason: (this.cancelReason || "").trim() } },
+        );
+        this.task = result.data;
+        this.$root.notify("取消请求已登记；是否生效以上游确认为准。");
+      } catch (failure) {
+        this.$root.notify((failure && failure.message) || "取消请求未登记", "error");
+      } finally {
+        this.canceling = false;
+      }
+    },
     stateLabel: taskStateLabel,
     stateBadge,
     accountingLabel,
+    resultStateLabel,
+    cancelStateLabel,
   },
   template: `
     <div>
@@ -207,6 +296,8 @@ const TaskDetailPage = {
             <dt>上游尝试</dt><dd>{{ task.attemptState || '尚未创建' }}</dd>
             <dt>冻结次数</dt><dd>{{ task.frozenUnits }}</dd>
             <dt>提交时间</dt><dd>{{ $formatTime(task.createdAt) }}</dd>
+            <dt v-if="task.deliveredAt">交付时间</dt><dd v-if="task.deliveredAt">{{ $formatTime(task.deliveredAt) }}</dd>
+            <dt v-if="task.settledAt">结算时间</dt><dd v-if="task.settledAt">{{ $formatTime(task.settledAt) }}</dd>
           </dl>
           <notice-box tone="info" title="执行状态">{{ task.executionNotice }}</notice-box>
         </div>
@@ -227,6 +318,61 @@ const TaskDetailPage = {
             <p class="content-pre">{{ task.negativePrompt }}</p>
           </template>
           <p class="muted">任务与冻结在提交事务中一起落库；重试提交只会返回本任务，不会再次冻结。</p>
+        </div>
+
+        <div v-if="task.results && task.results.length" class="card" style="grid-column:1 / -1">
+          <h3 style="margin-top:0">结果文件</h3>
+          <p class="muted">只有服务端保存并校验通过的私有文件可以下载；上游地址不会出现在页面中。</p>
+          <div class="table-wrap">
+            <table class="data">
+              <thead><tr><th>序号</th><th>状态</th><th>类型</th><th>大小</th><th>摘要</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-for="result in task.results" :key="result.id">
+                  <td>{{ result.position }}</td>
+                  <td>{{ resultStateLabel(result.state) }}</td>
+                  <td>{{ result.contentType || '—' }}</td>
+                  <td>{{ result.sizeBytes == null ? '—' : result.sizeBytes + ' B' }}</td>
+                  <td class="muted">{{ result.contentDigest || '—' }}</td>
+                  <td>
+                    <button v-if="result.downloadAvailable" class="button ghost small" type="button"
+                      :disabled="downloadingId === result.id" @click="downloadResult(result)">
+                      {{ downloadingId === result.id ? '下载中…' : '下载' }}
+                    </button>
+                    <span v-else class="muted">暂不可下载</span>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div v-if="task.canCancel" class="card" style="grid-column:1 / -1">
+          <h3 style="margin-top:0">取消任务</h3>
+          <p class="muted">取消是持久请求：排队任务确认未提交后立即结束；执行中任务需等待上游确认，确认前冻结次数保留。</p>
+          <label class="field"><span>取消原因（可选）</span>
+            <input v-model="cancelReason" maxlength="200" placeholder="简要说明取消原因" />
+          </label>
+          <div class="actions">
+            <button class="button danger" type="button" :disabled="canceling" @click="cancelTask">
+              {{ canceling ? '提交中…' : '请求取消' }}
+            </button>
+          </div>
+        </div>
+
+        <div v-if="task.cancelRequest" class="card" style="grid-column:1 / -1">
+          <h3 style="margin-top:0">取消记录</h3>
+          <dl class="kv">
+            <dt>处理状态</dt><dd>{{ cancelStateLabel(task.cancelRequest.state) }}</dd>
+            <dt>结果</dt><dd>{{ task.cancelRequest.outcome || '等待后台确认' }}</dd>
+            <dt>请求时间</dt><dd>{{ $formatTime(task.cancelRequest.requestedAt) }}</dd>
+            <dt>完成时间</dt><dd>{{ $formatTime(task.cancelRequest.resolvedAt) }}</dd>
+          </dl>
+        </div>
+
+        <div v-if="task.settlement" class="card" style="grid-column:1 / -1">
+          <h3 style="margin-top:0">结算说明</h3>
+          <div>{{ task.settlement.description }}</div>
+          <p class="muted">结算只发生一次；消费或释放都由权益流水记录，已消费次数不会退回。</p>
         </div>
       </div>
     </div>
@@ -468,4 +614,11 @@ const EntitlementDetailPage = {
   `,
 };
 
-export { TasksPage, TaskDetailPage, EntitlementsPage, EntitlementDetailPage };
+export {
+  TasksPage,
+  TaskDetailPage,
+  EntitlementsPage,
+  EntitlementDetailPage,
+  resultStateLabel,
+  cancelStateLabel,
+};

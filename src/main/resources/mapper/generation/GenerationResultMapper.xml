@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.generation.mapper.GenerationResultMapper">
+  <!-- 结果清单来自可信终态；同一任务位置只登记一次，重复回调由唯一键吸收。 -->
+  <insert id="insertIgnore">
+    INSERT IGNORE INTO generation_result(
+      task_id, attempt_id, position, state, source_ref, expected_digest, next_attempt_at
+    ) VALUES (
+      #{taskId}, #{attemptId}, #{position}, 'PENDING', #{sourceRef}, #{expectedDigest}, NOW(3)
+    )
+  </insert>
+
+  <select id="selectById" resultType="com.aiplatform.generation.entity.GenerationResult">
+    SELECT * FROM generation_result WHERE id = #{id}
+  </select>
+
+  <select id="selectByTaskId" resultType="com.aiplatform.generation.entity.GenerationResult">
+    SELECT * FROM generation_result WHERE task_id = #{taskId} ORDER BY position
+  </select>
+
+  <select id="selectByTaskIds"
+      resultType="com.aiplatform.generation.entity.GenerationResult">
+    SELECT * FROM generation_result WHERE task_id IN
+    <foreach collection="taskIds" item="taskId" open="(" separator="," close=")">
+      #{taskId}
+    </foreach>
+    ORDER BY task_id, position
+  </select>
+
+  <select id="countByTaskId" resultType="long">
+    SELECT COUNT(*) FROM generation_result WHERE task_id = #{taskId}
+  </select>
+
+  <select id="countByTaskState" resultType="long">
+    SELECT COUNT(*) FROM generation_result
+    WHERE task_id = #{taskId} AND state = #{state}
+  </select>
+
+  <select id="countByState" resultType="long">
+    SELECT COUNT(*) FROM generation_result WHERE state = #{state}
+  </select>
+
+  <!-- 只认领仍冻结的待交付任务；已结算或已释放任务的结果不再拉取。 -->
+  <select id="selectDue"
+      resultType="com.aiplatform.generation.mapper.GenerationResultMapper$ResultClaimRow">
+    SELECT r.*, t.user_id AS user_id, t.state AS task_state,
+           t.output_count AS task_output_count
+    FROM generation_result r
+    JOIN generation_task t ON t.id = r.task_id
+    WHERE t.accounting_state = 'FROZEN'
+      AND t.state IN ('RESULT_PENDING','REVIEW')
+      AND (
+        (r.state = 'PENDING' AND (r.next_attempt_at IS NULL OR r.next_attempt_at &lt;= NOW(3)))
+        OR (r.state = 'SAVING' AND (r.lease_until IS NULL OR r.lease_until &lt; NOW(3)))
+      )
+    ORDER BY r.id
+    LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <update id="claim">
+    UPDATE generation_result
+    SET state = 'SAVING', owner = #{owner},
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND),
+        generation = generation + 1, save_attempts = save_attempts + 1,
+        next_attempt_at = NULL, last_error = NULL
+    WHERE id = #{id}
+      AND (
+        (state = 'PENDING' AND (next_attempt_at IS NULL OR next_attempt_at &lt;= NOW(3)))
+        OR (state = 'SAVING' AND (lease_until IS NULL OR lease_until &lt; NOW(3)))
+      )
+  </update>
+
+  <!-- 与媒体行同锁校验：文件已被丢弃时不再登记引用。 -->
+  <update id="markSaved">
+    UPDATE generation_result r
+    JOIN media_asset m ON m.id = #{mediaId}
+    SET r.state = 'SAVED', r.media_id = #{mediaId}, r.content_digest = #{contentDigest},
+        r.content_type = #{contentType}, r.size_bytes = #{sizeBytes},
+        r.saved_at = NOW(3), r.owner = NULL, r.lease_until = NULL,
+        r.next_attempt_at = NULL, r.last_error = NULL
+    WHERE r.id = #{id} AND r.owner = #{owner} AND r.generation = #{generation}
+      AND r.state = 'SAVING' AND m.state = 'ACTIVE' AND m.source = 'GENERATED'
+  </update>
+
+  <update id="fail">
+    UPDATE generation_result
+    SET state = IF(#{finalFailure}, 'FAILED', 'PENDING'),
+        next_attempt_at = IF(#{finalFailure}, NULL,
+          DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND)),
+        last_error = #{error}, owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state = 'SAVING'
+  </update>
+
+  <update id="markDelivered">
+    UPDATE generation_result
+    SET state = 'DELIVERED', delivered_at = NOW(3)
+    WHERE task_id = #{taskId} AND state = 'SAVED'
+  </update>
+
+  <update id="resetFailed">
+    UPDATE generation_result
+    SET state = 'PENDING', save_attempts = 0, next_attempt_at = NOW(3),
+        owner = NULL, lease_until = NULL, last_error = NULL
+    WHERE task_id = #{taskId} AND state = 'FAILED'
+  </update>
+
+  <select id="selectRecent" resultType="com.aiplatform.generation.entity.GenerationResult">
+    SELECT * FROM generation_result
+    <where>
+      <if test="state != null">state = #{state}</if>
+    </where>
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+
+  <!-- 已生成但没有任何结果引用的 ACTIVE 媒体是保存失败或接管竞争留下的孤儿。 -->
+  <select id="countUnreferencedGeneratedMedia" resultType="long">
+    SELECT COUNT(*) FROM media_asset m
+    WHERE m.source = 'GENERATED' AND m.state = 'ACTIVE'
+      AND NOT EXISTS (SELECT 1 FROM generation_result r WHERE r.media_id = m.id)
+      AND m.created_at &lt;= DATE_SUB(NOW(3), INTERVAL #{graceSeconds} SECOND)
+  </select>
+
+  <select id="selectUnreferencedGeneratedMedia" resultType="long">
+    SELECT m.id FROM media_asset m
+    WHERE m.source = 'GENERATED' AND m.state = 'ACTIVE'
+      AND NOT EXISTS (SELECT 1 FROM generation_result r WHERE r.media_id = m.id)
+      AND m.created_at &lt;= DATE_SUB(NOW(3), INTERVAL #{graceSeconds} SECOND)
+    ORDER BY m.id
+    LIMIT #{limit}
+  </select>
+</mapper>

@@ -4,6 +4,7 @@ import com.aiplatform.generation.config.GenerationProperties;
 import com.aiplatform.generation.entity.ProviderChannel;
 import com.aiplatform.generation.entity.SimulatedProviderJob;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
+import java.util.List;
 import org.springframework.stereotype.Component;
 
 /** 唯一可用的模拟上游；能力差异来自渠道行，不以假成功绕过渠道契约。 */
@@ -13,14 +14,16 @@ public class SimulatedProviderAdapter implements ProviderChannelAdapter {
   private final SimulatedProviderCallbackSender callbacks;
   private final ProviderChannelMapper channels;
   private final GenerationProperties properties;
+  private final SimulatedResultFiles resultFiles;
 
   public SimulatedProviderAdapter(SimulatedProviderStore store,
       SimulatedProviderCallbackSender callbacks, ProviderChannelMapper channels,
-      GenerationProperties properties) {
+      GenerationProperties properties, SimulatedResultFiles resultFiles) {
     this.store = store;
     this.callbacks = callbacks;
     this.channels = channels;
     this.properties = properties;
+    this.resultFiles = resultFiles;
   }
 
   @Override
@@ -47,7 +50,7 @@ public class SimulatedProviderAdapter implements ProviderChannelAdapter {
       throw new IllegalStateException("模拟渠道缺少幂等提交或按尝试查询能力");
     }
     SimulatedProviderStore.Acceptance acceptance = store.accept(command.attemptKey(),
-        command.userId(), command.applicationId());
+        command.userId(), command.applicationId(), command.outputCount());
     if (acceptance.rejected()) {
       throw new ProviderRejectedException("SIMULATED_REJECTED", "模拟上游明确拒收");
     }
@@ -83,15 +86,25 @@ public class SimulatedProviderAdapter implements ProviderChannelAdapter {
       case "CANCELLED" -> ProviderQueryResult.QueryStatus.CANCELLED;
       default -> ProviderQueryResult.QueryStatus.RUNNING;
     };
+    List<ProviderResultRef> results = null;
+    if (status == ProviderQueryResult.QueryStatus.SUCCEEDED
+        && resultFiles.deliveredUrl(job.getProviderTaskId(), job.getResultRef())) {
+      results = resultFiles.manifest(job.getProviderTaskId(), outputCount(job));
+    }
     if (status == ProviderQueryResult.QueryStatus.SUCCEEDED
         || status == ProviderQueryResult.QueryStatus.FAILED
         || status == ProviderQueryResult.QueryStatus.CANCELLED) {
       callbacks.notifyTerminal(attemptKey, job.getProviderTaskId(), job.getState(),
           job.getResultRef(), job.getResultDigest(), job.getFailureCode(),
-          job.getFailureDetail());
+          job.getFailureDetail(), results);
     }
     return new ProviderQueryResult(status, job.getProviderTaskId(), job.getResultRef(),
-        job.getResultDigest(), job.getFailureCode(), job.getFailureDetail());
+        job.getResultDigest(), job.getFailureCode(), job.getFailureDetail(), results);
+  }
+
+  private int outputCount(SimulatedProviderJob job) {
+    return job.getOutputCount() == null || job.getOutputCount() < 1
+        ? 1 : job.getOutputCount();
   }
 
   @Override

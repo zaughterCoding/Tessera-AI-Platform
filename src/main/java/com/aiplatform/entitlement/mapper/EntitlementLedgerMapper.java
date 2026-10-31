@@ -14,5 +14,8 @@ public interface EntitlementLedgerMapper {
       @Param("limit") int limit,
       @Param("offset") int offset);
 
+  /** 稳定业务键查询用于确认冻结事实与防止重复结算。 */
+  EntitlementLedger selectByOperationKey(@Param("operationKey") String operationKey);
+
   long countByGrant(@Param("grantId") long grantId);
 }

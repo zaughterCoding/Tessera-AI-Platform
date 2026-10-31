@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+  "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aiplatform.generation.mapper.GenerationCancelMapper">
+  <insert id="insertIgnore">
+    INSERT IGNORE INTO generation_cancel_request(
+      task_id, user_id, state, reason, next_attempt_at
+    ) VALUES (#{taskId}, #{userId}, 'PENDING', #{reason}, NOW(3))
+  </insert>
+
+  <select id="selectByTaskId"
+      resultType="com.aiplatform.generation.entity.GenerationCancelRequest">
+    SELECT * FROM generation_cancel_request WHERE task_id = #{taskId}
+  </select>
+
+  <select id="selectByTaskIdForUpdate"
+      resultType="com.aiplatform.generation.entity.GenerationCancelRequest">
+    SELECT * FROM generation_cancel_request WHERE task_id = #{taskId} FOR UPDATE
+  </select>
+
+  <select id="selectByTaskIds"
+      resultType="com.aiplatform.generation.entity.GenerationCancelRequest">
+    SELECT * FROM generation_cancel_request WHERE task_id IN
+    <foreach collection="taskIds" item="taskId" open="(" separator="," close=")">
+      #{taskId}
+    </foreach>
+  </select>
+
+  <select id="selectDue"
+      resultType="com.aiplatform.generation.entity.GenerationCancelRequest">
+    SELECT * FROM generation_cancel_request
+    WHERE state IN ('PENDING','RETRYING')
+      AND (next_attempt_at IS NULL OR next_attempt_at &lt;= NOW(3))
+      AND (lease_until IS NULL OR lease_until &lt; NOW(3))
+    ORDER BY id
+    LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <update id="claim">
+    UPDATE generation_cancel_request
+    SET owner = #{owner},
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND),
+        generation = generation + 1, attempts = attempts + 1
+    WHERE id = #{id} AND state IN ('PENDING','RETRYING')
+      AND (lease_until IS NULL OR lease_until &lt; NOW(3))
+  </update>
+
+  <update id="markRetry">
+    UPDATE generation_cancel_request
+    SET state = 'RETRYING',
+        next_attempt_at = DATE_ADD(NOW(3), INTERVAL #{delaySeconds} SECOND),
+        last_error = #{error}, owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('PENDING','RETRYING')
+  </update>
+
+  <update id="finish">
+    UPDATE generation_cancel_request
+    SET state = #{state}, outcome = #{outcome}, resolved_at = NOW(3),
+        next_attempt_at = NULL, last_error = NULL, owner = NULL, lease_until = NULL
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('PENDING','RETRYING')
+  </update>
+
+  <update id="resolveOpen">
+    UPDATE generation_cancel_request
+    SET state = #{state}, outcome = #{outcome}, resolved_at = NOW(3),
+        next_attempt_at = NULL, owner = NULL, lease_until = NULL
+    WHERE task_id = #{taskId} AND state IN ('PENDING','RETRYING')
+  </update>
+
+  <select id="hasOpen" resultType="int">
+    SELECT COUNT(*) FROM generation_cancel_request
+    WHERE task_id = #{taskId} AND state IN ('PENDING','RETRYING')
+  </select>
+
+  <select id="countByState" resultType="long">
+    SELECT COUNT(*) FROM generation_cancel_request WHERE state = #{state}
+  </select>
+
+  <select id="selectRecent"
+      resultType="com.aiplatform.generation.entity.GenerationCancelRequest">
+    SELECT * FROM generation_cancel_request
+    <where>
+      <if test="state != null">state = #{state}</if>
+    </where>
+    ORDER BY id DESC
+    LIMIT #{limit} OFFSET #{offset}
+  </select>
+</mapper>
