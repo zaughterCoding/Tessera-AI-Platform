@@ -321,7 +321,7 @@ const app = createApp({
       </main>
 
       <footer class="site-footer">
-        当前版本提供应用浏览、使用包购买、限量活动、模拟支付、作品与素材管理；权益余额、AI 生成任务、真实支付、退款与评论尚未开放。
+        当前版本提供应用浏览、使用包购买、限量活动、模拟支付、作品与素材管理；购买或领取完成后异步发放权益，是否到账、是否过期以真实查询结果为准，已支付不等于已到账；AI 生成任务、权益消费、真实支付、退款与评论尚未开放。
       </footer>
 
       <div v-if="toast" class="toast" :class="toast.tone" role="status">{{ toast.text }}</div>

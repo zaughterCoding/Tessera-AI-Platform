@@ -94,7 +94,13 @@ public class EntitlementAdminServiceImpl implements IEntitlementAdminService {
             failure.getAnomalyType(), failure.getMessage());
       }
     }
-    Long next = orders.isEmpty() ? (form == null ? null : form.getAfterOrderId()) : last;
+    // 保留可空游标，避免与原始 long 混合导致空值拆箱；空页时沿用请求游标。
+    Long next;
+    if (orders.isEmpty()) {
+      next = form == null ? null : form.getAfterOrderId();
+    } else {
+      next = last;
+    }
     result.setNextAfterOrderId(next);
     result.setTrusted(trusted);
     result.setRegistered(registered);

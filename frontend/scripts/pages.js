@@ -94,11 +94,11 @@ const HomePage = {
         <div class="hero-panel">
           <div>
             <span class="eyebrow" style="color:#b9bcf5">真实状态</span>
-            <p>下单、受理、支付与权益开通分别展示；页面不会把 HTTP 200 当作业务成功。</p>
+            <p>下单、受理、支付与权益到账分别展示；页面不会把 HTTP 200 当作业务成功。</p>
           </div>
           <div>
-            <div class="stat">尚未开放</div>
-            <small>权益余额与 AI 生成任务不在当前版本范围内，已购买的订单只记录购买事实。</small>
+            <div class="stat">异步发放</div>
+            <small>购买或领取完成后异步发放权益；是否到账、是否过期以真实查询为准，已支付不等于已到账。</small>
           </div>
         </div>
       </section>
@@ -426,7 +426,7 @@ const AppDetailPage = {
           </div>
 
           <section class="section">
-            <div class="section-head"><h2>使用包</h2><span class="muted">价格为整数分，展示为人民币；购买不代表权益已开通</span></div>
+            <div class="section-head"><h2>使用包</h2><span class="muted">价格为整数分，展示为人民币；支付完成后异步发放权益，到账与过期以真实查询为准</span></div>
             <div v-for="product in products" :key="product.id" class="product-card">
               <div>
                 <h4>{{ product.title }}</h4>
@@ -451,7 +451,7 @@ const AppDetailPage = {
               {{ purchaseError.message }}
               <span v-if="purchaseError.requestId" class="muted">请求编号 {{ purchaseError.requestId }}</span>
             </notice-box>
-            <notice-box tone="info" title="权益说明">购买完成后只记录订单与支付事实；权益余额与 AI 生成任务尚未开放。</notice-box>
+            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；AI 生成任务与权益消费尚未开放。</notice-box>
           </section>
 
           <section v-if="offers.length" class="section">
@@ -491,7 +491,7 @@ const AppDetailPage = {
             </dl>
             <div class="muted">行为数据来自真实 Kafka 聚合；未开启分析时不会伪造 0。</div>
           </div>
-          <notice-box tone="warn" title="当前版本边界">不提供权益余额、AI 生成任务、真实支付、退款或评论。</notice-box>
+          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；AI 生成任务、权益消费、真实支付、退款与评论尚未开放。</notice-box>
         </aside>
       </div>
     </div>
@@ -730,7 +730,7 @@ const CampaignDetailPage = {
               <button v-if="admission.state === 'FAILED'" class="button ghost" type="button" style="margin-top:8px" @click="retryNewIntent">以新的请求键重新参与</button>
             </div>
           </div>
-          <notice-box tone="info" title="状态含义">已受理 ≠ 建单成功；建单成功 ≠ 已支付；已支付 ≠ 权益已到账。</notice-box>
+          <notice-box tone="info" title="状态含义">已受理 ≠ 建单成功；建单成功 ≠ 已支付；已支付 ≠ 权益已到账；权益在完成后异步发放，到账与过期以真实查询为准。</notice-box>
         </aside>
       </div>
     </div>
@@ -1015,7 +1015,7 @@ const OrderDetailPage = {
           </div>
           <p v-if="order.status === 'UNPAID' && expired" class="muted">已超过支付截止时间，等待服务端关闭订单。</p>
           <div v-if="order.status === 'PAID'" style="margin-top:12px">
-            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益使用功能尚未开放。</notice-box>
+            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；权益消费与 AI 生成任务尚未开放。</notice-box>
           </div>
           <div v-if="order.status === 'CANCELLED'" style="margin-top:12px">
             <notice-box tone="warn" title="已关闭">订单已关闭，未发生支付；如需再次购买请重新下单。</notice-box>
@@ -1040,7 +1040,7 @@ const OrderDetailPage = {
             <empty-block v-else text="暂时无法读取预约状态"></empty-block>
           </div>
           <notice-box tone="warn" title="状态口径">
-            已受理只表示后台收到请求；建单成功只表示订单已创建；已支付只表示订单成交；权益尚未开放。
+            已受理只表示后台收到请求；建单成功只表示订单已创建；已支付只表示订单成交，不等于权益已到账；权益在完成后异步发放，是否到账、是否过期以真实查询结果为准。
           </notice-box>
         </aside>
       </div>
