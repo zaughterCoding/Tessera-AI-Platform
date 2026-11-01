@@ -7,7 +7,9 @@
     [int]$ReceiverPort = 19099,
     [int]$GrafanaPort = 13000,
     [switch]$DemoCodeEnabled,
-    [switch]$MockPaymentEnabled
+    [switch]$MockPaymentEnabled,
+    # 一步配置本地演示：验证码、模拟支付、模拟渠道任务提交与技术体验全部开启。
+    [switch]$Demo
 )
 $ErrorActionPreference = 'Stop'
 $taskRoot = Split-Path -Parent $PSScriptRoot
@@ -42,10 +44,12 @@ function Get-CanalServerPassword([string]$ClientPassword) {
 }
 
 $taskDatabase = 'ai_creation_' + $Environment.Replace('-', '_')
-$taskDemo = if ($DemoCodeEnabled) { 'true' } else { 'false' }
-$taskMockPayment = if ($MockPaymentEnabled) { 'true' } else { 'false' }
+$taskDemo = if ($DemoCodeEnabled -or $Demo) { 'true' } else { 'false' }
+$taskMockPayment = if ($MockPaymentEnabled -or $Demo) { 'true' } else { 'false' }
+$taskDemoFlag = if ($Demo) { 'true' } else { 'false' }
+$taskSimulatorResultBase = if ($Demo) { 'http://app:8080' } else { '' }
 # 演示验证码与模拟支付只允许显式 local/test；默认部署保持 release 且全部关闭。
-$taskProfile = if ($DemoCodeEnabled -or $MockPaymentEnabled) { 'test' } else { 'release' }
+$taskProfile = if ($DemoCodeEnabled -or $MockPaymentEnabled -or $Demo) { 'test' } else { 'release' }
 $taskSlaveId = (Get-Random -Minimum 20001 -Maximum 50000).ToString()
 $taskCanalClientPassword = New-LocalSecret
 $taskMonitorToken = New-LocalSecret
@@ -67,7 +71,7 @@ $taskValues = @(
     "GRAFANA_PORT=$GrafanaPort"
     "APP_DEMO_CODE_ENABLED=$taskDemo"
     "APP_TRADE_MOCK_PAYMENT_ENABLED=$taskMockPayment"
-    "APP_EXPERIENCE_ENABLED=false"
+    "APP_EXPERIENCE_ENABLED=$taskDemoFlag"
     "APP_MONITOR_TOKEN=$taskMonitorToken"
     "APP_CACHE_ENABLED=true"
     "APP_MEMCACHE_ENABLED=true"
@@ -91,12 +95,12 @@ $taskValues = @(
     "APP_ENTITLEMENT_EXPIRY_SCAN_MS=60000"
     "APP_ENTITLEMENT_EXPIRY_SCAN_BATCH=100"
     # 正式发布默认不接受新任务提交；已受理任务仍调度、轮询与对账。
-    "APP_GENERATION_SUBMIT_ENABLED=false"
+    "APP_GENERATION_SUBMIT_ENABLED=$taskDemoFlag"
     "APP_GENERATION_SCHEDULING_ENABLED=true"
     "APP_GENERATION_POLLING_ENABLED=true"
     "APP_GENERATION_SIMULATOR_ENABLED=true"
     # 演示故障控制与模拟回调只允许在本地/测试显式开启，正式默认关闭。
-    "APP_GENERATION_SIMULATOR_FAULT_CONTROL_ENABLED=false"
+    "APP_GENERATION_SIMULATOR_FAULT_CONTROL_ENABLED=$taskDemoFlag"
     "APP_GENERATION_SIMULATOR_CALLBACK_ENABLED=false"
     "APP_GENERATION_SIMULATOR_CALLBACK_URL="
     "APP_GENERATION_CHANNEL_CODE=simulated-primary"
@@ -138,7 +142,7 @@ $taskValues = @(
     "APP_GENERATION_HTTP_IDEMPOTENT_SUBMIT=false"
     "APP_GENERATION_HTTP_QUERY_BY_ATTEMPT=false"
     "APP_GENERATION_RESULT_DOWNLOAD_SECRET=$(New-LocalSecret)"
-    "APP_GENERATION_RESULT_SIMULATOR_RESULT_BASE_URL="
+    "APP_GENERATION_RESULT_SIMULATOR_RESULT_BASE_URL=$taskSimulatorResultBase"
     "APP_GENERATION_RESULT_ALLOWED_HOSTS="
     "APP_GENERATION_RESULT_ALLOW_PRIVATE_HOSTS=false"
     "APP_ANALYTICS_ENABLED=true"
@@ -169,5 +173,5 @@ $taskValues = @(
 [System.IO.File]::WriteAllText($taskTokenFile, $taskMonitorToken, (New-Object System.Text.UTF8Encoding $false))
 Write-Output "已创建独立部署环境：$Environment"
 Write-Output "环境文件：$taskEnvFile"
-Write-Output "演示验证码：$taskDemo；模拟支付：$taskMockPayment；技术体验：false"
+Write-Output "演示验证码：$taskDemo；模拟支付：$taskMockPayment；技术体验：$taskDemoFlag"
 Write-Output "启动命令：powershell -File deploy/start.ps1 -Environment $Environment"
