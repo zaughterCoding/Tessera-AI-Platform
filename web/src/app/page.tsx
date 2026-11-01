@@ -3,6 +3,8 @@ import { OfferCard } from "@/features/campaign/offer-card";
 import { fetchOffers } from "@/features/campaign/server";
 import { AppGrid } from "@/features/catalog/app-card";
 import { fetchApplications, fetchCategories, fetchPopularity } from "@/features/catalog/server";
+import { CreationGrid } from "@/features/community/creation-card";
+import { fetchHotCreations } from "@/features/community/server";
 import { LinkButton } from "@/shared/ui/button";
 
 const FLOW = [
@@ -13,11 +15,12 @@ const FLOW = [
 ];
 
 export default async function HomePage() {
-  const [categories, { data: newest }, popular, offers] = await Promise.all([
+  const [categories, { data: newest }, popular, offers, hotCreations] = await Promise.all([
     fetchCategories(),
     fetchApplications({ sort: "newest", size: 6 }),
     fetchPopularity(6),
     fetchOffers().catch(() => []),
+    fetchHotCreations(4).catch(() => []),
   ]);
   const openOffers = offers.filter((offer) => offer.state === "OPEN" || offer.state === "UPCOMING").slice(0, 3);
 
@@ -78,6 +81,16 @@ export default async function HomePage() {
               <li key={offer.id}><OfferCard offer={offer} /></li>
             ))}
           </ul>
+        </section>
+      )}
+
+      {hotCreations.length > 0 && (
+        <section aria-labelledby="creations-heading">
+          <div className="mb-4 flex items-baseline justify-between">
+            <h2 id="creations-heading" className="text-lg font-semibold">社区热作</h2>
+            <Link href="/community?sort=hot" className="text-sm text-ink-muted hover:text-ink">查看全部</Link>
+          </div>
+          <CreationGrid creations={hotCreations} />
         </section>
       )}
 

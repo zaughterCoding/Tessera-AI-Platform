@@ -3,6 +3,8 @@ import { notFound } from "next/navigation";
 import { AppCover } from "@/features/catalog/app-cover";
 import { ProductCard } from "@/features/catalog/product-card";
 import { fetchApplication, fetchProducts } from "@/features/catalog/server";
+import { CreationGrid } from "@/features/community/creation-card";
+import { fetchApplicationCreations } from "@/features/community/server";
 import { formatDate, formatScore } from "@/shared/format";
 import { LinkButton } from "@/shared/ui/button";
 import { Badge, EmptyState } from "@/shared/ui/feedback";
@@ -31,7 +33,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ApplicationPage({ params }: Props) {
   const id = parseId((await params).id);
   if (!id) notFound();
-  const [application, products] = await Promise.all([fetchApplication(id), fetchProducts(id)]);
+  const [application, products, creations] = await Promise.all([
+    fetchApplication(id),
+    fetchProducts(id),
+    fetchApplicationCreations(id, 4).catch(() => []),
+  ]);
   const capabilities = application.capabilities?.split(",").map((item) => item.trim()).filter(Boolean) ?? [];
 
   return (
@@ -72,6 +78,12 @@ export default async function ApplicationPage({ params }: Props) {
             ]}
           />
         </Card>
+        {creations.length > 0 && (
+          <section aria-labelledby="creations-heading">
+            <h2 id="creations-heading" className="mb-3 font-medium">用它创作的作品</h2>
+            <CreationGrid creations={creations} />
+          </section>
+        )}
       </div>
 
       <section aria-labelledby="products-heading" className="flex min-w-0 flex-col gap-3">
