@@ -169,7 +169,7 @@ const TasksPage = {
             <div class="meta-line">
               <status-badge :status="stateBadge(item.state)" :label="stateLabel(item.state)"></status-badge>
               <status-badge status="frozen" :label="accountingLabel(item.accountingState)"></status-badge>
-              <span v-if="item.simulatedChannel" class="chip">模拟渠道</span>
+              <span v-if="item.channelDisplayName" class="chip">{{ item.simulatedChannel ? '模拟渠道' : '真实渠道' }}</span>
               <span class="muted">任务号 {{ item.id }}</span>
             </div>
             <h3 style="margin:6px 0 2px">{{ item.applicationName }} · 版本 {{ item.applicationVersion }}</h3>
@@ -203,6 +203,9 @@ const TaskDetailPage = {
       cancelReason: "",
       canceling: false,
       downloadingId: null,
+      share: { selected: [], title: "", content: "", published: false },
+      sharing: false,
+      sharedCreation: null,
     };
   },
   created() {
@@ -253,6 +256,60 @@ const TaskDetailPage = {
         this.downloadingId = null;
       }
     },
+    shareableResults() {
+      return (this.task && this.task.results ? this.task.results : []).filter(
+        (result) => result.downloadAvailable,
+      );
+    },
+    toggleShare(resultId) {
+      const index = this.share.selected.indexOf(resultId);
+      if (index >= 0) {
+        this.share.selected.splice(index, 1);
+        return;
+      }
+      if (this.share.selected.length >= 9) {
+        this.$root.notify("一次最多分享 9 个结果。", "error");
+        return;
+      }
+      this.share.selected.push(resultId);
+    },
+    // 分享只提交用户显式勾选的结果；是否公开由用户再次确认，默认保存为私有作品。
+    async shareResults() {
+      if (!this.share.selected.length) {
+        this.$root.notify("请先勾选要分享的结果。", "error");
+        return;
+      }
+      if (!(this.share.title || "").trim() || !(this.share.content || "").trim()) {
+        this.$root.notify("请填写作品标题和介绍。", "error");
+        return;
+      }
+      if (this.share.published
+        && !window.confirm("公开后其他访客可以看到这些结果图片，确认公开分享？")) {
+        return;
+      }
+      this.sharing = true;
+      try {
+        const result = await this.$api(
+          "/generation/tasks/" + encodeURIComponent(this.task.id) + "/share",
+          {
+            method: "POST",
+            body: {
+              resultIds: this.share.selected.slice(),
+              title: this.share.title.trim(),
+              content: this.share.content.trim(),
+              published: Boolean(this.share.published),
+            },
+          },
+        );
+        this.sharedCreation = result.data;
+        this.share = { selected: [], title: "", content: "", published: false };
+        this.$root.notify("已创建作品；未公开时仅本人可见。");
+      } catch (failure) {
+        this.$root.notify((failure && failure.message) || "分享未完成", "error");
+      } finally {
+        this.sharing = false;
+      }
+    },
     async cancelTask() {
       this.canceling = true;
       try {
@@ -284,7 +341,7 @@ const TaskDetailPage = {
           <div class="meta-line">
             <status-badge :status="stateBadge(task.state)" :label="stateLabel(task.state)"></status-badge>
             <status-badge status="frozen" :label="accountingLabel(task.accountingState)"></status-badge>
-            <span v-if="task.simulatedChannel" class="chip">模拟渠道</span>
+            <span v-if="task.channelDisplayName" class="chip">{{ task.simulatedChannel ? '模拟渠道' : '真实渠道' }}</span>
             <span class="muted">任务号 {{ task.id }}</span>
           </div>
           <h3 style="margin:10px 0 4px">{{ task.applicationName }}</h3>
@@ -344,6 +401,38 @@ const TaskDetailPage = {
               </tbody>
             </table>
           </div>
+        </div>
+
+        <div v-if="shareableResults().length" class="card" style="grid-column:1 / -1">
+          <h3 style="margin-top:0">分享到作品</h3>
+          <p class="muted">只分享你勾选的结果；默认保存为私有作品，公开必须由你再次确认。未公开的作品不会被他人看到。</p>
+          <div class="actions" style="flex-wrap:wrap;gap:8px">
+            <label v-for="result in shareableResults()" :key="result.id" class="chip">
+              <input type="checkbox" :checked="share.selected.includes(result.id)"
+                @change="toggleShare(result.id)" />
+              第 {{ result.position }} 张
+            </label>
+          </div>
+          <label class="field"><span>作品标题</span>
+            <input v-model="share.title" maxlength="128" placeholder="给这组作品起个名字" />
+          </label>
+          <label class="field"><span>作品介绍</span>
+            <textarea v-model="share.content" maxlength="20000" rows="3" placeholder="介绍创作思路（公开后访客可见）"></textarea>
+          </label>
+          <label class="chip" style="display:inline-flex;gap:6px;align-items:center">
+            <input v-model="share.published" type="checkbox" />
+            同时公开分享（访客可见）
+          </label>
+          <div class="actions">
+            <button class="button" type="button" :disabled="sharing" @click="shareResults">
+              {{ sharing ? '提交中…' : '创建作品' }}
+            </button>
+          </div>
+          <p v-if="sharedCreation" class="muted">
+            已创建作品 <a :href="'#/creations/' + encodeURIComponent(sharedCreation.id)">#{{ sharedCreation.id }}</a>，
+            当前状态：{{ sharedCreation.state === 'PUBLISHED' ? '已公开' : '私有' }}。
+            可在<a href="#/mine">我的</a>页管理作品与公开状态。
+          </p>
         </div>
 
         <div v-if="task.canCancel" class="card" style="grid-column:1 / -1">

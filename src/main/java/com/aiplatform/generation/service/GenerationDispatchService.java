@@ -14,8 +14,8 @@ import com.aiplatform.generation.mapper.GenerationResultMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
+import com.aiplatform.generation.provider.ProviderAdapterRouter;
 import com.aiplatform.generation.provider.ProviderCapabilities;
-import com.aiplatform.generation.provider.ProviderChannelAdapter;
 import com.aiplatform.generation.provider.ProviderQueryResult;
 import com.aiplatform.generation.provider.ProviderRejectedException;
 import com.aiplatform.generation.provider.ProviderSubmitResult;
@@ -40,7 +40,7 @@ public class GenerationDispatchService {
   private final ProviderChannelMapper channels;
   private final GenerationTaskMapper tasks;
   private final GenerationQuotaMapper quotas;
-  private final ProviderChannelAdapter adapter;
+  private final ProviderAdapterRouter adapter;
   private final GenerationUpstreamTransactions upstream;
   private final GenerationSettlementTransactions settlements;
   private final GenerationResultMapper results;
@@ -48,7 +48,7 @@ public class GenerationDispatchService {
 
   public GenerationDispatchService(GenerationHandoffMapper handoffs,
       ProviderAttemptMapper attempts, ProviderChannelMapper channels, GenerationTaskMapper tasks,
-      GenerationQuotaMapper quotas, ProviderChannelAdapter adapter,
+      GenerationQuotaMapper quotas, ProviderAdapterRouter adapter,
       GenerationUpstreamTransactions upstream, GenerationSettlementTransactions settlements,
       GenerationResultMapper results, GenerationProperties properties) {
     this.handoffs = handoffs;
@@ -77,8 +77,8 @@ public class GenerationDispatchService {
     if (!"ENABLED".equals(channel.getStatus())) {
       return Collections.emptyList();
     }
-    if (!channelAvailable(channel)) {
-      // 模拟渠道关闭时只等待，不认领、不创建尝试，也不改变冻结事实。
+    if (!adapter.canSubmit(channel.getCode())) {
+      // 渠道关闭或真实渠道未配置时只等待，不认领、不创建尝试，也不改变冻结事实。
       return Collections.emptyList();
     }
     List<HandoffRow> rows = handoffs.selectDueHandoffs(properties.getDispatchBatch());
@@ -190,12 +190,16 @@ public class GenerationDispatchService {
   /** 轮询认领同样只做短事务，查询在提交后执行。 */
   @Transactional
   public List<AttemptClaim> claimDuePolls() {
-    if (!properties.isPollingEnabled() || !properties.isSimulatorEnabled()) {
+    if (!properties.isPollingEnabled()) {
       return Collections.emptyList();
     }
     List<ProviderAttempt> rows = attempts.selectDueForPoll(properties.getPollBatch());
     List<AttemptClaim> claims = new ArrayList<>();
     for (ProviderAttempt row : rows) {
+      if (!adapter.canPoll(row.getAttemptKey())) {
+        // 该尝试所属渠道当前不可查询：跳过并保持既有冻结与租约，不猜测终态。
+        continue;
+      }
       String owner = UUID.randomUUID().toString();
       if (attempts.claimForPoll(row.getId(), owner, properties.getLeaseSeconds()) != 1) {
         continue;
@@ -219,8 +223,8 @@ public class GenerationDispatchService {
   }
 
   public void submitClaim(AttemptClaim claim) {
-    if (!properties.isSimulatorEnabled()) {
-      upstream.markUncertain(claim, "SIMULATOR_DISABLED", "模拟渠道未启用");
+    if (!adapter.canSubmit(properties.getChannelCode())) {
+      upstream.markUncertain(claim, "CHANNEL_NOT_READY", "生成渠道未启用或未配置");
       return;
     }
     try {
@@ -239,7 +243,7 @@ public class GenerationDispatchService {
   }
 
   public void pollClaim(AttemptClaim claim) {
-    if (!properties.isPollingEnabled() || !properties.isSimulatorEnabled()) {
+    if (!properties.isPollingEnabled() || !adapter.canPoll(claim.attemptKey())) {
       return;
     }
     try {
@@ -268,7 +272,7 @@ public class GenerationDispatchService {
       upstream.delayResultRepair(claim, "UPSTREAM_RESULT_NOT_FOUND", "查询不到原任务");
       return;
     }
-    ProviderCapabilities capabilities = adapter.capabilities();
+    ProviderCapabilities capabilities = adapter.capabilitiesFor(claim.attemptKey());
     if (!capabilities.idempotentSubmit() || !capabilities.queryByAttempt()) {
       upstream.review(claim, "CAPABILITY_UNCERTAIN", "渠道缺少幂等或按尝试查询能力");
       return;
@@ -316,9 +320,5 @@ public class GenerationDispatchService {
 
   private int value(Integer number) {
     return number == null ? 0 : number;
-  }
-
-  private boolean channelAvailable(ProviderChannel channel) {
-    return !"SIMULATED".equals(channel.getKind()) || properties.isSimulatorEnabled();
   }
 }

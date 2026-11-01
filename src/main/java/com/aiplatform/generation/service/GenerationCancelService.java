@@ -9,9 +9,9 @@ import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
+import com.aiplatform.generation.provider.ProviderAdapterRouter;
 import com.aiplatform.generation.provider.ProviderCancelResult;
 import com.aiplatform.generation.provider.ProviderCapabilities;
-import com.aiplatform.generation.provider.ProviderChannelAdapter;
 import com.aiplatform.generation.provider.ProviderTemporaryException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -28,12 +28,12 @@ public class GenerationCancelService {
   private final GenerationUpstreamTransactions upstream;
   private final GenerationTaskMapper tasks;
   private final ProviderAttemptMapper attempts;
-  private final ProviderChannelAdapter adapter;
+  private final ProviderAdapterRouter adapter;
   private final ResultDeliveryProperties properties;
 
   public GenerationCancelService(GenerationCancelTransactions transactions,
       GenerationSettlementTransactions settlements, GenerationUpstreamTransactions upstream,
-      GenerationTaskMapper tasks, ProviderAttemptMapper attempts, ProviderChannelAdapter adapter,
+      GenerationTaskMapper tasks, ProviderAttemptMapper attempts, ProviderAdapterRouter adapter,
       ResultDeliveryProperties properties) {
     this.transactions = transactions;
     this.settlements = settlements;
@@ -97,7 +97,7 @@ public class GenerationCancelService {
       transactions.restore(claim, GenerationCancelState.REJECTED, "UPSTREAM_ALREADY_TERMINAL");
       return;
     }
-    ProviderCapabilities capabilities = adapter.capabilities();
+    ProviderCapabilities capabilities = adapter.capabilitiesFor(attempt.getAttemptKey());
     if (!capabilities.cancel()) {
       transactions.restore(claim, GenerationCancelState.UNSUPPORTED, "CHANNEL_UNSUPPORTED");
       return;

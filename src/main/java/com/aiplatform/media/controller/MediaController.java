@@ -77,7 +77,8 @@ public class MediaController {
   }
 
   private ResponseEntity<Resource> publicFile(MediaContent content) {
-    return file(content, CacheControl.maxAge(5, TimeUnit.MINUTES).cachePublic());
+    // 公开素材允许缓存但必须回源校验：取消发布或删除后旧地址不再返回内容。
+    return file(content, CacheControl.noCache().cachePublic());
   }
 
   private ResponseEntity<Resource> file(MediaContent content, CacheControl cache) {

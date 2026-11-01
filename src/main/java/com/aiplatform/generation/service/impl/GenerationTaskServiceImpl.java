@@ -30,6 +30,7 @@ import com.aiplatform.generation.mapper.GenerationResultMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
+import com.aiplatform.generation.provider.ProviderAdapterRouter;
 import com.aiplatform.generation.service.GenerationCancelTransactions;
 import com.aiplatform.generation.service.IGenerationTaskService;
 import com.aiplatform.media.dto.MediaContent;
@@ -68,6 +69,10 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
       "任务提交已开启，但调度当前暂停；任务会排队等待，次数保持冻结。";
   private static final String SIMULATOR_PAUSED_NOTICE =
       "任务提交已开启，但模拟渠道当前关闭；任务会排队等待，次数保持冻结。";
+  private static final String REAL_CHANNEL_ENABLED_NOTICE =
+      "任务提交与真实渠道调度已开启；上游执行与结果交付分阶段进行。";
+  private static final String REAL_CHANNEL_PAUSED_NOTICE =
+      "任务提交已开启，但真实渠道未启用、尚未配置或本地调用额度已用尽；任务会排队等待，次数保持冻结。";
 
   private final GenerationTaskMapper tasks;
   private final AiApplicationMapper applications;
@@ -83,6 +88,7 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
   private final GenerationCancelTransactions cancelTransactions;
   private final IBusinessOutboxService outbox;
   private final GenerationProperties properties;
+  private final ProviderAdapterRouter providerAdapter;
 
   public GenerationTaskServiceImpl(
       GenerationTaskMapper tasks,
@@ -98,7 +104,8 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
       GenerationSettlementMapper settlements,
       GenerationCancelTransactions cancelTransactions,
       IBusinessOutboxService outbox,
-      GenerationProperties properties) {
+      GenerationProperties properties,
+      ProviderAdapterRouter providerAdapter) {
     this.tasks = tasks;
     this.applications = applications;
     this.grants = grants;
@@ -113,27 +120,30 @@ public class GenerationTaskServiceImpl implements IGenerationTaskService {
     this.cancelTransactions = cancelTransactions;
     this.outbox = outbox;
     this.properties = properties;
+    this.providerAdapter = providerAdapter;
   }
 
   @Override
   public GenerationStatusDTO status() {
     ProviderChannel channel = channels.selectByCode(properties.getChannelCode());
     boolean simulated = channel != null && "SIMULATED".equals(channel.getKind());
-    boolean scheduling = properties.isSchedulingEnabled() && properties.isSimulatorEnabled();
+    boolean channelReady = channel != null && providerAdapter.canSubmit(channel.getCode());
+    boolean scheduling = properties.isSchedulingEnabled() && channelReady;
     String notice;
     if (!properties.isSubmitEnabled()) {
       notice = DISABLED_NOTICE;
     } else if (!properties.isSchedulingEnabled()) {
       notice = SCHEDULING_PAUSED_NOTICE;
-    } else if (!properties.isSimulatorEnabled()) {
-      notice = SIMULATOR_PAUSED_NOTICE;
+    } else if (!channelReady) {
+      notice = simulated ? SIMULATOR_PAUSED_NOTICE : REAL_CHANNEL_PAUSED_NOTICE;
     } else {
-      notice = ENABLED_NOTICE;
+      notice = simulated ? ENABLED_NOTICE : REAL_CHANNEL_ENABLED_NOTICE;
     }
     return new GenerationStatusDTO(properties.isSubmitEnabled(),
         properties.isSchedulingEnabled(), scheduling, simulated,
         channel == null ? null : channel.getCode(),
-        channel == null ? null : channel.getDisplayName(), notice);
+        channel == null ? null : channel.getDisplayName(),
+        channel == null ? null : channel.getKind(), notice);
   }
 
   @Override

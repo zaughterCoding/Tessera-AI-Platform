@@ -1,6 +1,9 @@
 package com.aiplatform.generation.config;
 
+import com.aiplatform.generation.entity.ProviderChannel;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
+import com.aiplatform.generation.provider.HttpImageProviderAdapter;
+import com.aiplatform.generation.provider.ProviderCapabilities;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.context.annotation.DependsOn;
@@ -17,12 +20,14 @@ import org.springframework.stereotype.Component;
 public class GenerationChannelLimitInitializer implements InitializingBean {
   private final ProviderChannelMapper channels;
   private final GenerationProperties properties;
+  private final HttpImageProviderAdapter http;
   private final JdbcTemplate jdbc;
 
   public GenerationChannelLimitInitializer(ProviderChannelMapper channels,
-      GenerationProperties properties, JdbcTemplate jdbc) {
+      GenerationProperties properties, HttpImageProviderAdapter http, JdbcTemplate jdbc) {
     this.channels = channels;
     this.properties = properties;
+    this.http = http;
     this.jdbc = jdbc;
   }
 
@@ -49,6 +54,22 @@ public class GenerationChannelLimitInitializer implements InitializingBean {
             + "queueTimeoutSeconds={}", properties.getChannelCode(),
         properties.getChannelMaxInFlight(), properties.getChannelQueueCapacity(),
         properties.getQueueTimeoutSeconds());
+    syncHttpDeclaration();
+  }
+
+  /** 真实渠道的启用状态与能力只由显式配置决定；未配置时保持停用，不产生任何外呼。 */
+  private void syncHttpDeclaration() {
+    ProviderChannel channel = channels.selectByCode(properties.getChannelCode());
+    if (channel == null || !"HTTP".equals(channel.getKind())) {
+      return;
+    }
+    ProviderCapabilities capabilities = http.capabilities();
+    String status = http.isConfigured() ? "ENABLED" : "DISABLED";
+    channels.syncChannelDeclaration(channel.getCode(), status,
+        capabilities.idempotentSubmit(), capabilities.queryByAttempt(), capabilities.cancel());
+    log.info("真实渠道声明已同步，channel={}, status={}, idempotentSubmit={}, "
+            + "queryByAttempt={}, cancel={}", channel.getCode(), status,
+        capabilities.idempotentSubmit(), capabilities.queryByAttempt(), capabilities.cancel());
   }
 
   private boolean channelTableExists() {

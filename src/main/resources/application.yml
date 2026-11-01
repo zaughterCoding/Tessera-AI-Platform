@@ -131,6 +131,25 @@ app:
     callback-max-skew-seconds: ${APP_GENERATION_CALLBACK_MAX_SKEW_SECONDS:300}
     callback-max-bytes: ${APP_GENERATION_CALLBACK_MAX_BYTES:8192}
     callback-secret: ${APP_GENERATION_CALLBACK_SECRET:}
+    http:
+      # 真实图片渠道默认关闭；地址、凭据、模型与正数调用上限缺一不可，未配置时不产生任何外呼。
+      enabled: ${APP_GENERATION_HTTP_ENABLED:false}
+      base-url: ${APP_GENERATION_HTTP_BASE_URL:}
+      submit-path: ${APP_GENERATION_HTTP_SUBMIT_PATH:/v1/images/jobs}
+      task-path: ${APP_GENERATION_HTTP_TASK_PATH:/v1/images/jobs/{taskId}}
+      cancel-path: ${APP_GENERATION_HTTP_CANCEL_PATH:}
+      model: ${APP_GENERATION_HTTP_MODEL:}
+      api-key: ${APP_GENERATION_HTTP_API_KEY:}
+      auth-scheme: ${APP_GENERATION_HTTP_AUTH_SCHEME:Bearer}
+      allow-insecure-http: ${APP_GENERATION_HTTP_ALLOW_INSECURE_HTTP:false}
+      real-call-limit: ${APP_GENERATION_HTTP_REAL_CALL_LIMIT:0}
+      connect-timeout-ms: ${APP_GENERATION_HTTP_CONNECT_TIMEOUT_MS:3000}
+      request-timeout-ms: ${APP_GENERATION_HTTP_REQUEST_TIMEOUT_MS:30000}
+      query-timeout-ms: ${APP_GENERATION_HTTP_QUERY_TIMEOUT_MS:10000}
+      max-response-bytes: ${APP_GENERATION_HTTP_MAX_RESPONSE_BYTES:262144}
+      idempotent-submit: ${APP_GENERATION_HTTP_IDEMPOTENT_SUBMIT:false}
+      query-by-attempt: ${APP_GENERATION_HTTP_QUERY_BY_ATTEMPT:false}
+      display-name: "${APP_GENERATION_HTTP_DISPLAY_NAME:HTTP 图片渠道}"
     result:
       # 结果拉取与保存默认开启；模拟结果地址为空时保持旧版元数据，不伪造可下载文件。
       enabled: ${APP_GENERATION_RESULT_ENABLED:true}

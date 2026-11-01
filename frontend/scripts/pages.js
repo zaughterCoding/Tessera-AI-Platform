@@ -578,7 +578,9 @@ const AppDetailPage = {
           },
         });
         this.$root.clearPurchaseKey(scope);
-        this.$root.notify("任务已受理，次数已冻结；将由模拟渠道执行，可在任务详情查看进展。");
+        const channelLabel = this.generationStatus && this.generationStatus.channelKind === "HTTP"
+          ? "真实渠道" : "模拟渠道";
+        this.$root.notify("任务已受理，次数已冻结；将由" + channelLabel + "执行，可在任务详情查看进展。");
         this.go("#/tasks/" + encodeURIComponent(result.data.id));
       } catch (failure) {
         this.generationError = failure;
@@ -641,11 +643,14 @@ const AppDetailPage = {
               {{ purchaseError.message }}
               <span v-if="purchaseError.requestId" class="muted">请求编号 {{ purchaseError.requestId }}</span>
             </notice-box>
-            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；任务提交只冻结一次权益次数，生成结果交付与结算尚未开放。</notice-box>
+            <notice-box tone="info" title="权益说明">购买或领取完成后异步发放权益；是否到账、是否过期以真实查询结果为准，已支付不等于已到账；任务提交只冻结一次权益次数，结果全部保存后才消费一次，失败按规则释放。</notice-box>
           </section>
 
           <section class="section">
             <div class="section-head"><h2>提交生成任务</h2><a href="#/tasks">我的任务</a></div>
+            <p v-if="generationStatus && generationStatus.channelKind" class="muted">
+              当前执行渠道：{{ generationStatus.channelKind === 'HTTP' ? '真实渠道' : '模拟渠道' }}（以服务端状态为准，模拟渠道不产生付费调用）
+            </p>
             <notice-box v-if="!isLoggedIn" tone="info" title="需要登录">
               <a :href="loginLink()">登录</a>后可用本人已到账权益提交固定规格请求。
             </notice-box>
@@ -697,7 +702,7 @@ const AppDetailPage = {
                   <span v-if="generationError.requestId" class="muted">请求编号 {{ generationError.requestId }}</span>
                 </notice-box>
                 <notice-box tone="info" title="当前阶段边界">
-                  提交成功后任务进入排队，权益包冻结 1 次；调度器会把任务交给模拟渠道执行，页面不自动轮询，可在“我的任务”查看真实状态。不提供取消、释放、结算或结果下载。
+                  提交成功后任务进入排队，权益包冻结 1 次；调度器会把任务交给{{ generationStatus.simulatedChannel ? '模拟渠道' : '真实渠道' }}执行，页面不自动轮询，可在“我的任务”查看真实状态、申请取消并下载本人结果。真实渠道未配置或本地调用额度用尽时任务会排队等待，次数保持冻结。
                 </notice-box>
                 <div class="actions" style="margin-top:12px">
                   <button class="button" type="button" :disabled="submitting" @click="submitGeneration">
@@ -746,7 +751,7 @@ const AppDetailPage = {
             </dl>
             <div class="muted">行为数据来自真实 Kafka 聚合；未开启分析时不会伪造 0。</div>
           </div>
-          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；已受理任务会进入调度并由模拟渠道执行；结果交付、结算、真实支付、退款与评论尚未开放。</notice-box>
+          <notice-box tone="warn" title="当前版本边界">权益到账与过期状态按真实查询展示；任务执行渠道由服务端状态决定并明确标注模拟或真实；生成结果默认仅本人可见，公开分享需本人显式确认；真实支付、退款与评论尚未开放。</notice-box>
         </aside>
       </div>
     </div>
@@ -1270,7 +1275,7 @@ const OrderDetailPage = {
           </div>
           <p v-if="order.status === 'UNPAID' && expired" class="muted">已超过支付截止时间，等待服务端关闭订单。</p>
           <div v-if="order.status === 'PAID'" style="margin-top:12px">
-            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；可在应用详情按固定规格提交任务并冻结次数，生成结果交付与结算尚未开放。</notice-box>
+            <notice-box tone="success" title="已支付">订单已完成，未发生退款流程；权益在后台异步发放，是否到账、是否过期以上方真实状态为准；可在应用详情按固定规格提交任务并冻结次数，结果交付后在任务详情私有下载或主动分享。</notice-box>
           </div>
           <div v-if="order.status === 'CANCELLED'" style="margin-top:12px">
             <notice-box tone="warn" title="已关闭">订单已关闭，未发生支付；如需再次购买请重新下单。</notice-box>

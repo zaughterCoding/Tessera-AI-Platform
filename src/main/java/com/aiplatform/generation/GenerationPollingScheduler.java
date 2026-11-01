@@ -25,7 +25,7 @@ public class GenerationPollingScheduler {
 
   @Scheduled(fixedDelayString = "${app.generation.poll-scan-interval-ms:2000}")
   public void scan() {
-    if (!properties.isPollingEnabled() || !properties.isSimulatorEnabled()) {
+    if (!properties.isPollingEnabled()) {
       return;
     }
     if (!running.compareAndSet(false, true)) {

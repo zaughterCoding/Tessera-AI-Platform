@@ -8,5 +8,6 @@ public record GenerationStatusDTO(
     boolean simulatedChannel,
     String channelCode,
     String channelDisplayName,
+    String channelKind,
     String notice) {
 }

@@ -3,10 +3,13 @@ package com.aiplatform.generation.controller;
 import com.aiplatform.common.api.ApiException;
 import com.aiplatform.common.api.ErrorCode;
 import com.aiplatform.common.api.Result;
+import com.aiplatform.community.dto.CreationDTO;
 import com.aiplatform.generation.dto.GenerationCancelForm;
+import com.aiplatform.generation.dto.GenerationShareForm;
 import com.aiplatform.generation.dto.GenerationStatusDTO;
 import com.aiplatform.generation.dto.GenerationTaskDTO;
 import com.aiplatform.generation.dto.GenerationTaskForm;
+import com.aiplatform.generation.service.GenerationShareService;
 import com.aiplatform.generation.service.IGenerationTaskService;
 import com.aiplatform.identity.dto.UserDTO;
 import com.aiplatform.identity.security.PublicEndpoint;
@@ -36,9 +39,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/generation")
 public class GenerationTaskController {
   private final IGenerationTaskService tasks;
+  private final GenerationShareService sharing;
 
-  public GenerationTaskController(IGenerationTaskService tasks) {
+  public GenerationTaskController(IGenerationTaskService tasks, GenerationShareService sharing) {
     this.tasks = tasks;
+    this.sharing = sharing;
   }
 
   @PublicEndpoint
@@ -78,6 +83,13 @@ public class GenerationTaskController {
                 + extension(content.getContentType()))
         .header("X-Content-Type-Options", "nosniff")
         .body(content.getResource());
+  }
+
+  /** 用户显式选择结果后创建作品；默认私有，公开必须显式确认。 */
+  @PostMapping("/tasks/{id}/share")
+  public Result<CreationDTO> share(@PathVariable @Positive Long id,
+      @Valid @RequestBody GenerationShareForm form) {
+    return Result.ok(sharing.share(currentUserId(), id, form));
   }
 
   @PostMapping("/tasks/{id}/cancel")

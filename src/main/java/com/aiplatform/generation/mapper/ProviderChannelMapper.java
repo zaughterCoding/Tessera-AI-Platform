@@ -9,6 +9,14 @@ import org.apache.ibatis.annotations.Param;
 public interface ProviderChannelMapper extends BaseMapper<ProviderChannel> {
   ProviderChannel selectByCode(@Param("code") String code);
 
+  /** 尝试所属渠道的类型；用于历史尝试在渠道切换后仍按原适配器收敛。 */
+  String selectKindByAttemptKey(@Param("attemptKey") String attemptKey);
+
+  /** 启动时把真实渠道的启用状态与能力声明同步到渠道行。 */
+  int syncChannelDeclaration(@Param("code") String code, @Param("status") String status,
+      @Param("idempotentSubmit") boolean idempotentSubmit,
+      @Param("queryByAttempt") boolean queryByAttempt, @Param("cancel") boolean cancel);
+
   /** 队列占用通过条件更新取得，满额时返回 0；调用方负责回滚整个提交事务。 */
   int reserveQueueSlot(@Param("code") String code);
 

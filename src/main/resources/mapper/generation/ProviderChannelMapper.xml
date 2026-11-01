@@ -6,6 +6,22 @@
     SELECT * FROM provider_channel WHERE code = #{code}
   </select>
 
+  <select id="selectKindByAttemptKey" resultType="string">
+    SELECT c.kind FROM provider_attempt a
+    JOIN provider_channel c ON c.id = a.channel_id
+    WHERE a.attempt_key = #{attemptKey}
+  </select>
+
+  <!-- 只同步真实渠道的启用状态与能力声明；模拟渠道的能力由迁移固定，不因配置漂移。 -->
+  <update id="syncChannelDeclaration">
+    UPDATE provider_channel
+    SET status = #{status},
+        supports_idempotent_submit = #{idempotentSubmit},
+        supports_query_by_attempt = #{queryByAttempt},
+        supports_cancel = #{cancel}
+    WHERE code = #{code} AND kind = 'HTTP'
+  </update>
+
   <update id="reserveQueueSlot">
     UPDATE provider_channel
     SET queued = queued + 1
