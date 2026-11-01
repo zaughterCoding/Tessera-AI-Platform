@@ -2,7 +2,7 @@
 
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { ChevronDown } from "lucide-react";
-import Link from "next/link";
+import Link from "@/shared/ui/link";
 import { useState } from "react";
 import { isAdmin } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";

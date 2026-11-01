@@ -1,6 +1,6 @@
 import { clsx } from "clsx";
 import { Loader2 } from "lucide-react";
-import Link from "next/link";
+import Link from "@/shared/ui/link";
 import type { ComponentProps } from "react";
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
