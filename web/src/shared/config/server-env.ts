@@ -15,6 +15,13 @@ const serverEnvSchema = z.object({
 
 export type ServerEnv = z.infer<typeof serverEnvSchema>;
 
+let cached: ServerEnv | null = null;
+
+export function getServerEnv(): ServerEnv {
+  cached ??= parseServerEnv(process.env);
+  return cached;
+}
+
 // 配置错误在启动时暴露，避免首个请求才失败。
 export function parseServerEnv(source: Record<string, string | undefined>): ServerEnv {
   const result = serverEnvSchema.safeParse(source);
