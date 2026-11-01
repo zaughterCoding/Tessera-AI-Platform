@@ -162,7 +162,7 @@ function StudioFields({
         >
           <p>网络中断，任务可能已经受理。找回不会重复冻结次数。</p>
           <p className="mt-1 line-clamp-2 text-xs">提示词：{submission.unknownDraft.prompt}</p>
-          <p className="mt-1 text-xs">放弃只是不再追踪这次请求；如果已受理，可在<Link href="/tasks" className="text-accent">我的任务</Link>中看到。</p>
+          <p className="mt-1 text-xs">放弃只是不再追踪这次请求；如果已受理，可在<Link href="/tasks" className="text-accent underline">我的任务</Link>中看到。</p>
         </Notice>
       )}
       {submission.rejection && <Notice tone="danger" title="未能提交">{submission.rejection}</Notice>}
@@ -240,7 +240,7 @@ function StudioFields({
               </ul>
             ) : (
               <p className="text-sm text-ink-muted">
-                没有素材。可以到<Link href="/media" className="text-accent">我的素材</Link>上传。
+                没有素材。可以到<Link href="/media" className="text-accent underline">我的素材</Link>上传。
               </p>
             )}
           </fieldset>

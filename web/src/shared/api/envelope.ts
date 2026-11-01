@@ -1,4 +1,7 @@
-import type { z } from "zod";
+import { z } from "zod";
+
+// 严格 CSP 不允许 eval，关闭 Zod 的 JIT，避免它探测 eval 时触发违规告警。
+z.config({ jitless: true });
 
 export type ApiErrorCode = string;
 

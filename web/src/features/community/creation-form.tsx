@@ -175,7 +175,7 @@ function CreationForm({ creation }: { creation?: Creation }) {
             </ul>
           ) : (
             <p className="text-sm text-ink-muted">
-              没有素材，可以到<Link href="/media" className="text-accent">我的素材</Link>上传。
+              没有素材，可以到<Link href="/media" className="text-accent underline">我的素材</Link>上传。
             </p>
           )}
           <p className="mt-1.5 text-xs text-ink-muted">发布时只有选中的图片会公开，其他上传仍然私有。</p>
