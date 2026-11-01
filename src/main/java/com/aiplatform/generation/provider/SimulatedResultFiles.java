@@ -20,7 +20,8 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class SimulatedResultFiles {
-  private static final int SIZE = 64;
+  private static final int SIZE = 512;
+  private static final int BLOBS = 5;
   private static final String PATH_PREFIX = "/internal/simulated/results/";
 
   private final ResultDeliveryProperties properties;
@@ -87,19 +88,47 @@ public class SimulatedResultFiles {
     }
   }
 
-  /** 生成合法的 64×64 RGB PNG；颜色与纹理完全由任务键和位置决定。 */
+  /** 生成合法的 RGB PNG；画面由几团渐变色块混合而成，完全由任务键和位置决定。 */
   public byte[] png(String providerTaskId, int position) {
     byte[] seed = digest((providerTaskId + ":" + position)
         .getBytes(StandardCharsets.UTF_8)).getBytes(StandardCharsets.US_ASCII);
+    double[][] blobs = new double[BLOBS][];
+    for (int blob = 0; blob < BLOBS; blob++) {
+      blobs[blob] = new double[] {
+          unit(seed, blob * 9) * SIZE,
+          unit(seed, blob * 9 + 1) * SIZE,
+          (0.12 + unit(seed, blob * 9 + 2) * 0.25) * SIZE,
+          vivid(seed, blob * 9 + 3),
+          vivid(seed, blob * 9 + 4),
+          vivid(seed, blob * 9 + 5)};
+    }
+    double frequency = 0.008 + unit(seed, 60) * 0.012;
+    double amplitude = 20 + unit(seed, 61) * 50;
     byte[] raw = new byte[SIZE * (SIZE * 3 + 1)];
     int cursor = 0;
     for (int y = 0; y < SIZE; y++) {
       raw[cursor++] = 0;
       for (int x = 0; x < SIZE; x++) {
-        int offset = (y * SIZE + x) % seed.length;
-        raw[cursor++] = seed[offset];
-        raw[cursor++] = seed[(offset + 7) % seed.length];
-        raw[cursor++] = seed[(offset + 13) % seed.length];
+        // 按距离加权混色，再用正弦扰动坐标形成流动的边缘。
+        double warpedX = x + Math.sin(y * frequency) * amplitude;
+        double warpedY = y + Math.cos(x * frequency) * amplitude;
+        double total = 0;
+        double red = 0;
+        double green = 0;
+        double blue = 0;
+        for (double[] blob : blobs) {
+          double dx = warpedX - blob[0];
+          double dy = warpedY - blob[1];
+          double weight = 1 / (1 + (dx * dx + dy * dy) / (blob[2] * blob[2]));
+          weight *= weight;
+          total += weight;
+          red += weight * blob[3];
+          green += weight * blob[4];
+          blue += weight * blob[5];
+        }
+        raw[cursor++] = (byte) (red / total);
+        raw[cursor++] = (byte) (green / total);
+        raw[cursor++] = (byte) (blue / total);
       }
     }
     byte[] idat = deflate(raw);
@@ -114,6 +143,14 @@ public class SimulatedResultFiles {
     chunk(png, "IDAT", idat);
     chunk(png, "IEND", new byte[0]);
     return png.toByteArray();
+  }
+
+  private double unit(byte[] seed, int index) {
+    return Character.digit(seed[index % seed.length], 16) / 15.0;
+  }
+
+  private double vivid(byte[] seed, int index) {
+    return 40 + unit(seed, index) * 215;
   }
 
   private byte[] deflate(byte[] raw) {
