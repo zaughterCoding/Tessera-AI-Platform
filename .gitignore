@@ -57,6 +57,9 @@ target/
 build/
 dist/
 node_modules/
+.next/
+next-env.d.ts
+*.tsbuildinfo
 .local/
 .scratch/
 artifacts/
