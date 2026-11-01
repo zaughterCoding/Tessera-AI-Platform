@@ -1,3 +1,4 @@
+import { PurchaseButton } from "@/features/trade/purchase-button";
 import { formatMoney } from "@/shared/format";
 import { Badge } from "@/shared/ui/feedback";
 import { Card } from "@/shared/ui/layout";
@@ -23,6 +24,7 @@ export function ProductCard({ product }: { product: Product }) {
         {product.saleMode === LIMITED_SALE && <li><Badge tone="warning">限量活动专享</Badge></li>}
       </ul>
       {product.rules && <p className="text-xs text-ink-muted">{product.rules}</p>}
+      <PurchaseButton product={product} />
     </Card>
   );
 }

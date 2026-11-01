@@ -1,4 +1,6 @@
 import Link from "@/shared/ui/link";
+import { OfferCard } from "@/features/campaign/offer-card";
+import { fetchOffers } from "@/features/campaign/server";
 import { AppGrid } from "@/features/catalog/app-card";
 import { fetchApplications, fetchCategories, fetchPopularity } from "@/features/catalog/server";
 import { LinkButton } from "@/shared/ui/button";
@@ -11,11 +13,13 @@ const FLOW = [
 ];
 
 export default async function HomePage() {
-  const [categories, { data: newest }, popular] = await Promise.all([
+  const [categories, { data: newest }, popular, offers] = await Promise.all([
     fetchCategories(),
     fetchApplications({ sort: "newest", size: 6 }),
     fetchPopularity(6),
+    fetchOffers().catch(() => []),
   ]);
+  const openOffers = offers.filter((offer) => offer.state === "OPEN" || offer.state === "UPCOMING").slice(0, 3);
 
   return (
     <div className="flex flex-col gap-10">
@@ -62,6 +66,20 @@ export default async function HomePage() {
         </div>
         <AppGrid applications={newest} priorityCount={3} />
       </section>
+
+      {openOffers.length > 0 && (
+        <section aria-labelledby="offers-heading">
+          <div className="mb-4 flex items-baseline justify-between">
+            <h2 id="offers-heading" className="text-lg font-semibold">进行中的限量活动</h2>
+            <Link href="/campaigns" className="text-sm text-ink-muted hover:text-ink">查看全部</Link>
+          </div>
+          <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {openOffers.map((offer) => (
+              <li key={offer.id}><OfferCard offer={offer} /></li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {popular.length > 0 && (
         <section aria-labelledby="popular-heading">
