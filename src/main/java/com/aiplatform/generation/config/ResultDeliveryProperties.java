@@ -4,8 +4,11 @@ import jakarta.annotation.PostConstruct;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import lombok.Data;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -14,12 +17,14 @@ import org.springframework.stereotype.Component;
 
 /**
  * 结果拉取与保存策略；默认拒绝内网目标，只有显式测试配置才允许本机 HTTP 服务。
- * 允许名单必须同时开启开关并处于 local/test 环境，避免测试便利削弱生产策略。
+ * 允许名单必须同时开启开关且全部活动 profile 属于 local/test，避免测试便利削弱生产策略。
  */
 @Data
 @Component
 @ConfigurationProperties(prefix = "app.generation.result")
 public class ResultDeliveryProperties {
+  private static final Set<String> TEST_PROFILES = Set.of("local", "test");
+
   private boolean enabled = true;
   private int batch = 10;
   private int leaseSeconds = 60;
@@ -74,8 +79,8 @@ public class ResultDeliveryProperties {
     if (leaseSeconds * 1000L < totalTimeoutMs) {
       throw new IllegalArgumentException("结果认领租约必须覆盖拉取总超时");
     }
-    if (allowPrivateHosts && !testProfile()) {
-      throw new IllegalArgumentException("只有 local/test 环境允许结果拉取访问内网地址");
+    if (allowPrivateHosts && !explicitTestProfile()) {
+      throw new IllegalArgumentException("只有显式 local/test 配置允许结果拉取访问内网地址");
     }
     if (allowedHosts == null) {
       allowedHosts = new ArrayList<>();
@@ -116,13 +121,10 @@ public class ResultDeliveryProperties {
     return uri.getHost().equalsIgnoreCase(host) && expectedPort == port;
   }
 
-  private boolean testProfile() {
-    for (String profile : environment.getActiveProfiles()) {
-      if ("local".equals(profile) || "test".equals(profile)) {
-        return true;
-      }
-    }
-    return false;
+  /** 默认、正式及混入正式 profile 的组合都不算测试环境，local/test 不能覆盖同时存在的 release/prod。 */
+  private boolean explicitTestProfile() {
+    Set<String> profiles = new HashSet<>(Arrays.asList(environment.getActiveProfiles()));
+    return !profiles.isEmpty() && TEST_PROFILES.containsAll(profiles);
   }
 
   private URI parse(String value) {

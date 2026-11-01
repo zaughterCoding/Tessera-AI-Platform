@@ -20,16 +20,30 @@ import java.time.Duration;
 import java.util.HexFormat;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import org.springframework.stereotype.Component;
 
 /**
  * 受控拉取上游结果：只允许 HTTP(S) 公网目标，逐跳校验重定向、目标地址、体积、类型与摘要。
  * 内网目标仅在显式测试配置与 local/test 环境下放行，生产配置校验会拒绝该开关。
+ * 正文读取由独立看护线程按读取停滞与总时限关闭流，避免停滞上游长期占住保存线程。
  */
 @Component
 public class HttpResultFetcher {
   private static final Set<String> REDIRECTS = Set.of("301", "302", "303", "307", "308");
   private static final int BUFFER = 8192;
+  // 单一守护线程看护所有正文读取，任务随读取结束取消，不会按请求增长线程。
+  private static final ScheduledExecutorService WATCHDOG =
+      Executors.newSingleThreadScheduledExecutor(task -> {
+        Thread thread = new Thread(task, "result-fetch-watchdog");
+        thread.setDaemon(true);
+        return thread;
+      });
 
   private final ResultDeliveryProperties properties;
   private final HttpClient client;
@@ -113,10 +127,18 @@ public class HttpResultFetcher {
     byte[] buffer = new byte[BUFFER];
     ByteArrayOutputStream out = new ByteArrayOutputStream(
         declaredLength > 0 && declaredLength < Integer.MAX_VALUE ? (int) declaredLength : BUFFER);
-    try (InputStream body = response.body()) {
+    AtomicLong lastActivity = new AtomicLong(System.nanoTime());
+    AtomicBoolean stalled = new AtomicBoolean();
+    InputStream body = response.body();
+    long period = Math.max(Math.min(properties.getReadTimeoutMs() / 4L, 250L), 10L);
+    ScheduledFuture<?> watchdog = WATCHDOG.scheduleAtFixedRate(
+        () -> watch(body, deadline, lastActivity, stalled), period, period,
+        TimeUnit.MILLISECONDS);
+    try (body) {
       int total = 0;
       int count;
       while ((count = body.read(buffer)) != -1) {
+        lastActivity.set(System.nanoTime());
         total += count;
         if (total > properties.getMaxBytes()) {
           throw new ResultFetchException("RESULT_TOO_LARGE", "结果文件超过体积上限");
@@ -127,7 +149,16 @@ public class HttpResultFetcher {
         out.write(buffer, 0, count);
       }
     } catch (IOException failure) {
+      if (stalled.get()) {
+        throw new ResultFetchException("FETCH_TIMEOUT", "结果下载读取停滞超时", failure);
+      }
       throw new ResultFetchException("FETCH_IO", "结果下载中断", failure);
+    } finally {
+      watchdog.cancel(false);
+    }
+    if (stalled.get()) {
+      // 看护线程关闭流后读到 EOF 时同样按超时处理，不把截断内容当成完整结果。
+      throw new ResultFetchException("FETCH_TIMEOUT", "结果下载读取停滞超时");
     }
     byte[] content = out.toByteArray();
     ImageType type = sniff(content);
@@ -142,6 +173,20 @@ public class HttpResultFetcher {
       throw new ResultFetchException("RESULT_DIGEST_MISMATCH", "结果文件摘要与上游声明不符");
     }
     return new FetchedResult(content, type.contentType(), type.extension(), digest);
+  }
+
+  /**
+   * 看护正文读取：读取停滞或超过总时限时关闭响应流，阻塞中的 read 随之中断。
+   * 关闭是唯一能中断阻塞读的手段；仅由调用方超时返回会留下仍在读取的连接。
+   */
+  private void watch(InputStream body, long deadline, AtomicLong lastActivity,
+      AtomicBoolean stalled) {
+    long now = System.nanoTime();
+    long idleNanos = TimeUnit.MILLISECONDS.toNanos(properties.getReadTimeoutMs());
+    if (now >= deadline || now - lastActivity.get() >= idleNanos) {
+      stalled.set(true);
+      closeQuietly(body);
+    }
   }
 
   private URI parse(String sourceRef) {
