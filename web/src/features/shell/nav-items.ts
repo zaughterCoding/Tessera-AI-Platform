@@ -1,6 +1,7 @@
 export const PRIMARY_NAV = [
   { href: "/", label: "首页" },
   { href: "/apps", label: "应用" },
+  { href: "/studio", label: "创作" },
   { href: "/campaigns", label: "限量活动" },
   { href: "/community", label: "社区" },
 ] as const;

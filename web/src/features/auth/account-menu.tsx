@@ -10,6 +10,7 @@ import { useToast } from "@/shared/ui/toast";
 import { goToLogin, hardNavigate, useSession } from "./session-provider";
 
 const ACCOUNT_LINKS = [
+  { href: "/studio", label: "创作工作台" },
   { href: "/tasks", label: "我的任务" },
   { href: "/entitlements", label: "我的权益" },
   { href: "/orders", label: "我的订单" },

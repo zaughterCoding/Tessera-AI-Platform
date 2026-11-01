@@ -4,6 +4,7 @@ import { AppCover } from "@/features/catalog/app-cover";
 import { ProductCard } from "@/features/catalog/product-card";
 import { fetchApplication, fetchProducts } from "@/features/catalog/server";
 import { formatDate, formatScore } from "@/shared/format";
+import { LinkButton } from "@/shared/ui/button";
 import { Badge, EmptyState } from "@/shared/ui/feedback";
 import { Card, DescriptionList } from "@/shared/ui/layout";
 import { parseId } from "@/shared/url";
@@ -74,7 +75,10 @@ export default async function ApplicationPage({ params }: Props) {
       </div>
 
       <section aria-labelledby="products-heading" className="flex min-w-0 flex-col gap-3">
-        <h2 id="products-heading" className="font-medium">选择使用包</h2>
+        <div className="flex items-center justify-between gap-3">
+          <h2 id="products-heading" className="font-medium">选择使用包</h2>
+          <LinkButton href={`/studio?app=${application.id}`} variant="secondary" size="sm">已有权益，开始创作</LinkButton>
+        </div>
         {products.length ? (
           products.map((product) => <ProductCard key={product.id} product={product} />)
         ) : (

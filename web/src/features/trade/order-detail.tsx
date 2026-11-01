@@ -136,7 +136,7 @@ export function OrderDetail({ id }: { id: string }) {
                   </Notice>
                 )}
                 {entitlementDelivered(current) && (
-                  <div><LinkButton href={`/apps/${current.applicationId}`}>去使用</LinkButton></div>
+                  <div><LinkButton href={`/studio?app=${current.applicationId}`}>去创作</LinkButton></div>
                 )}
               </div>
               <div className="flex min-w-0 flex-col gap-4">

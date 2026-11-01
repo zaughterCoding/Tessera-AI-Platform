@@ -127,7 +127,7 @@ export function GrantDetail({ id, page }: { id: string; page: number }) {
           <PageHeader
             title={grant.applicationName}
             description={`权益包 ${grant.id}`}
-            actions={<LinkButton href={`/apps/${grant.applicationId}`}>去使用</LinkButton>}
+            actions={<LinkButton href={`/studio?app=${grant.applicationId}`}>去创作</LinkButton>}
           />
           <Card className="mb-6 flex flex-col gap-4">
             <CreditMeter grant={grant} />
