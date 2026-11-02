@@ -1,5 +1,6 @@
 package com.aiplatform.generation.dto;
 
+import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.entity.GenerationResult;
 import java.time.LocalDateTime;
 
@@ -26,7 +27,9 @@ public record GenerationAdminResultDTO(
   public static GenerationAdminResultDTO from(GenerationResult row) {
     return new GenerationAdminResultDTO(row.getId(), row.getTaskId(), row.getAttemptId(),
         row.getPosition() == null ? 0 : row.getPosition(), row.getState(), row.getSourceRef(),
-        row.getExpectedDigest(), row.getMediaId(), row.getContentType(), row.getSizeBytes(),
+        ProviderResultMetadata.DIGEST_UNDECLARED.equals(row.getExpectedDigest())
+            ? null : row.getExpectedDigest(), row.getMediaId(), row.getContentType(),
+        row.getSizeBytes(),
         row.getContentDigest(), row.getSaveAttempts() == null ? 0 : row.getSaveAttempts(),
         row.getLastError(), row.getNextAttemptAt(), row.getSavedAt(), row.getDeliveredAt(),
         row.getCreatedAt());

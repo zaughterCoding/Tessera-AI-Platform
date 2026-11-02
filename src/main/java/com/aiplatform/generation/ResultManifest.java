@@ -13,7 +13,7 @@ import java.util.regex.Pattern;
 /** 上游结果清单的结构校验；只有位置完整且摘要合法的清单才能进入交付流程。 */
 public final class ResultManifest {
   public static final int MAX_RESULTS = 100;
-  public static final int MAX_REF_LENGTH = 512;
+  public static final int MAX_REF_LENGTH = 2048;
   private static final Pattern DIGEST = Pattern.compile("[0-9a-f]{64}");
   private static final Pattern POSITION = Pattern.compile("\\d{1,2}");
 

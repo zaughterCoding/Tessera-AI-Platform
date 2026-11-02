@@ -62,6 +62,13 @@
             OR result_digest IS NULL OR result_digest = '')))
   </update>
 
+  <update id="markSubmitted">
+    UPDATE provider_attempt
+    SET submitted_at = COALESCE(submitted_at, NOW(3))
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state IN ('SUBMIT_PENDING','SUBMITTING')
+  </update>
+
   <update id="confirmSubmit">
     UPDATE provider_attempt
     SET state = #{state},

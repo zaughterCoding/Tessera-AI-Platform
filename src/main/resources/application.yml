@@ -141,6 +141,8 @@ app:
     http:
       # 真实图片渠道默认关闭；地址、凭据、模型与正数调用上限缺一不可，未配置时不产生任何外呼。
       enabled: ${APP_GENERATION_HTTP_ENABLED:false}
+      # generic 为通用提交/查询协议；siliconflow 为同步图片接口，此时租约须长于请求超时。
+      protocol: ${APP_GENERATION_HTTP_PROTOCOL:generic}
       base-url: ${APP_GENERATION_HTTP_BASE_URL:}
       submit-path: ${APP_GENERATION_HTTP_SUBMIT_PATH:/v1/images/jobs}
       task-path: ${APP_GENERATION_HTTP_TASK_PATH:/v1/images/jobs/{taskId}}
@@ -199,8 +201,8 @@ app:
   media:
     root: ${APP_MEDIA_ROOT:./.local/media}
     max-file-bytes: ${APP_MEDIA_MAX_FILE_BYTES:5000000}
-    user-byte-quota: ${APP_MEDIA_USER_BYTE_QUOTA:50000000}
-    user-asset-quota: ${APP_MEDIA_USER_ASSET_QUOTA:100}
+    user-byte-quota: ${APP_MEDIA_USER_BYTE_QUOTA:500000000}
+    user-asset-quota: ${APP_MEDIA_USER_ASSET_QUOTA:1000}
     max-creation-media: ${APP_MEDIA_MAX_CREATION_MEDIA:9}
     pending-grace-seconds: ${APP_MEDIA_PENDING_GRACE_SECONDS:300}
     orphan-grace-seconds: ${APP_MEDIA_ORPHAN_GRACE_SECONDS:3600}

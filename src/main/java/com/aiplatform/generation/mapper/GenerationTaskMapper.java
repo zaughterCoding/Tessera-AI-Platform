@@ -31,6 +31,8 @@ public interface GenerationTaskMapper extends BaseMapper<GenerationTask> {
   int updateStateIn(@Param("taskId") long taskId, @Param("state") String state,
       @Param("note") String note, @Param("states") List<String> states);
 
+  int updateNote(@Param("taskId") long taskId, @Param("note") String note);
+
   int updateStateUnlessFinal(@Param("taskId") long taskId, @Param("state") String state,
       @Param("note") String note);
 

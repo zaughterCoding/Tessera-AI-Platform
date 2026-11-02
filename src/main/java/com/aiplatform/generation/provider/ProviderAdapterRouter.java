@@ -1,6 +1,7 @@
 package com.aiplatform.generation.provider;
 
 import com.aiplatform.generation.config.GenerationProperties;
+import com.aiplatform.generation.config.HttpProviderProperties;
 import com.aiplatform.generation.entity.ProviderChannel;
 import com.aiplatform.generation.mapper.ProviderChannelMapper;
 import org.springframework.stereotype.Component;
@@ -16,14 +17,19 @@ public class ProviderAdapterRouter implements ProviderChannelAdapter {
 
   private final SimulatedProviderAdapter simulated;
   private final HttpImageProviderAdapter http;
+  private final SiliconFlowImageAdapter siliconFlow;
+  private final HttpProviderProperties httpProperties;
   private final ProviderChannelMapper channels;
   private final GenerationProperties properties;
 
   public ProviderAdapterRouter(SimulatedProviderAdapter simulated,
-      HttpImageProviderAdapter http, ProviderChannelMapper channels,
+      HttpImageProviderAdapter http, SiliconFlowImageAdapter siliconFlow,
+      HttpProviderProperties httpProperties, ProviderChannelMapper channels,
       GenerationProperties properties) {
     this.simulated = simulated;
     this.http = http;
+    this.siliconFlow = siliconFlow;
+    this.httpProperties = httpProperties;
     this.channels = channels;
     this.properties = properties;
   }
@@ -90,6 +96,10 @@ public class ProviderAdapterRouter implements ProviderChannelAdapter {
   }
 
   private ProviderChannelAdapter adapterFor(String kind) {
-    return HTTP.equals(kind) ? http : simulated;
+    if (!HTTP.equals(kind)) {
+      return simulated;
+    }
+    return HttpProviderProperties.PROTOCOL_SILICONFLOW.equals(httpProperties.getProtocol())
+        ? siliconFlow : http;
   }
 }

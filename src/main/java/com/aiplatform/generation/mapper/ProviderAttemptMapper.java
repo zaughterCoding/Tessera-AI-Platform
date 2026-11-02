@@ -26,6 +26,9 @@ public interface ProviderAttemptMapper extends BaseMapper<ProviderAttempt> {
   int claimForPoll(@Param("id") long id, @Param("owner") String owner,
       @Param("leaseSeconds") int leaseSeconds);
 
+  int markSubmitted(@Param("id") long id, @Param("owner") String owner,
+      @Param("generation") long generation);
+
   int confirmSubmit(@Param("id") long id, @Param("owner") String owner,
       @Param("generation") long generation, @Param("providerTaskId") String providerTaskId,
       @Param("state") String state, @Param("pollSeconds") int pollSeconds);

@@ -22,9 +22,13 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "app.generation.http")
 public class HttpProviderProperties {
+  public static final String PROTOCOL_GENERIC = "generic";
+  public static final String PROTOCOL_SILICONFLOW = "siliconflow";
   private static final Set<String> TEST_PROFILES = Set.of("local", "test");
 
   private boolean enabled;
+  /** generic 为通用提交/查询协议；siliconflow 为同步图片接口。 */
+  private String protocol = PROTOCOL_GENERIC;
   private String baseUrl = "";
   private String submitPath = "/v1/images/jobs";
   private String taskPath = "/v1/images/jobs/{taskId}";
@@ -48,6 +52,9 @@ public class HttpProviderProperties {
 
   @PostConstruct
   public void validate() {
+    if (!PROTOCOL_GENERIC.equals(protocol) && !PROTOCOL_SILICONFLOW.equals(protocol)) {
+      throw new IllegalArgumentException("真实渠道协议只支持 generic 或 siliconflow");
+    }
     requireRange("connect-timeout-ms", connectTimeoutMs, 100, 30000);
     requireRange("request-timeout-ms", requestTimeoutMs, 500, 120000);
     requireRange("query-timeout-ms", queryTimeoutMs, 500, 60000);

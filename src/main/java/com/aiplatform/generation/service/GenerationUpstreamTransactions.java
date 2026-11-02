@@ -51,6 +51,13 @@ public class GenerationUpstreamTransactions {
 
   @Transactional
   public void confirmSubmit(AttemptClaim claim, ProviderSubmitResult result) {
+    if (result.immediate() != null) {
+      // 同步渠道：受理与结果是同一个事实，同事务落库，不经过轮询。
+      attempts.markSubmitted(claim.attemptId(), claim.owner(), claim.generation());
+      terminal(claim, result.immediate());
+      completeHandoff(claim, "ATTEMPT_ACCEPTED");
+      return;
+    }
     int changed = attempts.confirmSubmit(claim.attemptId(), claim.owner(), claim.generation(),
         result.providerTaskId(), result.state(), properties.getPollIntervalSeconds());
     if (changed == 1) {
@@ -122,6 +129,9 @@ public class GenerationUpstreamTransactions {
     if (changed == 1) {
       facts.confirmedTerminal(claim.taskId(), claim.userId(), claim.channelId(),
           ProviderAttemptState.FAILED);
+      // 用户能看到被拒绝的原因；原因来自适配器归一后的说明，不含上游完整响应。
+      tasks.updateNote(claim.taskId(), truncate(detail
+          + "；冻结次数已按权益包状态释放"));
     }
     completeHandoff(claim, "ATTEMPT_REJECTED");
   }

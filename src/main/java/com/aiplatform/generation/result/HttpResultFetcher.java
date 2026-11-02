@@ -1,5 +1,6 @@
 package com.aiplatform.generation.result;
 
+import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.config.ResultDeliveryProperties;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -36,6 +37,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class HttpResultFetcher {
   private static final Set<String> REDIRECTS = Set.of("301", "302", "303", "307", "308");
+  private static final String UNDECLARED_TYPE = "application/octet-stream";
   private static final int BUFFER = 8192;
   // 单一守护线程看护所有正文读取，任务随读取结束取消，不会按请求增长线程。
   private static final ScheduledExecutorService WATCHDOG =
@@ -165,11 +167,14 @@ public class HttpResultFetcher {
     if (type == null) {
       throw new ResultFetchException("RESULT_TYPE_INVALID", "结果文件不是受支持的图片类型");
     }
-    if (!declaredType.isEmpty() && !declaredType.equals(type.contentType())) {
+    // 对象存储常用 octet-stream 表示“未声明类型”，此时以实际文件内容为准。
+    if (!declaredType.isEmpty() && !UNDECLARED_TYPE.equals(declaredType)
+        && !declaredType.equals(type.contentType())) {
       throw new ResultFetchException("RESULT_TYPE_MISMATCH", "结果文件声明类型与实际不符");
     }
     String digest = sha256(content);
-    if (!digest.equalsIgnoreCase(expectedDigest)) {
+    if (!ProviderResultMetadata.DIGEST_UNDECLARED.equals(expectedDigest)
+        && !digest.equalsIgnoreCase(expectedDigest)) {
       throw new ResultFetchException("RESULT_DIGEST_MISMATCH", "结果文件摘要与上游声明不符");
     }
     return new FetchedResult(content, type.contentType(), type.extension(), digest);

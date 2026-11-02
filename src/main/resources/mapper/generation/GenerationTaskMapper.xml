@@ -62,6 +62,10 @@
   </update>
 
   <!-- 终态事实不能被晚到的运行态覆盖；REVIEW 仍可由回调或查询推进到终态。 -->
+  <update id="updateNote">
+    UPDATE generation_task SET state_note = #{note} WHERE id = #{taskId}
+  </update>
+
   <update id="updateStateUnlessFinal">
     UPDATE generation_task SET state = #{state}, state_note = #{note}
     WHERE id = #{taskId}

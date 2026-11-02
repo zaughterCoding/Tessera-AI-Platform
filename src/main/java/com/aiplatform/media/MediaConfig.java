@@ -20,8 +20,8 @@ public class MediaConfig {
   public MediaConfig(
       @Value("${app.media.root:./.local/media}") String root,
       @Value("${app.media.max-file-bytes:5000000}") long maxFileBytes,
-      @Value("${app.media.user-byte-quota:50000000}") long userByteQuota,
-      @Value("${app.media.user-asset-quota:100}") int userAssetQuota,
+      @Value("${app.media.user-byte-quota:500000000}") long userByteQuota,
+      @Value("${app.media.user-asset-quota:1000}") int userAssetQuota,
       @Value("${app.media.max-creation-media:9}") int maxCreationMedia,
       @Value("${app.media.pending-grace-seconds:300}") long pendingGraceSeconds,
       @Value("${app.media.orphan-grace-seconds:3600}") long orphanGraceSeconds) {
