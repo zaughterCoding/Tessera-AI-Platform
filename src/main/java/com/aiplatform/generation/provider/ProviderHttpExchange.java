@@ -51,7 +51,8 @@ final class ProviderHttpExchange {
       Thread.currentThread().interrupt();
       throw new ProviderTemporaryException("PROVIDER_INTERRUPTED", "上游请求被中断");
     }
-    return new Response(response.statusCode(), read(response, timeoutMs));
+    return new Response(response.statusCode(), read(response, timeoutMs),
+        retryAfter(response.headers().firstValue("Retry-After").orElse(null)));
   }
 
   private byte[] read(HttpResponse<InputStream> response, long timeoutMs) {
@@ -97,6 +98,14 @@ final class ProviderHttpExchange {
     }
   }
 
-  record Response(int status, byte[] body) {
+  /** 只接受秒数形式；日期形式或非法值按没有给出处理。 */
+  private Integer retryAfter(String value) {
+    if (value == null || !value.trim().matches("\\d{1,6}")) {
+      return null;
+    }
+    return Integer.valueOf(value.trim());
+  }
+
+  record Response(int status, byte[] body, Integer retryAfterSeconds) {
   }
 }

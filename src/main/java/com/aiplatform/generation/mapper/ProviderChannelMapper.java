@@ -28,6 +28,8 @@ public interface ProviderChannelMapper extends BaseMapper<ProviderChannel> {
   /** 只有已确认终态才能释放；重复释放受 in_flight > 0 与状态迁移双重保护。 */
   int releaseInFlight(@Param("channelId") long channelId);
 
+  int requeueInFlight(@Param("channelId") long channelId);
+
   /** 只同步上限，不触碰在途与队列计数。 */
   int syncLimits(@Param("code") String code, @Param("maxInFlight") int maxInFlight,
       @Param("queueCapacity") int queueCapacity,

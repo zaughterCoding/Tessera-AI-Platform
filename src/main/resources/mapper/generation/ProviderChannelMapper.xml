@@ -47,6 +47,13 @@
     WHERE id = #{channelId} AND in_flight &gt; 0
   </update>
 
+  <!-- 限流重排是占用的逆操作：还回在途预算，任务回到队列。 -->
+  <update id="requeueInFlight">
+    UPDATE provider_channel
+    SET in_flight = in_flight - 1, queued = queued + 1
+    WHERE id = #{channelId} AND in_flight &gt; 0
+  </update>
+
   <update id="syncLimits">
     UPDATE provider_channel
     SET max_in_flight = #{maxInFlight}, queue_capacity = #{queueCapacity},

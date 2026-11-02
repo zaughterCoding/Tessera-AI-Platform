@@ -19,7 +19,7 @@ public class SimulatorFaultForm {
   private Long applicationId;
 
   @Pattern(regexp = "REJECT_SUBMIT|LOSE_SUBMIT_RESPONSE|TIMEOUT_BUT_RUNNING|SLOW|FAIL"
-      + "|QUERY_TEMPORARY_FAILURE")
+      + "|QUERY_TEMPORARY_FAILURE|RATE_LIMITED")
   private String mode;
 
   @Min(100)

@@ -95,6 +95,10 @@
     WHERE id = #{id} AND state = 'RUNNING'
   </update>
 
+  <select id="countRunningJobs" resultType="int">
+    SELECT COUNT(*) FROM simulated_provider_job WHERE state = 'RUNNING'
+  </select>
+
   <select id="countJobs" resultType="int">
     SELECT COUNT(*) FROM simulated_provider_job
   </select>

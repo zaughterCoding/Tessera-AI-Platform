@@ -21,6 +21,7 @@ import com.aiplatform.generation.provider.ProviderQueryResult;
 import com.aiplatform.generation.provider.ProviderRejectedException;
 import com.aiplatform.generation.provider.ProviderSubmitResult;
 import com.aiplatform.generation.provider.ProviderTemporaryException;
+import com.aiplatform.generation.provider.ProviderThrottledException;
 import com.aiplatform.generation.provider.ProviderUncertainException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -175,7 +176,9 @@ public class GenerationDispatchService {
       return null;
     }
     ProviderAttempt existing = attempts.selectByTaskId(row.getTaskId());
-    if (existing != null) {
+    boolean resubmit = existing != null
+        && ProviderAttemptState.SUBMIT_PENDING.equals(existing.getState());
+    if (existing != null && !resubmit) {
       // 防御性分支：责任已有尝试，归还本次占用的上游预算，队列占用保持由既有尝试承担。
       channels.releaseInFlight(channel.getId());
       handoffs.completeClaimedHandoff(row.getHandoffId(), row.getGeneration() + 1,
@@ -191,6 +194,23 @@ public class GenerationDispatchService {
           "TASK_STATE_CHANGED");
       return null;
     }
+    ProviderAttempt attempt = resubmit ? reclaim(existing, owner) : newAttempt(row, channel, owner);
+    GenerationTask task = tasks.selectById(row.getTaskId());
+    if (task == null) {
+      throw new IllegalStateException("已受理任务不存在");
+    }
+    return claim(attempt, task, row.getHandoffId(), row.getGeneration() + 1);
+  }
+
+  /** 限流重排的任务复用原尝试和幂等键，上游只会有一个任务。 */
+  private ProviderAttempt reclaim(ProviderAttempt existing, String owner) {
+    if (attempts.reclaimForSubmit(existing.getId(), owner, properties.getLeaseSeconds()) != 1) {
+      throw new IllegalStateException("等待提交的尝试状态已变化");
+    }
+    return attempts.selectById(existing.getId());
+  }
+
+  private ProviderAttempt newAttempt(HandoffRow row, ProviderChannel channel, String owner) {
     ProviderAttempt attempt = new ProviderAttempt();
     attempt.setTaskId(row.getTaskId());
     attempt.setChannelId(channel.getId());
@@ -201,11 +221,7 @@ public class GenerationDispatchService {
     if (attempts.insertAttempt(attempt, properties.getLeaseSeconds()) != 1) {
       throw new IllegalStateException("稳定尝试写入失败");
     }
-    GenerationTask task = tasks.selectById(row.getTaskId());
-    if (task == null) {
-      throw new IllegalStateException("已受理任务不存在");
-    }
-    return claim(attempt, task, row.getHandoffId(), row.getGeneration() + 1);
+    return attempt;
   }
 
   private void timeoutQueued(HandoffRow row, ProviderChannel channel) {
@@ -216,6 +232,8 @@ public class GenerationDispatchService {
     }
     channels.releaseQueue(channel.getId());
     quotas.release(row.getUserId());
+    // 持续限流直到超时：上游从未接受，等待中的尝试随任务一起结束。
+    attempts.closeWaitingSubmit(row.getTaskId(), ProviderAttemptState.FAILED, "QUEUE_TIMEOUT");
     settlements.release(row.getTaskId(), GenerationTaskState.QUEUE_TIMEOUT,
         GenerationFactApplier.terminalNote(GenerationTaskState.QUEUE_TIMEOUT),
         List.of(GenerationTaskState.QUEUED));
@@ -284,6 +302,8 @@ public class GenerationDispatchService {
     try {
       ProviderSubmitResult result = adapter.submit(claim.command());
       upstream.confirmSubmit(claim, result);
+    } catch (ProviderThrottledException throttled) {
+      upstream.requeueThrottled(claim, throttled.retryAfterSeconds());
     } catch (ProviderRejectedException rejected) {
       upstream.rejectSubmit(claim, rejected.code(), rejected.getMessage());
     } catch (ProviderUncertainException uncertain) {

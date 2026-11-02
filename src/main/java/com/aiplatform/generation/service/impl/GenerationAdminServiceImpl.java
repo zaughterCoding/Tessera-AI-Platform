@@ -96,7 +96,7 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
       List.of("PENDING", "CLAIMED", "RETRY", "COMPLETED");
   private static final Set<String> FAULT_MODES = Set.of(
       "REJECT_SUBMIT", "LOSE_SUBMIT_RESPONSE", "TIMEOUT_BUT_RUNNING", "SLOW", "FAIL",
-      "QUERY_TEMPORARY_FAILURE");
+      "QUERY_TEMPORARY_FAILURE", "RATE_LIMITED");
 
   private final GenerationTaskMapper tasks;
   private final ProviderAttemptMapper attempts;

@@ -54,6 +54,9 @@ public class SimulatedProviderAdapter implements ProviderChannelAdapter {
     if (acceptance.rejected()) {
       throw new ProviderRejectedException("SIMULATED_REJECTED", "模拟上游明确拒收");
     }
+    if (acceptance.throttled()) {
+      throw new ProviderThrottledException(null);
+    }
     if (acceptance.job() == null) {
       throw new ProviderTemporaryException("SIMULATED_UNAVAILABLE", "模拟上游未建立任务");
     }

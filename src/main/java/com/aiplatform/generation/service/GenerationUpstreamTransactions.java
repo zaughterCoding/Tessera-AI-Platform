@@ -1,13 +1,17 @@
 package com.aiplatform.generation.service;
 
+import com.aiplatform.generation.GenerationCancelState;
 import com.aiplatform.generation.GenerationTaskState;
 import com.aiplatform.generation.ProviderAttemptState;
 import com.aiplatform.generation.ProviderResultMetadata;
 import com.aiplatform.generation.ResultManifest;
 import com.aiplatform.generation.config.GenerationProperties;
+import com.aiplatform.generation.entity.GenerationTask;
+import com.aiplatform.generation.mapper.GenerationCancelMapper;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
+import com.aiplatform.generation.mapper.ProviderChannelMapper;
 import com.aiplatform.generation.provider.ProviderQueryResult;
 import com.aiplatform.generation.provider.ProviderResultRef;
 import com.aiplatform.generation.provider.ProviderSubmitResult;
@@ -19,16 +23,24 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class GenerationUpstreamTransactions {
   private static final int NOTE_LIMIT = 255;
+  private static final String THROTTLED = "UPSTREAM_THROTTLED";
+  private static final String THROTTLED_DETAIL = "上游限流，提交未被接受";
+  private static final String THROTTLED_NOTE = "上游限流，已重新排队；冻结次数保留";
   private final ProviderAttemptMapper attempts;
   private final GenerationHandoffMapper handoffs;
   private final GenerationTaskMapper tasks;
   private final GenerationFactApplier facts;
   private final GenerationResultTransactions resultTx;
   private final GenerationProperties properties;
+  private final ProviderChannelMapper channels;
+  private final GenerationCancelMapper cancels;
 
   public GenerationUpstreamTransactions(ProviderAttemptMapper attempts,
       GenerationHandoffMapper handoffs, GenerationTaskMapper tasks, GenerationFactApplier facts,
-      GenerationResultTransactions resultTx, GenerationProperties properties) {
+      GenerationResultTransactions resultTx, GenerationProperties properties,
+      ProviderChannelMapper channels, GenerationCancelMapper cancels) {
+    this.channels = channels;
+    this.cancels = cancels;
     this.attempts = attempts;
     this.handoffs = handoffs;
     this.tasks = tasks;
@@ -57,6 +69,49 @@ public class GenerationUpstreamTransactions {
           GenerationFactApplier.noteFor(ProviderAttemptState.RECONCILING));
     }
     completeHandoff(claim, "ATTEMPT_RECONCILING");
+  }
+
+  /**
+   * 上游明确没有接受这次提交：归还在途预算并回到排队，冻结和用户名额保持不动。
+   * 先锁任务行，和用户取消串行；取消已登记时直接按未提交取消结束，不再改回排队。
+   */
+  @Transactional
+  public void requeueThrottled(AttemptClaim claim, Integer retryAfterSeconds) {
+    GenerationTask task = tasks.selectByIdForUpdate(claim.taskId());
+    String state = task == null ? null : task.getState();
+    if (GenerationTaskState.CANCEL_REQUESTED.equals(state)) {
+      if (attempts.applyTerminalWithLease(claim.attemptId(), claim.owner(), claim.generation(),
+          ProviderAttemptState.CANCELLED, null, null, null, THROTTLED, THROTTLED_DETAIL) == 1) {
+        facts.confirmedTerminal(claim.taskId(), claim.userId(), claim.channelId(),
+            ProviderAttemptState.CANCELLED);
+        cancels.resolveOpen(claim.taskId(), GenerationCancelState.RESOLVED, THROTTLED);
+      }
+      completeHandoff(claim, "ATTEMPT_CANCELLED");
+      return;
+    }
+    if (!GenerationTaskState.DISPATCHING.equals(state)) {
+      // 认领已过期并转入核对：保持原有的查询恢复流程。
+      markUncertain(claim, THROTTLED, THROTTLED_DETAIL);
+      return;
+    }
+    if (attempts.requeueThrottled(claim.attemptId(), claim.owner(), claim.generation(),
+        THROTTLED, THROTTLED_DETAIL) != 1) {
+      return;
+    }
+    if (tasks.updateStateIn(claim.taskId(), GenerationTaskState.QUEUED, THROTTLED_NOTE,
+        List.of(GenerationTaskState.DISPATCHING)) != 1
+        || channels.requeueInFlight(claim.channelId()) != 1) {
+      throw new IllegalStateException("限流重排时任务或渠道计数不一致");
+    }
+    // 排队时限仍从最初入队算起：不改 enqueued_at，限流不会让任务永远排队。
+    handoffs.markRetry(claim.handoffId(), "CLAIMED", throttleDelay(retryAfterSeconds), THROTTLED);
+  }
+
+  private int throttleDelay(Integer retryAfterSeconds) {
+    if (retryAfterSeconds == null) {
+      return properties.getRetryBaseSeconds();
+    }
+    return Math.max(1, Math.min(retryAfterSeconds, properties.getRetryMaxSeconds()));
   }
 
   @Transactional

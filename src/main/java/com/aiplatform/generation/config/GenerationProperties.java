@@ -37,6 +37,7 @@ public class GenerationProperties {
   private int reviewPollSeconds = 300;
   private int simulatorDefaultDurationMs = 3000;
   private int simulatorQueryFailures = 3;
+  private int simulatorMaxConcurrent;
   private int simulatorCallbackTimeoutMs = 2000;
   private int callbackMaxSkewSeconds = 300;
   private int callbackMaxBytes = 8192;
@@ -62,6 +63,7 @@ public class GenerationProperties {
     requireRange("review-poll-seconds", reviewPollSeconds, 30, 86400);
     requireRange("simulator-default-duration-ms", simulatorDefaultDurationMs, 100, 600000);
     requireRange("simulator-query-failures", simulatorQueryFailures, 1, 20);
+    requireRange("simulator-max-concurrent", simulatorMaxConcurrent, 0, 10000);
     requireRange("simulator-callback-timeout-ms", simulatorCallbackTimeoutMs, 100, 30000);
     requireRange("callback-max-skew-seconds", callbackMaxSkewSeconds, 0, 3600);
     requireRange("callback-max-bytes", callbackMaxBytes, 256, 65536);

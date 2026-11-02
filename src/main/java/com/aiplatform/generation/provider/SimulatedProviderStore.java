@@ -19,6 +19,7 @@ public class SimulatedProviderStore {
   private static final String SLOW = "SLOW";
   private static final String FAIL = "FAIL";
   private static final String QUERY_FAILURE = "QUERY_TEMPORARY_FAILURE";
+  private static final String RATE_LIMITED = "RATE_LIMITED";
 
   private final SimulatedProviderMapper mapper;
   private final GenerationProperties properties;
@@ -42,6 +43,10 @@ public class SimulatedProviderStore {
       return new Acceptance(null, mode);
     }
     SimulatedProviderJob existing = mapper.selectJob(attemptKey);
+    // 限流时不建立任务：上游没有接受这次提交，重提仍使用同一幂等键。
+    if (existing == null && (RATE_LIMITED.equals(mode) || overCapacity())) {
+      return new Acceptance(null, RATE_LIMITED);
+    }
     if (existing == null) {
       String providerTaskId = "sim-" + UUID.randomUUID();
       int duration = duration(mode, fault);
@@ -100,6 +105,11 @@ public class SimulatedProviderStore {
     return new CancelOutcome(ProviderCancelResult.CancelStatus.TERMINAL, job.getState());
   }
 
+  private boolean overCapacity() {
+    int limit = properties.getSimulatorMaxConcurrent();
+    return limit > 0 && mapper.countRunningJobs() >= limit;
+  }
+
   private void consume(SimulatedProviderFault fault) {
     if (value(fault.getRemaining()) <= 1) {
       mapper.deleteFault(fault.getId());
@@ -125,6 +135,10 @@ public class SimulatedProviderStore {
   public record Acceptance(SimulatedProviderJob job, String mode) {
     public boolean rejected() {
       return REJECT.equals(mode);
+    }
+
+    public boolean throttled() {
+      return RATE_LIMITED.equals(mode) && job == null;
     }
 
     public boolean responseUncertain() {

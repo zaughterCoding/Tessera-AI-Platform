@@ -44,4 +44,6 @@ public interface SimulatedProviderMapper {
   int cancelJob(@Param("id") long id);
 
   int countJobs();
+
+  int countRunningJobs();
 }

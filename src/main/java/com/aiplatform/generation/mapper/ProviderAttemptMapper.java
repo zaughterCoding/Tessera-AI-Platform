@@ -39,6 +39,16 @@ public interface ProviderAttemptMapper extends BaseMapper<ProviderAttempt> {
       @Param("providerTaskId") String providerTaskId,
       @Param("nextSeconds") int nextSeconds);
 
+  int requeueThrottled(@Param("id") long id, @Param("owner") String owner,
+      @Param("generation") long generation, @Param("code") String code,
+      @Param("detail") String detail);
+
+  int reclaimForSubmit(@Param("id") long id, @Param("owner") String owner,
+      @Param("leaseSeconds") int leaseSeconds);
+
+  int closeWaitingSubmit(@Param("taskId") long taskId, @Param("state") String state,
+      @Param("code") String code);
+
   int applyTerminalWithLease(@Param("id") long id, @Param("owner") String owner,
       @Param("generation") long generation, @Param("state") String state,
       @Param("providerTaskId") String providerTaskId, @Param("resultRef") String resultRef,

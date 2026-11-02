@@ -129,6 +129,7 @@ app:
     review-poll-seconds: ${APP_GENERATION_REVIEW_POLL_SECONDS:300}
     simulator-default-duration-ms: ${APP_GENERATION_SIMULATOR_DEFAULT_DURATION_MS:3000}
     simulator-query-failures: ${APP_GENERATION_SIMULATOR_QUERY_FAILURES:3}
+    simulator-max-concurrent: ${APP_GENERATION_SIMULATOR_MAX_CONCURRENT:0}
     simulator-callback-timeout-ms: ${APP_GENERATION_SIMULATOR_CALLBACK_TIMEOUT_MS:2000}
     callback-max-skew-seconds: ${APP_GENERATION_CALLBACK_MAX_SKEW_SECONDS:300}
     callback-max-bytes: ${APP_GENERATION_CALLBACK_MAX_BYTES:8192}

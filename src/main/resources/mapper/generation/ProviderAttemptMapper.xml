@@ -38,7 +38,7 @@
   <!-- 历史成功快照缺少结果元数据时仍需按同一尝试身份重新核对上游。 -->
   <select id="selectDueForPoll" resultType="com.aiplatform.generation.entity.ProviderAttempt">
     SELECT * FROM provider_attempt
-    WHERE (state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+    WHERE (state IN ('SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
       OR (state = 'RESULT_PENDING'
         AND (result_ref IS NULL OR result_ref = ''
           OR result_digest IS NULL OR result_digest = '')))
@@ -56,7 +56,7 @@
         generation = generation + 1
     WHERE id = #{id}
       AND (lease_until IS NULL OR lease_until &lt; NOW(3))
-      AND (state IN ('SUBMIT_PENDING','SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
+      AND (state IN ('SUBMITTING','RECONCILING','ACCEPTED','RUNNING','REVIEW')
         OR (state = 'RESULT_PENDING'
           AND (result_ref IS NULL OR result_ref = ''
             OR result_digest IS NULL OR result_digest = '')))
@@ -73,6 +73,31 @@
         failure_code = NULL, failure_detail = NULL
     WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
       AND state IN ('SUBMIT_PENDING','SUBMITTING')
+  </update>
+
+  <!-- 限流重排：新认领已经接管时代次不同，旧认领不能覆盖。 -->
+  <update id="requeueThrottled">
+    UPDATE provider_attempt
+    SET state = 'SUBMIT_PENDING', next_attempt_at = NULL, owner = NULL, lease_until = NULL,
+        failure_code = #{code}, failure_detail = #{detail}
+    WHERE id = #{id} AND owner = #{owner} AND generation = #{generation}
+      AND state = 'SUBMITTING'
+  </update>
+
+  <update id="reclaimForSubmit">
+    UPDATE provider_attempt
+    SET state = 'SUBMITTING', owner = #{owner}, generation = generation + 1,
+        lease_until = DATE_ADD(NOW(3), INTERVAL #{leaseSeconds} SECOND), next_attempt_at = NOW(3),
+        failure_code = NULL, failure_detail = NULL
+    WHERE id = #{id} AND state = 'SUBMIT_PENDING'
+  </update>
+
+  <!-- 关闭从未被上游接受的等待尝试；它不占容量，因此不归还在途数。 -->
+  <update id="closeWaitingSubmit">
+    UPDATE provider_attempt
+    SET state = #{state}, terminal_at = NOW(3), next_attempt_at = NULL,
+        failure_code = #{code}
+    WHERE task_id = #{taskId} AND state = 'SUBMIT_PENDING'
   </update>
 
   <update id="markUncertain">

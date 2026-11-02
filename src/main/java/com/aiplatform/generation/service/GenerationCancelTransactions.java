@@ -92,8 +92,10 @@ public class GenerationCancelTransactions {
       cancels.resolveOpen(taskId, GenerationCancelState.REJECTED, "RESULT_ALREADY_FINAL");
       return cancels.selectByTaskId(taskId);
     }
-    if (GenerationTaskState.QUEUED.equals(task.getState())
-        && attempts.selectByTaskId(taskId) == null) {
+    ProviderAttempt attempt = attempts.selectByTaskId(taskId);
+    if (GenerationTaskState.QUEUED.equals(task.getState()) && (attempt == null
+        || ProviderAttemptState.SUBMIT_PENDING.equals(attempt.getState()))) {
+      attempts.closeWaitingSubmit(taskId, ProviderAttemptState.CANCELLED, "USER_CANCELLED");
       finishQueued(task, "USER_CANCELLED");
       return cancels.selectByTaskId(taskId);
     }

@@ -86,6 +86,9 @@ public class HttpImageProviderAdapter implements ProviderChannelAdapter {
     if (status >= 200 && status < 300) {
       return accepted(response.body());
     }
+    if (status == 429) {
+      throw new ProviderThrottledException(response.retryAfterSeconds());
+    }
     throw failure(status, response.body(), true);
   }
 
