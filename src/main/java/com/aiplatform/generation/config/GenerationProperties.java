@@ -23,8 +23,8 @@ public class GenerationProperties {
   private int queueTimeoutSeconds = 1800;
   private int userActiveLimit = 5;
   private int defaultScheduleWeight = 1;
-  private boolean fairSchedulingEnabled;
-  private boolean adaptiveConcurrencyEnabled;
+  private boolean fairSchedulingEnabled = true;
+  private boolean adaptiveConcurrencyEnabled = true;
   private int adaptiveInitialInFlight = 4;
   private int adaptiveWindowSeconds = 5;
   private int adaptivePauseSeconds = 5;

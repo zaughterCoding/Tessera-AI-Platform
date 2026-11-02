@@ -115,8 +115,8 @@ app:
     queue-timeout-seconds: ${APP_GENERATION_QUEUE_TIMEOUT_SECONDS:1800}
     user-active-limit: ${APP_GENERATION_USER_ACTIVE_LIMIT:5}
     default-schedule-weight: ${APP_GENERATION_DEFAULT_SCHEDULE_WEIGHT:1}
-    fair-scheduling-enabled: ${APP_GENERATION_FAIR_SCHEDULING_ENABLED:false}
-    adaptive-concurrency-enabled: ${APP_GENERATION_ADAPTIVE_CONCURRENCY_ENABLED:false}
+    fair-scheduling-enabled: ${APP_GENERATION_FAIR_SCHEDULING_ENABLED:true}
+    adaptive-concurrency-enabled: ${APP_GENERATION_ADAPTIVE_CONCURRENCY_ENABLED:true}
     adaptive-initial-in-flight: ${APP_GENERATION_ADAPTIVE_INITIAL_IN_FLIGHT:4}
     adaptive-window-seconds: ${APP_GENERATION_ADAPTIVE_WINDOW_SECONDS:5}
     adaptive-pause-seconds: ${APP_GENERATION_ADAPTIVE_PAUSE_SECONDS:5}
