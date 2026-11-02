@@ -2,19 +2,72 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
   "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.aiplatform.generation.mapper.GenerationHandoffMapper">
-  <select id="selectDueHandoffs"
+  <!-- 选行不加锁：带锁扫描会锁住所有被扫到的等待行，挡住并发认领和用户取消。 -->
+  <select id="selectHandoffIdsToClean" resultType="long">
+    SELECT h.id
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    WHERE (h.state = 'CLAIMED' AND h.lease_until IS NOT NULL AND h.lease_until &lt; NOW(3))
+       OR (h.state IN ('PENDING','RETRY') AND (t.state &lt;&gt; 'QUEUED'
+        OR h.enqueued_at &lt;= DATE_SUB(NOW(3), INTERVAL #{timeoutSeconds} SECOND)))
+    ORDER BY h.id
+    LIMIT #{limit}
+  </select>
+
+  <select id="lockHandoffToClean"
       resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$HandoffRow">
     SELECT h.id AS handoff_id, h.task_id, t.user_id, t.application_id,
            h.state AS handoff_state, t.state AS task_state, h.generation, h.attempts,
            h.claim_owner, h.lease_until, h.enqueued_at, h.next_attempt_at, h.last_error
     FROM generation_task_handoff h
     JOIN generation_task t ON t.id = h.task_id
-    WHERE (h.state IN ('PENDING','RETRY')
-        AND (h.next_attempt_at IS NULL OR h.next_attempt_at &lt;= NOW(3)))
-       OR (h.state = 'CLAIMED' AND h.lease_until IS NOT NULL
-        AND h.lease_until &lt; NOW(3))
+    WHERE h.id = #{id} AND ((h.state = 'CLAIMED' AND h.lease_until IS NOT NULL AND h.lease_until &lt; NOW(3))
+       OR (h.state IN ('PENDING','RETRY') AND (t.state &lt;&gt; 'QUEUED'
+        OR h.enqueued_at &lt;= DATE_SUB(NOW(3), INTERVAL #{timeoutSeconds} SECOND))))
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <select id="selectDueInOrder"
+      resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$HandoffRow">
+    SELECT h.id AS handoff_id, h.task_id, t.user_id, t.application_id,
+           h.state AS handoff_state, t.state AS task_state, h.generation, h.attempts,
+           h.claim_owner, h.lease_until, h.enqueued_at, h.next_attempt_at, h.last_error
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    WHERE h.state IN ('PENDING','RETRY') AND t.state = 'QUEUED'
+      AND (h.next_attempt_at IS NULL OR h.next_attempt_at &lt;= NOW(3))
+      AND h.enqueued_at &gt; DATE_SUB(NOW(3), INTERVAL #{timeoutSeconds} SECOND)
     ORDER BY h.id
     LIMIT #{limit}
+    FOR UPDATE SKIP LOCKED
+  </select>
+
+  <!-- 在途口径与渠道 in_flight 一致：认领时占用，尝试进入这三个终态时才释放。 -->
+  <select id="selectFairCandidates"
+      resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$FairCandidate">
+    SELECT t.user_id, MIN(h.id) AS handoff_id,
+           COALESCE(q.schedule_weight, #{defaultWeight}) AS weight,
+           (SELECT COUNT(*) FROM provider_attempt a
+            JOIN generation_task owned ON owned.id = a.task_id
+            WHERE a.channel_id = #{channelId} AND owned.user_id = t.user_id
+              AND a.state NOT IN ('RESULT_PENDING','FAILED','CANCELLED')) AS in_flight
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    LEFT JOIN generation_user_quota q ON q.user_id = t.user_id
+    WHERE h.state IN ('PENDING','RETRY') AND t.state = 'QUEUED'
+      AND (h.next_attempt_at IS NULL OR h.next_attempt_at &lt;= NOW(3))
+      AND h.enqueued_at &gt; DATE_SUB(NOW(3), INTERVAL #{timeoutSeconds} SECOND)
+    GROUP BY t.user_id, q.schedule_weight
+  </select>
+
+  <select id="lockWaitingHandoff"
+      resultType="com.aiplatform.generation.mapper.GenerationHandoffMapper$HandoffRow">
+    SELECT h.id AS handoff_id, h.task_id, t.user_id, t.application_id,
+           h.state AS handoff_state, t.state AS task_state, h.generation, h.attempts,
+           h.claim_owner, h.lease_until, h.enqueued_at, h.next_attempt_at, h.last_error
+    FROM generation_task_handoff h
+    JOIN generation_task t ON t.id = h.task_id
+    WHERE h.id = #{id} AND h.state IN ('PENDING','RETRY') AND t.state = 'QUEUED'
     FOR UPDATE SKIP LOCKED
   </select>
 

@@ -23,6 +23,7 @@ public class GenerationProperties {
   private int queueTimeoutSeconds = 1800;
   private int userActiveLimit = 5;
   private int defaultScheduleWeight = 1;
+  private boolean fairSchedulingEnabled;
   private int dispatchBatch = 20;
   private int pollBatch = 20;
   private int dispatchIntervalMs = 2000;

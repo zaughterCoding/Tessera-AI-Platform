@@ -15,5 +15,6 @@ public record GenerationAdminSettingsDTO(
     int submitMaxAttempts,
     int queryMaxAttempts,
     int userActiveLimit,
-    int queueTimeoutSeconds) {
+    int queueTimeoutSeconds,
+    boolean fairSchedulingEnabled) {
 }

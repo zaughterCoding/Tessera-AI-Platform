@@ -8,6 +8,7 @@ import com.aiplatform.generation.entity.GenerationTask;
 import com.aiplatform.generation.entity.ProviderAttempt;
 import com.aiplatform.generation.entity.ProviderChannel;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
+import com.aiplatform.generation.mapper.GenerationHandoffMapper.FairCandidate;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper.HandoffRow;
 import com.aiplatform.generation.mapper.GenerationQuotaMapper;
 import com.aiplatform.generation.mapper.GenerationResultMapper;
@@ -21,10 +22,9 @@ import com.aiplatform.generation.provider.ProviderRejectedException;
 import com.aiplatform.generation.provider.ProviderSubmitResult;
 import com.aiplatform.generation.provider.ProviderTemporaryException;
 import com.aiplatform.generation.provider.ProviderUncertainException;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +35,13 @@ import org.springframework.transaction.annotation.Transactional;
 @Slf4j
 @Service
 public class GenerationDispatchService {
+  /** 在途数除以权重最小的用户优先；用交叉相乘比较，相同时给最早排队的任务。 */
+  private static final Comparator<FairCandidate> FAIR_ORDER = (left, right) -> {
+    int byShare = Long.compare((long) left.getInFlight() * right.getWeight(),
+        (long) right.getInFlight() * left.getWeight());
+    return byShare != 0 ? byShare : Long.compare(left.getHandoffId(), right.getHandoffId());
+  };
+
   private final GenerationHandoffMapper handoffs;
   private final ProviderAttemptMapper attempts;
   private final ProviderChannelMapper channels;
@@ -81,25 +88,59 @@ public class GenerationDispatchService {
       // 渠道关闭或真实渠道未配置时只等待，不认领、不创建尝试，也不改变冻结事实。
       return Collections.emptyList();
     }
-    List<HandoffRow> rows = handoffs.selectDueHandoffs(properties.getDispatchBatch());
-    List<AttemptClaim> claims = new ArrayList<>();
-    for (HandoffRow row : rows) {
-      if ("CLAIMED".equals(row.getHandoffState())) {
-        recoverExpiredClaim(row);
+    cleanHandoffs(channel);
+    // 只认领空位数量：容量已满时不产生无意义的认领和重试记录。
+    int slots = Math.min(properties.getDispatchBatch(),
+        channel.getMaxInFlight() - channel.getInFlight());
+    if (slots <= 0) {
+      return Collections.emptyList();
+    }
+    return properties.isFairSchedulingEnabled() ? claimFair(channel, slots)
+        : claimInOrder(channel, slots);
+  }
+
+  /** 过期认领恢复、作废行完成和排队超时都不依赖空位，队列满载时同样生效。 */
+  private void cleanHandoffs(ProviderChannel channel) {
+    int timeout = channel.getQueueTimeoutSeconds();
+    for (long id : handoffs.selectHandoffIdsToClean(properties.getDispatchBatch(), timeout)) {
+      HandoffRow row = handoffs.lockHandoffToClean(id, timeout);
+      if (row == null) {
         continue;
       }
-      if (!GenerationTaskState.QUEUED.equals(row.getTaskState())) {
+      if ("CLAIMED".equals(row.getHandoffState())) {
+        recoverExpiredClaim(row);
+      } else if (!GenerationTaskState.QUEUED.equals(row.getTaskState())) {
         if (handoffs.completeWaitingHandoff(row.getHandoffId(), row.getHandoffState(),
             "TASK_" + row.getTaskState()) == 1) {
           channels.releaseQueue(channel.getId());
         }
-        continue;
-      }
-      LocalDateTime deadline = row.getEnqueuedAt()
-          .plusSeconds(channel.getQueueTimeoutSeconds());
-      if (!deadline.isAfter(LocalDateTime.now(ZoneOffset.UTC))) {
+      } else {
         timeoutQueued(row, channel);
-        continue;
+      }
+    }
+  }
+
+  private List<AttemptClaim> claimInOrder(ProviderChannel channel, int slots) {
+    List<AttemptClaim> claims = new ArrayList<>();
+    for (HandoffRow row : handoffs.selectDueInOrder(slots, channel.getQueueTimeoutSeconds())) {
+      AttemptClaim claim = claimOne(row, channel);
+      if (claim != null) {
+        claims.add(claim);
+      }
+    }
+    return claims;
+  }
+
+  /**
+   * 每个空位都重新读取候选：事务内能看到本轮已创建的尝试，已分配的数量自然计入在途。
+   * 选人不加锁，只锁选中的交接行；锁不到就换下一个候选。
+   */
+  private List<AttemptClaim> claimFair(ProviderChannel channel, int slots) {
+    List<AttemptClaim> claims = new ArrayList<>();
+    for (int slot = 0; slot < slots; slot++) {
+      HandoffRow row = lockFairest(channel);
+      if (row == null) {
+        break;
       }
       AttemptClaim claim = claimOne(row, channel);
       if (claim != null) {
@@ -109,6 +150,19 @@ public class GenerationDispatchService {
     return claims;
   }
 
+  private HandoffRow lockFairest(ProviderChannel channel) {
+    List<FairCandidate> candidates = handoffs.selectFairCandidates(channel.getId(),
+        channel.getQueueTimeoutSeconds(), properties.getDefaultScheduleWeight());
+    candidates.sort(FAIR_ORDER);
+    for (FairCandidate candidate : candidates) {
+      HandoffRow row = handoffs.lockWaitingHandoff(candidate.getHandoffId());
+      if (row != null) {
+        return row;
+      }
+    }
+    return null;
+  }
+
   private AttemptClaim claimOne(HandoffRow row, ProviderChannel channel) {
     String owner = UUID.randomUUID().toString();
     if (handoffs.claimHandoff(row.getHandoffId(), owner,
@@ -116,7 +170,7 @@ public class GenerationDispatchService {
       return null;
     }
     if (channels.occupyInFlight(channel.getId()) != 1) {
-      // 容量不足只是等待，不是失败；改为稍后重试，不创建尝试、不释放冻结。
+      // 认领前已按空位限制数量；这里只兜底并发抢占，稍后重试，不创建尝试、不释放冻结。
       handoffs.markRetry(row.getHandoffId(), "CLAIMED", 2, "CAPACITY_WAIT");
       return null;
     }

@@ -4,13 +4,30 @@ import com.aiplatform.generation.entity.GenerationHandoff;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import java.time.LocalDateTime;
 import java.util.List;
+import lombok.Data;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 @Mapper
 public interface GenerationHandoffMapper extends BaseMapper<GenerationHandoff> {
-  /** 到期交接与过期认领一并返回；调用方必须处在事务内并持有行锁。 */
-  List<HandoffRow> selectDueHandoffs(@Param("limit") int limit);
+  /** 无锁读取需要清理的行：过期认领、任务已不在排队、排队超时。 */
+  List<Long> selectHandoffIdsToClean(@Param("limit") int limit,
+      @Param("timeoutSeconds") int timeoutSeconds);
+
+  /** 锁定一行并复核仍需清理；已被占用或状态已变时返回空。调用方必须处在事务内。 */
+  HandoffRow lockHandoffToClean(@Param("id") long id,
+      @Param("timeoutSeconds") int timeoutSeconds);
+
+  /** 按先来后到取可派发的行并加锁；调用方必须处在事务内。 */
+  List<HandoffRow> selectDueInOrder(@Param("limit") int limit,
+      @Param("timeoutSeconds") int timeoutSeconds);
+
+  /** 无锁读取每个排队用户最早的可派发任务、当前在途数和权重。 */
+  List<FairCandidate> selectFairCandidates(@Param("channelId") long channelId,
+      @Param("timeoutSeconds") int timeoutSeconds, @Param("defaultWeight") int defaultWeight);
+
+  /** 锁定选中的行并复核仍可派发；已被占用或状态已变时返回空。 */
+  HandoffRow lockWaitingHandoff(@Param("id") long id);
 
   int claimHandoff(@Param("id") long id, @Param("owner") String owner,
       @Param("leaseSeconds") int leaseSeconds);
@@ -37,6 +54,15 @@ public interface GenerationHandoffMapper extends BaseMapper<GenerationHandoff> {
 
   /** 调度到期视图，供后台只读查询。 */
   List<HandoffRow> selectRecent(@Param("limit") int limit);
+
+  /** 公平派发候选：一个排队用户一行。 */
+  @Data
+  class FairCandidate {
+    private long userId;
+    private long handoffId;
+    private int inFlight;
+    private int weight;
+  }
 
   /** 行视图只包含调度需要的可信字段。 */
   class HandoffRow {

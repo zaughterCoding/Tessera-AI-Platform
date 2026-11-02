@@ -115,6 +115,7 @@ app:
     queue-timeout-seconds: ${APP_GENERATION_QUEUE_TIMEOUT_SECONDS:1800}
     user-active-limit: ${APP_GENERATION_USER_ACTIVE_LIMIT:5}
     default-schedule-weight: ${APP_GENERATION_DEFAULT_SCHEDULE_WEIGHT:1}
+    fair-scheduling-enabled: ${APP_GENERATION_FAIR_SCHEDULING_ENABLED:false}
     dispatch-batch: ${APP_GENERATION_DISPATCH_BATCH:20}
     poll-batch: ${APP_GENERATION_POLL_BATCH:20}
     dispatch-interval-ms: ${APP_GENERATION_DISPATCH_INTERVAL_MS:2000}

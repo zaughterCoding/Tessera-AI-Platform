@@ -382,6 +382,7 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
         properties.isSimulatorCallbackEnabled(), properties.getChannelCode(),
         properties.getDispatchBatch(), properties.getPollBatch(), properties.getLeaseSeconds(),
         properties.getSubmitMaxAttempts(), properties.getQueryMaxAttempts(),
-        properties.getUserActiveLimit(), properties.getQueueTimeoutSeconds());
+        properties.getUserActiveLimit(), properties.getQueueTimeoutSeconds(),
+        properties.isFairSchedulingEnabled());
   }
 }
