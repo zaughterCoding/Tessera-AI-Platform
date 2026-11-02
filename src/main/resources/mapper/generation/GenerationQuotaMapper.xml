@@ -10,7 +10,7 @@
   <update id="tryReserve">
     UPDATE generation_user_quota
     SET active_tasks = active_tasks + 1
-    WHERE user_id = #{userId} AND active_tasks &lt; #{limit}
+    WHERE user_id = #{userId} AND active_tasks &lt; COALESCE(active_limit, #{limit})
   </update>
 
   <update id="release">
@@ -22,4 +22,17 @@
   <select id="selectActive" resultType="java.lang.Integer">
     SELECT active_tasks FROM generation_user_quota WHERE user_id = #{userId}
   </select>
+
+  <select id="selectScheduling"
+      resultType="com.aiplatform.generation.mapper.GenerationQuotaMapper$SchedulingRow">
+    SELECT active_tasks, active_limit, schedule_weight
+    FROM generation_user_quota WHERE user_id = #{userId}
+  </select>
+
+  <insert id="upsertScheduling">
+    INSERT INTO generation_user_quota(user_id, active_tasks, active_limit, schedule_weight)
+    VALUES (#{userId}, 0, #{activeLimit}, #{scheduleWeight})
+    ON DUPLICATE KEY UPDATE
+      active_limit = VALUES(active_limit), schedule_weight = VALUES(schedule_weight)
+  </insert>
 </mapper>

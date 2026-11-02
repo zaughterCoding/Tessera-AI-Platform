@@ -7,6 +7,8 @@ import com.aiplatform.generation.dto.GenerationAdminOverviewDTO;
 import com.aiplatform.generation.dto.GenerationAdminTaskDTO;
 import com.aiplatform.generation.dto.GenerationCancelForm;
 import com.aiplatform.generation.dto.GenerationReconcileResultDTO;
+import com.aiplatform.generation.dto.GenerationUserSchedulingDTO;
+import com.aiplatform.generation.dto.GenerationUserSchedulingForm;
 import com.aiplatform.generation.dto.SimulatorFaultForm;
 import com.aiplatform.generation.service.IGenerationAdminService;
 import com.aiplatform.identity.security.RequireAdmin;
@@ -21,6 +23,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -86,6 +89,18 @@ public class AdminGenerationController {
   public Result<GenerationAdminActionResultDTO> cancel(@PathVariable @Positive Long id,
       @RequestBody(required = false) GenerationCancelForm form) {
     return Result.ok(generations.cancelTask(id, form == null ? null : form.getReason()));
+  }
+
+  @GetMapping("/users/{id}/scheduling")
+  public Result<GenerationUserSchedulingDTO> userScheduling(@PathVariable @Positive Long id) {
+    return Result.ok(generations.userScheduling(id));
+  }
+
+  @PutMapping("/users/{id}/scheduling")
+  @AuditOperation(action = "generation.user-scheduling", objectType = "user")
+  public Result<GenerationUserSchedulingDTO> updateUserScheduling(
+      @PathVariable @Positive Long id, @Valid @RequestBody GenerationUserSchedulingForm form) {
+    return Result.ok(generations.updateUserScheduling(id, form));
   }
 
   @PostMapping("/simulator/faults")

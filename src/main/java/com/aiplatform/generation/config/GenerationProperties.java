@@ -22,6 +22,7 @@ public class GenerationProperties {
   private int channelQueueCapacity = 200;
   private int queueTimeoutSeconds = 1800;
   private int userActiveLimit = 5;
+  private int defaultScheduleWeight = 1;
   private int dispatchBatch = 20;
   private int pollBatch = 20;
   private int dispatchIntervalMs = 2000;
@@ -46,6 +47,7 @@ public class GenerationProperties {
     requireRange("channel-queue-capacity", channelQueueCapacity, 1, 100000);
     requireRange("queue-timeout-seconds", queueTimeoutSeconds, 1, 604800);
     requireRange("user-active-limit", userActiveLimit, 1, 10000);
+    requireRange("default-schedule-weight", defaultScheduleWeight, 1, 10);
     requireRange("dispatch-batch", dispatchBatch, 1, 200);
     requireRange("poll-batch", pollBatch, 1, 200);
     requireRange("dispatch-interval-ms", dispatchIntervalMs, 200, 60000);

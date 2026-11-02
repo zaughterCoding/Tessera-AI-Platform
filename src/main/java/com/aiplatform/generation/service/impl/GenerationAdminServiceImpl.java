@@ -19,6 +19,8 @@ import com.aiplatform.generation.dto.GenerationCancelDTO;
 import com.aiplatform.generation.dto.GenerationChannelDTO;
 import com.aiplatform.generation.dto.GenerationReconcileResultDTO;
 import com.aiplatform.generation.dto.GenerationSettlementDTO;
+import com.aiplatform.generation.dto.GenerationUserSchedulingDTO;
+import com.aiplatform.generation.dto.GenerationUserSchedulingForm;
 import com.aiplatform.generation.dto.SimulatorFaultForm;
 import com.aiplatform.generation.entity.GenerationCancelRequest;
 import com.aiplatform.generation.entity.GenerationResult;
@@ -28,6 +30,8 @@ import com.aiplatform.generation.entity.ProviderChannel;
 import com.aiplatform.generation.mapper.GenerationCancelMapper;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper;
 import com.aiplatform.generation.mapper.GenerationHandoffMapper.HandoffRow;
+import com.aiplatform.generation.mapper.GenerationQuotaMapper;
+import com.aiplatform.generation.mapper.GenerationQuotaMapper.SchedulingRow;
 import com.aiplatform.generation.mapper.GenerationResultMapper;
 import com.aiplatform.generation.mapper.GenerationTaskMapper;
 import com.aiplatform.generation.mapper.ProviderAttemptMapper;
@@ -38,6 +42,7 @@ import com.aiplatform.generation.service.GenerationCancelTransactions;
 import com.aiplatform.generation.service.GenerationResultTransactions;
 import com.aiplatform.generation.service.GenerationSettlementTransactions;
 import com.aiplatform.generation.service.IGenerationAdminService;
+import com.aiplatform.identity.mapper.UserMapper;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -107,6 +112,8 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
   private final GenerationCancelTransactions cancelTransactions;
   private final GenerationProperties properties;
   private final SimulatorFaultControlPolicy faultControlPolicy;
+  private final GenerationQuotaMapper quotas;
+  private final UserMapper users;
 
   public GenerationAdminServiceImpl(GenerationTaskMapper tasks, ProviderAttemptMapper attempts,
       ProviderChannelMapper channels, GenerationHandoffMapper handoffs,
@@ -115,7 +122,10 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
       GenerationSettlementMapper settlements, GenerationResultTransactions resultTransactions,
       GenerationSettlementTransactions settlementTransactions,
       GenerationCancelTransactions cancelTransactions, GenerationProperties properties,
-      SimulatorFaultControlPolicy faultControlPolicy) {
+      SimulatorFaultControlPolicy faultControlPolicy, GenerationQuotaMapper quotas,
+      UserMapper users) {
+    this.quotas = quotas;
+    this.users = users;
     this.tasks = tasks;
     this.attempts = attempts;
     this.channels = channels;
@@ -298,6 +308,37 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
       }
     }
     return saved;
+  }
+
+  @Override
+  public GenerationUserSchedulingDTO userScheduling(long userId) {
+    requireUser(userId);
+    return schedulingView(userId);
+  }
+
+  @Override
+  @Transactional
+  public GenerationUserSchedulingDTO updateUserScheduling(long userId,
+      GenerationUserSchedulingForm form) {
+    requireUser(userId);
+    quotas.upsertScheduling(userId, form.getActiveLimit(), form.getScheduleWeight());
+    return schedulingView(userId);
+  }
+
+  private void requireUser(long userId) {
+    if (users.selectById(userId) == null) {
+      throw new ApiException(ErrorCode.NOT_FOUND);
+    }
+  }
+
+  private GenerationUserSchedulingDTO schedulingView(long userId) {
+    SchedulingRow row = quotas.selectScheduling(userId);
+    int activeTasks = row == null ? 0 : row.getActiveTasks();
+    Integer activeLimit = row == null ? null : row.getActiveLimit();
+    Integer scheduleWeight = row == null ? null : row.getScheduleWeight();
+    return new GenerationUserSchedulingDTO(userId, activeTasks, activeLimit, scheduleWeight,
+        activeLimit == null ? properties.getUserActiveLimit() : activeLimit,
+        scheduleWeight == null ? properties.getDefaultScheduleWeight() : scheduleWeight);
   }
 
   @Override

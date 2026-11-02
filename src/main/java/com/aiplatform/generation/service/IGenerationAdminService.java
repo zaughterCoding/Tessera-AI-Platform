@@ -5,6 +5,8 @@ import com.aiplatform.generation.dto.GenerationAdminDeliveryDTO;
 import com.aiplatform.generation.dto.GenerationAdminOverviewDTO;
 import com.aiplatform.generation.dto.GenerationAdminTaskDTO;
 import com.aiplatform.generation.dto.GenerationReconcileResultDTO;
+import com.aiplatform.generation.dto.GenerationUserSchedulingDTO;
+import com.aiplatform.generation.dto.GenerationUserSchedulingForm;
 import com.aiplatform.generation.dto.SimulatorFaultForm;
 import java.util.List;
 
@@ -28,6 +30,12 @@ public interface IGenerationAdminService {
 
   /** 管理代办取消仍登记持久请求，是否真正取消由上游确认决定。 */
   GenerationAdminActionResultDTO cancelTask(long taskId, String reason);
+
+  GenerationUserSchedulingDTO userScheduling(long userId);
+
+  /** 调低上限只拒绝新提交，已受理的任务继续执行。 */
+  GenerationUserSchedulingDTO updateUserScheduling(long userId,
+      GenerationUserSchedulingForm form);
 
   /** 仅当演示故障控制开关显式开启时可用。 */
   void addSimulatorFault(SimulatorFaultForm form);
