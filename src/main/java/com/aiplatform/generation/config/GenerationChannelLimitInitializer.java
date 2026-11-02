@@ -54,6 +54,10 @@ public class GenerationChannelLimitInitializer implements InitializingBean {
             + "queueTimeoutSeconds={}", properties.getChannelCode(),
         properties.getChannelMaxInFlight(), properties.getChannelQueueCapacity(),
         properties.getQueueTimeoutSeconds());
+    if (properties.isAdaptiveConcurrencyEnabled()) {
+      channels.initEffectiveInFlight(properties.getChannelCode(),
+          properties.getAdaptiveInitialInFlight());
+    }
     syncHttpDeclaration();
   }
 

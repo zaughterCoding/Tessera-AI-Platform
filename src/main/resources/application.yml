@@ -116,6 +116,10 @@ app:
     user-active-limit: ${APP_GENERATION_USER_ACTIVE_LIMIT:5}
     default-schedule-weight: ${APP_GENERATION_DEFAULT_SCHEDULE_WEIGHT:1}
     fair-scheduling-enabled: ${APP_GENERATION_FAIR_SCHEDULING_ENABLED:false}
+    adaptive-concurrency-enabled: ${APP_GENERATION_ADAPTIVE_CONCURRENCY_ENABLED:false}
+    adaptive-initial-in-flight: ${APP_GENERATION_ADAPTIVE_INITIAL_IN_FLIGHT:4}
+    adaptive-window-seconds: ${APP_GENERATION_ADAPTIVE_WINDOW_SECONDS:5}
+    adaptive-pause-seconds: ${APP_GENERATION_ADAPTIVE_PAUSE_SECONDS:5}
     dispatch-batch: ${APP_GENERATION_DISPATCH_BATCH:20}
     poll-batch: ${APP_GENERATION_POLL_BATCH:20}
     dispatch-interval-ms: ${APP_GENERATION_DISPATCH_INTERVAL_MS:2000}

@@ -53,12 +53,15 @@ public class GenerationDispatchService {
   private final GenerationSettlementTransactions settlements;
   private final GenerationResultMapper results;
   private final GenerationProperties properties;
+  private final GenerationAdaptiveConcurrency adaptive;
 
   public GenerationDispatchService(GenerationHandoffMapper handoffs,
       ProviderAttemptMapper attempts, ProviderChannelMapper channels, GenerationTaskMapper tasks,
       GenerationQuotaMapper quotas, ProviderAdapterRouter adapter,
       GenerationUpstreamTransactions upstream, GenerationSettlementTransactions settlements,
-      GenerationResultMapper results, GenerationProperties properties) {
+      GenerationResultMapper results, GenerationProperties properties,
+      GenerationAdaptiveConcurrency adaptive) {
+    this.adaptive = adaptive;
     this.handoffs = handoffs;
     this.attempts = attempts;
     this.channels = channels;
@@ -91,13 +94,18 @@ public class GenerationDispatchService {
     }
     cleanHandoffs(channel);
     // 只认领空位数量：容量已满时不产生无意义的认领和重试记录。
-    int slots = Math.min(properties.getDispatchBatch(),
-        channel.getMaxInFlight() - channel.getInFlight());
-    if (slots <= 0) {
+    if (adaptive.paused(channel.getId())) {
       return Collections.emptyList();
     }
-    return properties.isFairSchedulingEnabled() ? claimFair(channel, slots)
-        : claimInOrder(channel, slots);
+    int slots = Math.min(properties.getDispatchBatch(),
+        adaptive.limit(channel) - channel.getInFlight());
+    List<AttemptClaim> claims = Collections.emptyList();
+    if (slots > 0) {
+      claims = properties.isFairSchedulingEnabled() ? claimFair(channel, slots)
+          : claimInOrder(channel, slots);
+    }
+    adaptive.afterClaim(channel, Math.max(slots, 0), claims.size());
+    return claims;
   }
 
   /** 过期认领恢复、作废行完成和排队超时都不依赖空位，队列满载时同样生效。 */
@@ -170,7 +178,7 @@ public class GenerationDispatchService {
         properties.getLeaseSeconds()) != 1) {
       return null;
     }
-    if (channels.occupyInFlight(channel.getId()) != 1) {
+    if (channels.occupyInFlight(channel.getId(), adaptive.enabled()) != 1) {
       // 认领前已按空位限制数量；这里只兜底并发抢占，稍后重试，不创建尝试、不释放冻结。
       handoffs.markRetry(row.getHandoffId(), "CLAIMED", 2, "CAPACITY_WAIT");
       return null;
@@ -299,10 +307,16 @@ public class GenerationDispatchService {
       upstream.markUncertain(claim, "CHANNEL_NOT_READY", "生成渠道未启用或未配置");
       return;
     }
+    if (adaptive.paused(claim.channelId())) {
+      // 同一批里前面的提交刚触发暂停：这个还没发出去，直接回到排队。
+      upstream.requeueThrottled(claim, null);
+      return;
+    }
     try {
       ProviderSubmitResult result = adapter.submit(claim.command());
       upstream.confirmSubmit(claim, result);
     } catch (ProviderThrottledException throttled) {
+      adaptive.onThrottled(claim.channelId(), throttled.retryAfterSeconds());
       upstream.requeueThrottled(claim, throttled.retryAfterSeconds());
     } catch (ProviderRejectedException rejected) {
       upstream.rejectSubmit(claim, rejected.code(), rejected.getMessage());

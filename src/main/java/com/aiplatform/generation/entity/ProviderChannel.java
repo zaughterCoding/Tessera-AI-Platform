@@ -18,6 +18,9 @@ public class ProviderChannel {
   private String status;
   private Integer maxInFlight;
   private Integer inFlight;
+  private Integer effectiveInFlight;
+  private LocalDateTime dispatchPausedUntil;
+  private LocalDateTime adaptiveWindowAt;
   private Integer queueCapacity;
   private Integer queued;
   private Integer queueTimeoutSeconds;

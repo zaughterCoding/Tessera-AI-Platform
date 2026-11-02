@@ -22,8 +22,21 @@ public interface ProviderChannelMapper extends BaseMapper<ProviderChannel> {
 
   int releaseQueue(@Param("channelId") long channelId);
 
-  /** 同时扣减队列并占用上游预算；容量不足或队列不一致时返回 0。 */
-  int occupyInFlight(@Param("channelId") long channelId);
+  /** 同时扣减队列并占用上游预算；容量不足或队列不一致时返回 0。自适应时受生效值限制。 */
+  int occupyInFlight(@Param("channelId") long channelId, @Param("adaptive") boolean adaptive);
+
+  /** 首次取初始值，之后保留持久值；硬上限调低时一并收紧。 */
+  int initEffectiveInFlight(@Param("code") String code, @Param("initial") int initial);
+
+  int countDispatchPaused(@Param("channelId") long channelId);
+
+  int growEffectiveInFlight(@Param("channelId") long channelId,
+      @Param("windowSeconds") int windowSeconds);
+
+  int resetAdaptiveWindow(@Param("channelId") long channelId);
+
+  int halveEffectiveInFlight(@Param("channelId") long channelId,
+      @Param("pauseSeconds") int pauseSeconds);
 
   /** 只有已确认终态才能释放；重复释放受 in_flight > 0 与状态迁移双重保护。 */
   int releaseInFlight(@Param("channelId") long channelId);

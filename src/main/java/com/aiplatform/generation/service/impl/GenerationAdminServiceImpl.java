@@ -383,6 +383,6 @@ public class GenerationAdminServiceImpl implements IGenerationAdminService {
         properties.getDispatchBatch(), properties.getPollBatch(), properties.getLeaseSeconds(),
         properties.getSubmitMaxAttempts(), properties.getQueryMaxAttempts(),
         properties.getUserActiveLimit(), properties.getQueueTimeoutSeconds(),
-        properties.isFairSchedulingEnabled());
+        properties.isFairSchedulingEnabled(), properties.isAdaptiveConcurrencyEnabled());
   }
 }

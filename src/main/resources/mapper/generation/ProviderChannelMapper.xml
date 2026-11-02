@@ -39,6 +39,41 @@
     SET in_flight = in_flight + 1, queued = queued - 1
     WHERE id = #{channelId} AND status = 'ENABLED'
       AND in_flight &lt; max_in_flight AND queued &gt; 0
+      <if test="adaptive">
+        AND (effective_in_flight IS NULL OR in_flight &lt; effective_in_flight)
+      </if>
+  </update>
+
+  <update id="initEffectiveInFlight">
+    UPDATE provider_channel
+    SET effective_in_flight = LEAST(COALESCE(effective_in_flight, #{initial}), max_in_flight),
+        adaptive_window_at = NOW(3)
+    WHERE code = #{code}
+  </update>
+
+  <select id="countDispatchPaused" resultType="int">
+    SELECT COUNT(*) FROM provider_channel
+    WHERE id = #{channelId} AND dispatch_paused_until &gt; NOW(3)
+  </select>
+
+  <update id="growEffectiveInFlight">
+    UPDATE provider_channel
+    SET effective_in_flight = effective_in_flight + 1, adaptive_window_at = NOW(3)
+    WHERE id = #{channelId} AND effective_in_flight &lt; max_in_flight
+      AND adaptive_window_at &lt;= DATE_SUB(NOW(3), INTERVAL #{windowSeconds} SECOND)
+  </update>
+
+  <update id="resetAdaptiveWindow">
+    UPDATE provider_channel SET adaptive_window_at = NOW(3) WHERE id = #{channelId}
+  </update>
+
+  <update id="halveEffectiveInFlight">
+    UPDATE provider_channel
+    SET effective_in_flight = GREATEST(1, FLOOR(effective_in_flight / 2)),
+        dispatch_paused_until = DATE_ADD(NOW(3), INTERVAL #{pauseSeconds} SECOND),
+        adaptive_window_at = DATE_ADD(NOW(3), INTERVAL #{pauseSeconds} SECOND)
+    WHERE id = #{channelId} AND effective_in_flight IS NOT NULL
+      AND (dispatch_paused_until IS NULL OR dispatch_paused_until &lt;= NOW(3))
   </update>
 
   <update id="releaseInFlight">
