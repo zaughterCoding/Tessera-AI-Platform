@@ -23,14 +23,21 @@
     SELECT * FROM business_outbox WHERE id = #{id} FOR UPDATE
   </select>
 
+  <!-- 分别走到期索引，不从主键扫过全部已完成行；租约过期的先取，积压再多也不会被饿死。 -->
   <select id="selectClaimableEvents"
       resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
-    SELECT * FROM business_outbox
-    WHERE (state = 'PENDING' AND next_attempt_at &lt;= NOW(3))
-       OR (state = 'SENDING' AND lease_until &lt; NOW(3))
-    ORDER BY id
+    (SELECT * FROM business_outbox
+     WHERE state = 'SENDING' AND lease_until &lt; NOW(3)
+     ORDER BY lease_until, id
+     LIMIT #{limit}
+     FOR UPDATE SKIP LOCKED)
+    UNION ALL
+    (SELECT * FROM business_outbox
+     WHERE state = 'PENDING' AND next_attempt_at &lt;= NOW(3)
+     ORDER BY next_attempt_at, id
+     LIMIT #{limit}
+     FOR UPDATE SKIP LOCKED)
     LIMIT #{limit}
-    FOR UPDATE SKIP LOCKED
   </select>
 
   <select id="selectEvents" resultType="com.aiplatform.messaging.entity.BusinessOutboxTask">
@@ -109,17 +116,18 @@
     WHERE id = #{id} AND state &lt;&gt; 'DONE'
   </update>
 
-  <update id="redriveSentEvents">
-    UPDATE business_outbox
-    SET state = 'PENDING', next_attempt_at = NOW(3), lease_owner = NULL, lease_until = NULL
+  <!-- 先无锁选 id 再逐行改回：带范围的 UPDATE 会锁住扫描到的全部行并阻塞事件写入。 -->
+  <select id="selectStaleSentIds" resultType="long">
+    SELECT id FROM business_outbox
     WHERE state = 'SENT' AND sent_at &lt;= DATE_SUB(NOW(3), INTERVAL #{ageSeconds} SECOND)
-  </update>
+    LIMIT #{limit}
+  </select>
 
-  <update id="redriveFailedEvents">
+  <update id="redriveSentEvent">
     UPDATE business_outbox
     SET state = 'PENDING', next_attempt_at = NOW(3), lease_owner = NULL, lease_until = NULL
-    WHERE state = 'PENDING' AND attempts &gt; 0 AND next_attempt_at &lt;= NOW(3)
-      AND next_attempt_at &lt;= DATE_SUB(NOW(3), INTERVAL #{ageSeconds} SECOND)
+    WHERE id = #{id} AND state = 'SENT'
+      AND sent_at &lt;= DATE_SUB(NOW(3), INTERVAL #{ageSeconds} SECOND)
   </update>
 
   <update id="retryReview">

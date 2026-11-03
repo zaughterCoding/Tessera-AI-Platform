@@ -21,7 +21,7 @@ public class OutboxRelayScheduler {
   @Scheduled(fixedDelayString = "${app.messaging.poll-delay-ms:1000}")
   public void poll() {
     try {
-      relay.relayOutboxBatch();
+      relay.relayDueBatches();
       relay.redriveUnconsumedEvents();
     } catch (RuntimeException failure) {
       log.warn("可靠任务轮询失败，type={}", failure.getClass().getName());

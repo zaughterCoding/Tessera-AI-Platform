@@ -223,7 +223,6 @@ app:
     batch-size: ${APP_MESSAGING_BATCH_SIZE:50}
     lease-seconds: ${APP_MESSAGING_LEASE_SECONDS:30}
     redrive-sent-seconds: ${APP_MESSAGING_REDRIVE_SENT_SECONDS:30}
-    redrive-failed-seconds: ${APP_MESSAGING_REDRIVE_FAILED_SECONDS:300}
     retry-base-seconds: ${APP_MESSAGING_RETRY_BASE_SECONDS:1}
     retry-max-seconds: ${APP_MESSAGING_RETRY_MAX_SECONDS:300}
     max-send-attempts: ${APP_MESSAGING_MAX_SEND_ATTEMPTS:10}

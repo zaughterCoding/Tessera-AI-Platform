@@ -54,9 +54,9 @@ public interface BusinessOutboxMapper {
 
   int markReview(@Param("id") long id);
 
-  int redriveSentEvents(@Param("ageSeconds") long ageSeconds);
+  List<Long> selectStaleSentIds(@Param("ageSeconds") long ageSeconds, @Param("limit") int limit);
 
-  int redriveFailedEvents(@Param("ageSeconds") long ageSeconds);
+  int redriveSentEvent(@Param("id") long id, @Param("ageSeconds") long ageSeconds);
 
   int retryReview(@Param("id") long id);
 

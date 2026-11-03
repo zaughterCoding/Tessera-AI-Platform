@@ -6,6 +6,9 @@ import java.util.List;
 public interface IOutboxRelayService {
   void relayOutboxBatch();
 
+  /** 有积压时连续投递多批，每轮有上限。 */
+  void relayDueBatches();
+
   void redriveUnconsumedEvents();
 
   List<BusinessOutboxTask> listTasks(String state, int limit, int offset);
