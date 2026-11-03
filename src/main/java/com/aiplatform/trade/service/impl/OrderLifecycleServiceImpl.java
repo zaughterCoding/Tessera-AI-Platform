@@ -88,11 +88,15 @@ public class OrderLifecycleServiceImpl implements IOrderLifecycleService {
         || !ReservationState.SUCCESS.name().equals(reservation.getState())) {
       throw new IllegalStateException("活动订单与预约事实不一致");
     }
-    if (reservations.markStockReleased(order.getId()) != 1) {
+    if (Boolean.TRUE.equals(reservation.getStockReleased())) {
       return;
     }
+    // 先写活动行：释放标记会改外键依托的唯一索引并对活动行加共享锁，先加共享锁再升级会互相死锁。
     if (campaigns.returnStock(order.getCampaignId()) != 1) {
       throw new IllegalStateException("活动可售库存已超过初始库存");
+    }
+    if (reservations.markStockReleased(order.getId()) != 1) {
+      throw new IllegalStateException("活动预约释放标记写入失败");
     }
     outbox.appendEvent(BusinessEventType.CAMPAIGN_STOCK_RELEASED.name(),
         order.getId(), order.getUserId());
