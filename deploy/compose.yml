@@ -143,8 +143,8 @@ services:
         condition: service_started
     healthcheck:
       test: [CMD-SHELL, 'sh mqadmin clusterList -n mq-nameserver:9876 2>/dev/null | grep -q ai-platform-broker']
-      interval: 3s
-      timeout: 5s
+      interval: 5s
+      timeout: 30s
       start_period: 20s
       retries: 30
     logging: *default-logging
