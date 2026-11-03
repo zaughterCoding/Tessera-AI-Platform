@@ -76,7 +76,7 @@ public class CampaignReconciliationServiceImpl implements ICampaignReconciliatio
         : Math.max(0L, campaign.getRemainingStock() - redisStock);
     String differenceKind = differenceKind(
         formulaMatched, redisReadable, redisStock, generationMatched,
-        difference, processing, review);
+        difference, processing, review, pendingEvents);
     // 只有公式、代次、库存差值与全部消费组水位都确认一致，且没有未完成事件时才标记精确。
     boolean exact = "CONFIRMED".equals(differenceKind)
         && processing == 0 && review == 0 && pendingEvents == 0
@@ -108,7 +108,8 @@ public class CampaignReconciliationServiceImpl implements ICampaignReconciliatio
 
   /** 确认一致、可解释在途与无法解释差异分开表达，任何差异都不自动修正。 */
   private String differenceKind(boolean formulaMatched, boolean redisReadable, Long redisStock,
-      boolean generationMatched, Long difference, long processing, long review) {
+      boolean generationMatched, Long difference, long processing, long review,
+      long pendingEvents) {
     if (!formulaMatched || !redisReadable || redisStock == null
         || !generationMatched || difference == null) {
       return "UNKNOWN";
@@ -116,7 +117,8 @@ public class CampaignReconciliationServiceImpl implements ICampaignReconciliatio
     if (difference == 0) {
       return "CONFIRMED";
     }
-    if (difference < 0 && -difference <= processing + review) {
+    // 库存归还事件未处理完时 Redis 会暂时低于数据库，这同样是在途差异，不需要人工介入。
+    if (difference < 0 && -difference <= processing + review + pendingEvents) {
       return "IN_FLIGHT";
     }
     return "UNEXPLAINED";
@@ -205,9 +207,9 @@ public class CampaignReconciliationServiceImpl implements ICampaignReconciliatio
       notes.add("Redis 代次与数据库不一致，不能判定精确");
     }
     if ("IN_FLIGHT".equals(differenceKind)) {
-      notes.add("Redis 库存低于数据库的差异可由在途预约解释，最终结果尚未确定");
+      notes.add("Redis 库存低于数据库的差异可由在途预约或未完成事件解释，最终结果尚未确定");
     } else if ("UNEXPLAINED".equals(differenceKind)) {
-      notes.add("库存差异无法由公式、在途预约或消息水位解释，需人工核对，禁止自动修正");
+      notes.add("库存差异无法由公式、在途预约或未完成事件解释，需人工核对，禁止自动修正");
     }
     if (processing > 0) {
       notes.add("存在处理中预约，最终结果尚未确定");
