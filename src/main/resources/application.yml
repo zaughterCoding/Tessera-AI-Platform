@@ -153,7 +153,7 @@ app:
       allow-insecure-http: ${APP_GENERATION_HTTP_ALLOW_INSECURE_HTTP:false}
       real-call-limit: ${APP_GENERATION_HTTP_REAL_CALL_LIMIT:0}
       connect-timeout-ms: ${APP_GENERATION_HTTP_CONNECT_TIMEOUT_MS:3000}
-      request-timeout-ms: ${APP_GENERATION_HTTP_REQUEST_TIMEOUT_MS:30000}
+      request-timeout-ms: ${APP_GENERATION_HTTP_REQUEST_TIMEOUT_MS:25000}
       query-timeout-ms: ${APP_GENERATION_HTTP_QUERY_TIMEOUT_MS:10000}
       max-response-bytes: ${APP_GENERATION_HTTP_MAX_RESPONSE_BYTES:262144}
       idempotent-submit: ${APP_GENERATION_HTTP_IDEMPOTENT_SUBMIT:false}

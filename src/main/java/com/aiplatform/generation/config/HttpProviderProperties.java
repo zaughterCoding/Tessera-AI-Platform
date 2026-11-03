@@ -39,7 +39,7 @@ public class HttpProviderProperties {
   private boolean allowInsecureHttp;
   private int realCallLimit;
   private int connectTimeoutMs = 3000;
-  private int requestTimeoutMs = 30000;
+  private int requestTimeoutMs = 25000;
   private int queryTimeoutMs = 10000;
   private int maxResponseBytes = 262144;
   private boolean idempotentSubmit;
