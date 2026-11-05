@@ -6,6 +6,8 @@ documentation/
 README
 CHANGELOG
 *.md
+!/README.md
+!/README.zh-CN.md
 *.markdown
 *.mdx
 *.rst
@@ -50,6 +52,7 @@ uploads/
 .settings/
 .codex/
 .agents/
+.claude/
 .aws/
 
 # 构建、依赖与本地验证产物
