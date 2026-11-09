@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E1 Reliable Messaging: Outbox</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+<style>
+.trg .row{display:flex;justify-content:space-between;align-items:center;margin:2px 0}
+.trg b.v{font-family:var(--mono);color:var(--yellow)}
+.trg .lb{font-size:11px;color:var(--muted)}
+#tb_outbox .td{padding:0 4px;font-size:11px}
+.sm text{font-family:"Segoe UI",sans-serif}
+</style>
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E1-可靠消息outbox.html', home: '../index.html?lang=en', title: 'E1 · Reliable Messaging: Outbox', docTitle: 'E1 Reliable Messaging: Outbox', example: 'Example: order 1001 paid → event 9004 ORDER_PAID',
+  lanes: [['Producer · relay', 'business txn / instances A, B'], ['Transport · consumer', 'deliver · five-step consume'], ['MySQL', 'outbox and de-dup tables']] });
+
+/* ============ Script ============ */
+const TY = { outbox: 88, event: 254, inbox: 340, failure: 426 };
+const toDB = t => [770, TY[t] + 4];
+const MID = [600, 230];
+const RA = [120, 250], RB = [120, 296], CG = [330, 140];
+const ENV = id => `📨 ${id}`;
+
+// Clear the middle lane but keep the status cards
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+// Left lane: wake-up trigger and polling
+function trg(sched, line2) {
+  put('trg', 'fe st trg', `<div class="lb">OutboxRelayTrigger (wake after commit)</div>
+    <div class="row"><span>scheduled</span><b class="v">${sched}</b></div>
+    <div class="lb" style="margin-top:4px">OutboxRelayScheduler (fallback polling)</div>
+    <div class="row"><span>${line2 || 'every 1 s: due batches + redrive'}</span></div>`, 26, 134, 248, null);
+}
+function relay(id, label, st, stText) { card(id, 26, id === 'A' ? 244 : 290, 248, label, st, stText, 'Inst ' + id); }
+function ob(id, kind, agg, state, next, extra = {}) {
+  return Object.assign({ id, kind, aggregate_id: agg, state, att: '0/0', next_at: next, owner: '', lease: '', sent: '' }, extra);
+}
+// One visible state change
+function obSet(id, kv) { for (const k in kv) cell('outbox', id, k, kv[k]); }
+
+scene('Intro', [
+  step('This episode covers the <em>reliable-messaging outbox</em>. It is the shared pipe of the whole project: ordering, payment, closing, granting credits, campaign orders and cache invalidation all use it to hand off "what must happen next" reliably.',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 1</div><h1>Reliable Messaging: Outbox</h1><h2>Once the business commits, the event will be processed; redelivered, its effect still applies only once</h2>
+      <ol><li>The dual-write problem: why not just publish to MQ</li><li>Same-transaction write + wake-up after commit + 1 s polling</li><li>Claiming: <b>READ COMMITTED + FOR UPDATE SKIP LOCKED + lease</b></li><li>Five-step consume: <b>lock the DB row and verify every field</b>, inbox de-dup, one commit</li><li>Backoff, REVIEW quarantine, lease takeover, <b>SENT ≠ DONE</b></li></ol>`)),
+  step('Three lanes: on the left, the business transaction that writes events and two relay instances A and B; in the middle, the transport and the consumer; on the right, four tables: <code>business_outbox</code>, the projection result, <code>message_inbox</code> for de-dup and <code>message_failure</code> for failures.',
+    0, () => ovOff(),
+    300, () => {
+      clock('10:03:20.400');
+      table('outbox', 722, TY.outbox, 532, 'business_outbox', 'an event is just a row', [['id', 'id', 36], ['kind', 'kind', 128], ['state', 'state', 60], ['att', 's/c', 34], ['next_at', 'next_at', 54], ['owner', 'owner', 50], ['lease', 'lease', 54], ['sent', 'sent_at', 54]]);
+      row('outbox', 9001, ob(9001, 'PRODUCT_INVALIDATE', 7, 'PENDING', '03:20.2'));
+      row('outbox', 9002, ob(9002, 'ORDER_CREATED', 1003, 'PENDING', '03:20.4'));
+      row('outbox', 9003, ob(9003, 'ORDER_EXPIRE', 1003, 'PENDING', '18:20.4'));
+    },
+    800, () => table('event', 722, TY.event, 532, 'purchase_order_event', 'projection · PK event_id', [['event_id', 'event_id', 70], ['order_id', 'order_id', 70], ['event_type', 'event_type', 110]]),
+    1100, () => table('inbox', 722, TY.inbox, 532, 'message_inbox', 'consumer de-dup · PK (consumer_group, event_id)', [['group', 'consumer_group', 150], ['event_id', 'event_id', 80]]),
+    1400, () => table('failure', 722, TY.failure, 532, 'message_failure', 'failures · PK (consumer_group, event_key)', [['group', 'consumer_group', 104], ['key', 'event_key', 134], ['event_id', 'event_id', 64], ['reason', 'reason', 150]]),
+    1900, () => note('Reading the table', `<ul><li><b>s/c</b>: <code>attempts</code> / <code>consume_attempts</code> — send failures and consume failures</li><li><b>next_at</b>: earliest time it may be claimed</li><li><b>owner + lease</b> (lease_until): who claimed it and until when</li><li>Times show "min:sec"; the full time is the DB clock at the top right</li></ul>`, 182)),
+]);
+
+scene('① Dual write', [
+  step('First, why an outbox is needed. The payment transaction updates the order and commits, then must publish "order paid" to MQ. Right between those two steps <em>the process crashes</em>: the order is PAID, but the message is never sent and the credits never arrive.',
+    0, () => gone('note'),
+    300, () => card('BIZ', 26, 88, 248, 'pay() · order 1001', 'run', 'running', 'Biz'),
+    1000, () => txs('BIZ', 'ok', 'committed'),
+    1700, () => { fly('ORDER_PAID → MQ', [140, 110], [330, 100], 'red', { lost: true }); },
+    2400, () => txs('BIZ', 'rb', '💥 crashed'),
+    2600, () => note('Order 1: commit, then publish', `Commit OK → <b>crash</b> → nothing published<br>Result: the business succeeded, downstream never hears of it. <b>Lost message</b>.`, 182)),
+  step('What about publishing first and committing second? The message is out, but the commit fails on a lock timeout and rolls back. Downstream processes "order paid" while <em>the database says the order was never paid</em>. Neither order works, because the database and MQ cannot share one transaction.',
+    0, () => { card('BIZ', 26, 88, 248, 'pay() · order 1001', 'run', 'running', 'Biz'); },
+    600, () => fly('ORDER_PAID → MQ', [140, 110], [330, 100], 'blue'),
+    1500, () => txs('BIZ', 'rb', 'commit failed'),
+    1900, () => note2('Order 2: publish, then commit', `Message sent → commit fails, rollback<br>Result: downstream acted on something that <b>never happened</b>.`, 290)),
+  step('The outbox idea: <em>do not send messages inside the transaction; store "the message to send" as a row written in the same transaction as the business change</em>. If it commits, the row is there; if it rolls back, the row never existed. A relay then delivers that row reliably.',
+    0, () => { clearMid(); gone('tx_BIZ'); },
+    300, () => note('Outbox: turn the message into a business row', `<ul><li>Business change + <code>INSERT business_outbox</code>: <b>one local transaction</b></li><li>A relay reads these rows outside the transaction, delivers them and records the result</li><li>Delivery may repeat → consumers must be idempotent</li></ul>In one line: <b>at-least-once delivery + exactly-once effect</b>`, 182)),
+]);
+
+scene('② Same-txn write', [
+  step('Inside the payment transaction, after updating the order and writing the payment fact, insert an <code>ORDER_PAID</code> row with state <code>PENDING</code> and <code>next_attempt_at</code> from the DB clock. It <em>commits together</em> with the order change.',
+    0, () => { clearMid(); clock('10:03:20.503', true); card('BIZ', 26, 88, 248, 'pay() · order 1001', 'run', 'running', 'Biz'); },
+    400, () => code(`INSERT INTO business_outbox(kind, aggregate_id, user_id, state, next_attempt_at)\nVALUES ('ORDER_PAID', 1001, 42, 'PENDING', NOW(3))\n-- delayed events use insertEventAt: next_attempt_at = deliver_at`),
+    1100, () => fly('INSERT', [200, 110], toDB('outbox'), 'blue'),
+    1900, () => row('outbox', 9004, ob(9004, 'ORDER_PAID', 1001, 'PENDING', '03:20.5'), 'BIZ')),
+  step('The append method is <code>@Transactional(propagation = MANDATORY)</code>: the caller <em>must already be in a transaction</em>, otherwise it throws. The code itself guarantees nobody writes an event outside a transaction.',
+    0, () => note('Two ways to write', `<ul><li><b>Ordinary events</b>: <code>INSERT</code>, one row per business action (order created, paid, closed…)</li><li><b>Follow-up tasks registered by consumers</b>: <code>INSERT IGNORE</code> + unique <code>idempotency_key</code>, e.g. <code>ENTITLEMENT_GRANT</code>, <code>CAMPAIGN_FULFILL</code>. Registering the same thing twice still yields one row</li></ul>`, 290)),
+]);
+
+scene('③ Wake-up & polling', [
+  step('After commit, the <code>afterCommit</code> callback calls <code>wakeUp()</code>: one CAS on an <code>AtomicBoolean</code> flips <code>scheduled</code> from false to true and queues a delivery task on a single-thread executor. <em>On rollback it never fires</em>.',
+    0, () => { clearMid(); commit('BIZ'); txs('BIZ', 'ok', 'committed'); trg('false'); },
+    700, () => { ping(140, 160); trg('true ← CAS ok'); },
+    1300, () => code(`if (!scheduled.compareAndSet(false, true)) return;  // a task is already queued\nexecutor.execute(() -> {\n  scheduled.set(false);\n  relay.relayOutboxBatch();\n});`)),
+  step('Two more transactions commit right after; both CAS attempts fail and return: <em>many wake-ups coalesce into one</em>. One delivery round claims every due event anyway, so there is no need for a round per commit.',
+    0, () => { ping(140, 160); tagAt('w2', 'commit → wakeUp() → CAS fails, return', 30, 250, ''); },
+    700, () => { ping(140, 160); tagAt('w3', 'commit → wakeUp() → CAS fails, return', 30, 286, ''); },
+    1500, () => { gone('w2'); gone('w3'); trg('false (task started)'); }),
+  step('Wake-up is only for <em>speed</em>; correctness comes from fallback polling: every instance runs each second, delivering due batches (keeps going while batches are full, up to 10) and then redriving SENT rows. If a wake-up fails or the process restarts, delivery is late by at most 1 s. Note: <em>no Canal here</em>.',
+    0, () => { gone('tx_BIZ'); note('Two triggers', `<ul><li><b>afterCommit wake-up</b>: low latency, coalesced; a failure is only logged</li><li><b>@Scheduled(fixedDelay = 1000)</b>: <code>relayDueBatches()</code> + <code>redriveUnconsumedEvents()</code></li><li>Canal is only for catalog cache invalidation, unrelated to outbox delivery</li></ul>`, 182); }),
+]);
+
+scene('④ Claiming', [
+  step('Two instances compete: instance B\'s poll is due and instance A was woken up. Each opens a <em>very short claim transaction</em> at <code>READ COMMITTED</code>. To keep the picture readable, each batch takes 2 rows here (default 50).',
+    0, () => { clearMid(); gone('tx_BIZ'); clock('10:03:20.505', true); trg('false'); },
+    400, () => { relay('B', 'poll · claim txn', 'run'); },
+    800, () => { relay('A', 'wake · claim txn', 'run'); },
+    1300, () => code(`(SELECT * FROM business_outbox\n WHERE state = 'SENDING' AND lease_until < NOW(3)   -- ① lease expired\n ORDER BY lease_until, id LIMIT 2 FOR UPDATE SKIP LOCKED)\nUNION ALL\n(SELECT * FROM business_outbox\n WHERE state = 'PENDING' AND next_attempt_at <= NOW(3)  -- ② due\n ORDER BY next_attempt_at, id LIMIT 2 FOR UPDATE SKIP LOCKED)\nLIMIT 2`, 182)),
+  step('B runs first and locks the earliest due rows, 9001 and 9002. A runs right after: <code>SKIP LOCKED</code> makes it <em>skip the rows B already holds</em> instead of waiting, and it gets 9004. 9003 is a closing event due in 15 minutes, so neither picks it.',
+    0, () => { hl('outbox', 9001); hl('outbox', 9002); },
+    500, () => { lock('outbox', 9001, 'X', 'B'); lock('outbox', 9002, 'X', 'B'); },
+    1300, () => { hl('outbox', 9001, null); hl('outbox', 9002, null); hl('outbox', 9004); },
+    1700, () => lock('outbox', 9004, 'X', 'A'),
+    2300, () => { hl('outbox', 9004, null); dim('outbox', 9003); }),
+  step('With the row locks held, <code>claimEvent</code> runs per row: set <code>SENDING</code>, write this batch\'s owner (a new UUID per batch) and a 30 s lease. The WHERE re-checks the claim condition; then it <em>commits immediately</em>, releasing the locks. No network call happens inside the claim transaction.',
+    0, () => code(`UPDATE business_outbox\nSET state = 'SENDING', lease_owner = ?,\n    lease_until = DATE_ADD(NOW(3), INTERVAL 30 SECOND)\nWHERE id = ? AND ((state = 'PENDING' AND next_attempt_at <= NOW(3))\n              OR (state = 'SENDING' AND lease_until < NOW(3)))`, 182),
+    900, () => { obSet(9001, { state: 'SENDING', owner: 'B·91d2', lease: '03:50.5' }); obSet(9002, { state: 'SENDING', owner: 'B·91d2', lease: '03:50.5' }); },
+    1400, () => obSet(9004, { state: 'SENDING', owner: 'A·7f3c', lease: '03:50.5' }),
+    2100, () => { unlock('A'); unlock('B'); relay('A', 'batch 9004', 'run', 'delivering'); relay('B', '9001, 9002', 'run', 'delivering'); dim('outbox', 9003, false); }),
+  step('Two points that are easy to confuse. <em>READ COMMITTED is an isolation level</em>: it removes gap locks, so claiming never blocks business transactions inserting new events. <em>SKIP LOCKED is a locking behavior</em>: instances do not queue behind each other. Expired leases come first, so they cannot starve however large the backlog.',
+    0, () => { gone('code'); note('Three design points of the claim SQL', `<ul><li><b>RC</b>: under REPEATABLE READ, range locking brings gap locks that would block new event inserts; RC locks only the selected rows</li><li><b>SKIP LOCKED</b>: skip rows others hold; instances claim in parallel</li><li><b>Two UNION ALL branches</b>: each uses its own index (<code>idx_..._lease</code> / <code>idx_..._due</code>), expired leases first</li><li>After commit, <b>SENDING + a live lease</b> is itself the "hands off" marker</li></ul>`, 182); }),
+]);
+
+scene('⑤ Deliver & consume', [
+  step('A delivers 9004 <em>outside any transaction</em>. First it checks whether half the lease has passed (just claimed, no renewal needed), then <code>deliver_at</code> (empty, not a delayed event), then hands it to the transport. The default transport is <code>local</code>: an in-process call to the consumer.',
+    0, () => { clearMid(); card('TP', 306, 88, 384, 'transport = local (in-process)', 'ret', 'default', 'Transport'); },
+    800, () => fly(`${ENV(9004)} {kind: ORDER_PAID, aggregateId: 1001, userId: 42}`, RA, [330, 140], ''),
+    1700, () => card('CG', 306, 134, 384, 'group order-events · consume()', 'run', 'running', 'Consumer')),
+  step('Consume step ①: <em>validate the envelope</em> before touching the database — schema version, a legal eventId and kind, and <em>whether this event type belongs to this consumer group</em>. Anything wrong is rejected right away.',
+    0, () => gate('consume(): five steps, the last four in one txn', [['① Validate envelope', ''], ['② Lock outbox row, verify fields', ''], ['③ DONE or in inbox → duplicate', ''], ['④ Project (business effect)', ''], ['⑤ Commit inbox + DONE together', '']], 182),
+    700, () => check(0, 'ok', 'version · kind · group ✓')),
+  step('Step ②: open a transaction and lock 9004 in the database with <code>FOR UPDATE</code>, comparing kind, aggregate_id, user_id, occurred time and deliver time. <em>The message is only a locator; the row in the database is the truth</em>. With the row locked, another copy of the same event has to wait.',
+    0, () => { fly('SELECT … FOR UPDATE', MID, toDB('outbox'), 'blue'); },
+    800, () => { lock('outbox', 9004, 'X', 'CG'); hl('outbox', 9004); },
+    1300, () => check(1, 'ok', '5 fields match')),
+  step('Step ③ de-dup: if the row is already <code>DONE</code>, or <code>message_inbox</code> already has (order-events, 9004), it is a duplicate and returns. Only if neither holds, and the row is not <code>REVIEW</code>, does it continue.',
+    0, () => { fly('check inbox', MID, toDB('inbox'), 'blue'); },
+    900, () => check(2, 'ok', 'first time')),
+  step('Step ④ projection: confirm order 1001 really is PAID + MOCK, then <code>INSERT IGNORE</code> the order history; since this is a payment, also <code>INSERT IGNORE</code> the second-hop task <code>ENTITLEMENT_GRANT</code> with unique key <code>entitlement-grant:1001:CREDITS</code>.',
+    0, () => { hl('outbox', 9004, null); fly('INSERT IGNORE', MID, toDB('event'), 'blue'); },
+    800, () => row('event', 9004, { event_id: 9004, order_id: 1001, event_type: 'ORDER_PAID' }, 'CG'),
+    1300, () => fly('INSERT IGNORE (idempotency_key)', MID, toDB('outbox'), 'blue'),
+    2100, () => row('outbox', 9005, ob(9005, 'ENTITLEMENT_GRANT', 1001, 'PENDING', '03:20.5'), 'CG'),
+    2400, () => check(3, 'ok', 'history + grant task')),
+  step('Step ⑤: write the inbox row (order-events, 9004) and mark 9004 <code>DONE</code>, <em>committing together with the projection</em>. If any step fails, projection, inbox and DONE all roll back and the next delivery starts over — there is never a "half-applied" effect.',
+    0, () => { fly('INSERT inbox', MID, toDB('inbox'), 'blue'); },
+    700, () => row('inbox', 'g9004', { group: 'order-events', event_id: 9004 }, 'CG'),
+    1100, () => obSet(9004, { state: 'DONE', owner: '', lease: '' }),
+    1700, () => { check(4, 'ok', 'commit'); commit('CG'); txs('CG', 'ok'); }),
+  step('Back on instance A: after the transport returns it runs <code>markSent</code> with <code>state = &#39;SENDING&#39; AND lease_owner = A</code>. But the local transport consumed synchronously, so the row is <em>already DONE</em>: 0 rows affected, nothing changes. The second hop 9005 will be claimed in a later round (see the entitlements episode).',
+    0, () => { clearMid(); code(`UPDATE business_outbox SET state = 'SENT', sent_at = NOW(3), ...\nWHERE id = 9004 AND state = 'SENDING' AND lease_owner = 'A·7f3c'\n-- 0 rows: in local mode DONE comes before SENT`, 182); },
+    900, () => { relay('A', 'batch done', 'ok', 'idle'); gone('tx_CG'); }),
+]);
+
+scene('⑥ Consume failure', [
+  step('Instance B delivers 9001: a cache invalidation for product 7, consumer group <code>catalog-cache</code>. The projection must delete the product cache in Redis, but <em>Redis is temporarily unavailable</em>; it throws and the whole consume transaction rolls back.',
+    0, () => { clearMid(); clock('10:03:20.520'); },
+    300, () => fly(`${ENV(9001)} PRODUCT_INVALIDATE`, RB, [330, 140], ''),
+    1200, () => card('CG', 306, 134, 384, 'group catalog-cache · consume()', 'run', 'running', 'Consumer'),
+    1700, () => gate('consume() · 9001', [['① Validate envelope', ''], ['② Lock row, verify', ''], ['③ De-dup', ''], ['④ Project: delete Redis cache', '']], 182),
+    2100, () => { check(0, 'ok'); check(1, 'ok'); check(2, 'ok', 'first time'); },
+    2700, () => { check(3, 'no', 'CacheUnavailableException'); txs('CG', 'rb', 'rolled back'); }),
+  step('Then the failure is recorded: <code>consume_attempts + 1</code>, still below 5, so it reports "not finished". The local transport rethrows to the relay, which runs <code>recordSendFailure</code>: <code>attempts + 1</code>, back to <code>PENDING</code>, retry in <em>2 seconds</em>.',
+    0, () => { gone('gate'); code(`recordConsumptionFailure → consume_attempts = 1  (< 5, returns false)\nLocalEventPublisher: not recorded as finished → rethrow to relay\nrecordSendFailure: attempts = 1, state = 'PENDING',\n  next_attempt_at = NOW(3) + 2^1 s, clear owner / lease`, 182); },
+    1000, () => obSet(9001, { att: '1/1', state: 'PENDING', next_at: '03:22.5', owner: '', lease: '' }),
+    1500, () => gone('tx_CG')),
+  step('Just then instance B crashes: 9002 in its batch has <em>not been delivered</em>, still carries B\'s lease and stays <code>SENDING</code>. Nobody notifies the other instances — <em>only lease expiry</em> can recover it.',
+    0, () => { gone('code'); relay('B', '9002 not delivered', 'rb', '💥 crashed'); hl('outbox', 9002, 'hlr'); },
+    1000, () => note('State of 9002 at the crash', `<code>state = SENDING</code>, <code>lease_owner = B·91d2</code>, <code>lease_until = 03:50.5</code><br>Until the lease expires, no claim SQL will select it.`, 182)),
+  step('9001 keeps retrying, now picked up by instance A\'s polling. Each failure doubles the wait: 2 s, 4 s, 8 s, 16 s… up to 300 s. <em>Exponential backoff</em> gives downstream time to recover and keeps the database from being hammered during an outage.',
+    0, () => { gone('note'); hl('outbox', 9002, null); },
+    300, () => { clock('10:03:22.500', true); relay('A', 'retry 9001', 'run', 'delivering'); },
+    900, () => { obSet(9001, { att: '2/2', next_at: '03:26.5' }); relay('A', '9001 failed again', 'ok', 'idle'); },
+    1700, () => { clock('10:03:26.500', true); },
+    2200, () => obSet(9001, { att: '3/3', next_at: '03:34.5' }),
+    3000, () => { clock('10:03:34.500', true); },
+    3500, () => obSet(9001, { att: '4/4', next_at: '03:50.5' })),
+  step('The 5th consume failure hits the limit: <code>message_failure</code> records <code>outbox:9001</code> and the row becomes <code>REVIEW</code>, which no claim SQL selects any more. Note: <em>the outbox has no separate dead-letter table</em> — REVIEW is the quarantine state.',
+    0, () => { clock('10:03:50.500', true); relay('A', 'retry 9001', 'run', 'delivering'); },
+    800, () => fly('INSERT message_failure', MID, toDB('failure'), 'red'),
+    1500, () => row('failure', 'f9001', { group: 'catalog-cache', key: 'outbox:9001', event_id: 9001, reason: 'Redis down, invalidation unfinished' }),
+    1900, () => { obSet(9001, { att: '4/5', state: 'REVIEW', owner: '', lease: '' }); hl('outbox', 9001, 'hlr'); relay('A', '9001 quarantined', 'ok', 'idle'); },
+    2500, () => note('What next', `Once Redis is fixed, an admin calls <code>retryReview</code>:<br><code>state = 'PENDING', attempts = 0, consume_attempts = 0, next_attempt_at = NOW(3)</code><br>It re-enters the normal claim flow.`, 182)),
+]);
+
+scene('⑦ Lease takeover', [
+  step('It is now 10:03:51.2 and 9002\'s lease expired at 03:50.5. Instance A\'s next claim SQL selects it through the first branch, <code>state = &#39;SENDING&#39; AND lease_until &lt; NOW(3)</code>. <em>This is not Redis XCLAIM</em> — it is the very same claim SQL.',
+    0, () => { clearMid(); hl('outbox', 9001, null); dim('outbox', 9001); clock('10:03:51.200', true); },
+    600, () => { hl('outbox', 9002, 'hlr'); cell('outbox', 9002, 'lease', '<span style="color:var(--red)">03:50.5 expired</span>'); },
+    1300, () => { relay('A', 'poll · claim txn', 'run'); lock('outbox', 9002, 'X', 'A'); },
+    2000, () => { obSet(9002, { owner: 'A·c2e8', lease: '04:21.2' }); unlock('A'); hl('outbox', 9002); }),
+  step('A delivers 9002 under a new owner: envelope check, de-dup, projection, then <code>DONE</code>. When an instance dies, its events are picked up by someone else at most one lease period later.',
+    0, () => fly(`${ENV(9002)} ORDER_CREATED`, RA, [330, 140], ''),
+    900, () => card('CG', 306, 134, 384, 'group order-events · consume()', 'run', 'running', 'Consumer'),
+    1500, () => { row('event', 9002, { event_id: 9002, order_id: 1003, event_type: 'ORDER_CREATED' }); row('inbox', 'g9002', { group: 'order-events', event_id: 9002 }); },
+    2000, () => { obSet(9002, { state: 'DONE', owner: '', lease: '' }); hl('outbox', 9002, null); txs('CG', 'ok'); relay('A', 'batch done', 'ok', 'idle'); }),
+  step('What if B was not dead but stalled for a long time (say a long GC) and now wakes up? Its <code>markSent</code>, <code>renewLease</code> and <code>recordSendFailure</code> all carry <code>lease_owner = B·91d2</code>, so they <em>affect 0 rows</em> and cannot touch a row someone else took over.',
+    0, () => { relay('B', 'wakes, old batch', 'wait', 'old owner'); },
+    700, () => code(`UPDATE business_outbox SET state = 'SENT', ...\nWHERE id = 9002 AND state = 'SENDING'\n  AND lease_owner = 'B·91d2'      -- now A·c2e8 / already DONE\n-- 0 rows`, 182),
+    1500, () => relay('B', 'all writes miss', 'rb', '0 rows')),
+  step('But if B <em>had already sent the message</em> before stalling, 9002 is delivered twice. That is exactly the outbox contract: <em>at-least-once delivery</em>. The second copy locks the row, sees <code>DONE</code> and is dropped as a duplicate, so the effect still applies only once.',
+    0, () => { gone('code'); fly(`${ENV(9002)} (B's copy sent before stalling)`, RB, [330, 140], 'grey'); },
+    900, () => { card('CG', 306, 134, 384, 'group order-events · consume()', 'run', 'running', 'Consumer'); gate('Second copy of 9002', [['② Lock row, verify', ''], ['③ state = DONE → duplicate', '']], 182); },
+    1500, () => { check(0, 'ok'); check(1, 'go', 'return, no projection'); txs('CG', 'ret', 'dup dropped'); relay('B', 'exited', 'rb', 'offline'); }),
+]);
+
+scene('⑧ Lease renewal & delays', [
+  step('Two more delivery details. First, renewal: if the first rows in a batch are slow, later rows\' leases may be about to expire. So before each delivery it checks: <em>once more than half the lease has passed</em>, renew first; if renewal fails, someone else took over, so skip that row.',
+    0, () => { clearMid(); gone('tx_CG'); gone('tx_B'); },
+    300, () => code(`long held = (now - claimedAt) / 1s;\nif (held * 2 >= 30 && renewLease(id, owner, 30) != 1) return;  // taken over\n\nUPDATE business_outbox SET lease_until = NOW(3) + 30s\nWHERE id = ? AND state = 'SENDING' AND lease_owner = ?`, 182),
+    900, () => note('Why renew only past half-life', `The claim already wrote a 30 s lease. Each renewal is a disk write; renewing per row would double delivery time. Renewing past half the lease avoids false takeovers while skipping most writes.`, 330)),
+  step('Second, delayed events such as the order-deadline <code>ORDER_EXPIRE</code>. Its <code>next_attempt_at</code> already equals <code>deliver_at</code>, so it is not claimed early; if it ever is, <code>deferDeadline</code> puts it back to <code>PENDING</code> with the next claim time set to <code>deliver_at</code>.',
+    0, () => { hl('outbox', 9003); },
+    300, () => code(`if (deliverAt != null && deliverAt > now) {\n  UPDATE business_outbox SET state = 'PENDING', next_attempt_at = deliver_at,\n         lease_owner = NULL, lease_until = NULL\n  WHERE id = ? AND state = 'SENDING' AND lease_owner = ?;\n}`, 182),
+    900, () => note('Delays with RocketMQ', `With the RocketMQ transport, a delayed event sent before its time gets <code>setDeliverTimeMs(deliverAt)</code> and the broker delivers it on schedule (up to 24 hours).`, 330),
+    2000, () => hl('outbox', 9003, null)),
+]);
+
+scene('⑨ RocketMQ: SENT ≠ DONE', [
+  step('Switch the transport to RocketMQ. Messages are sent with <code>keys = eventId</code>, all to one topic; every logical consumer group subscribes to it and <em>handles only its own event types</em>, skipping the rest. When the broker answers <code>SEND_OK</code>, the relay marks <code>SENT</code>.',
+    0, () => { clearMid(); dim('outbox', 9001, false); rmRow('outbox', 9001); rmRow('outbox', 9002); rmRow('event', 9002); rmRow('inbox', 'g9002'); clock('10:10:00.000', true); },
+    500, () => card('TP', 306, 88, 384, 'transport = rocketmq · 1 topic', 'run', 'Broker', 'Transport'),
+    900, () => row('outbox', 9006, ob(9006, 'ORDER_CREATED', 1006, 'PENDING', '10:00.0')),
+    1500, () => { relay('A', 'batch 9006', 'run', 'delivering'); obSet(9006, { state: 'SENDING', owner: 'A·e41b', lease: '10:30.0' }); },
+    2300, () => fly('send(keys=9006) → SEND_OK', RA, [330, 100], 'blue'),
+    3100, () => { obSet(9006, { state: 'SENT', owner: '', lease: '', sent: '10:00.1' }); relay('A', 'batch done', 'ok', 'idle'); }),
+  step('<em>SENT only means the broker received it, not that a consumer processed it</em>. If every order-events consumer is down, nobody consumes the message and 9006 stays <code>SENT</code> forever, never reaching <code>DONE</code>.',
+    0, () => { card('CG', 306, 134, 384, 'group order-events', 'rb', 'all down', 'Consumer'); },
+    800, () => note('What the three states mean', `<ul><li><b>SENDING</b>: an instance claimed it and is sending</li><li><b>SENT</b>: the broker acknowledged receipt</li><li><b>DONE</b>: a consumer finished the projection in its own transaction</li></ul>Only DONE means the work is really done.`, 182)),
+  step('So polling also redrives: a <code>SENT</code> row not <code>DONE</code> after 30 seconds goes back to <code>PENDING</code> to be claimed and sent again. It selects ids without locks and then updates row by row, <em>avoiding a range UPDATE that would lock many rows and block new event inserts</em>.',
+    0, () => { gone('note'); clock('10:10:30.200', true); hl('outbox', 9006, 'hlr'); },
+    500, () => code(`SELECT id FROM business_outbox                 -- no locks\nWHERE state = 'SENT' AND sent_at <= NOW(3) - 30s LIMIT 50;\n\nUPDATE business_outbox SET state = 'PENDING', next_attempt_at = NOW(3)\nWHERE id = ? AND state = 'SENT' AND sent_at <= NOW(3) - 30s;`, 182),
+    1500, () => obSet(9006, { state: 'PENDING', next_at: '10:30.2', sent: '10:00.1' }),
+    2200, () => { relay('A', 'batch 9006', 'run', 'delivering'); obSet(9006, { state: 'SENDING', owner: 'A·5b77', lease: '11:00.2' }); },
+    2900, () => fly('send(keys=9006) → SEND_OK', RA, [330, 100], 'blue'),
+    3600, () => { obSet(9006, { state: 'SENT', owner: '', lease: '', sent: '10:30.3' }); hl('outbox', 9006, null); relay('A', 'batch done', 'ok', 'idle'); }),
+  step('The consumers recover, and the broker now holds <em>two copies of 9006</em>. The first goes through all five steps: projection, inbox row, <code>DONE</code>.',
+    0, () => { clearMid(); clock('10:10:41.000', true); card('CG', 306, 134, 384, 'group order-events · consume()', 'run', 'recovered', 'Consumer'); },
+    500, () => fly(`${ENV(9006)} copy 1`, [330, 100], [330, 140], ''),
+    1200, () => gate('First copy of 9006', [['①② Envelope + lock & verify', ''], ['③ De-dup', ''], ['④⑤ Projection + inbox + DONE', '']], 182),
+    1600, () => { check(0, 'ok'); check(1, 'ok', 'first time'); },
+    2200, () => { row('event', 9006, { event_id: 9006, order_id: 1006, event_type: 'ORDER_CREATED' }); row('inbox', 'g9006', { group: 'order-events', event_id: 9006 }); obSet(9006, { state: 'DONE' }); check(2, 'ok', 'commit'); }),
+  step('The second copy arrives: it locks the row, sees <code>DONE</code> and returns <code>CONSUME_SUCCESS</code> without projecting. The consumer has two lines of defense: <em>the outbox row\'s DONE state and the inbox primary key (consumer_group, event_id)</em>; the projection itself is also idempotent on event_id.',
+    0, () => fly(`${ENV(9006)} copy 2`, [330, 100], [330, 140], 'grey'),
+    800, () => gate('Second copy of 9006', [['①② Envelope + lock & verify', ''], ['③ DONE or already in inbox', '']], 182),
+    1200, () => { check(0, 'ok'); check(1, 'go', 'duplicate, return'); txs('CG', 'ret', 'dup dropped'); },
+    1900, () => note('When the second line matters', `<ul><li><code>retryReview</code> reset the row to PENDING although this group already processed it: the inbox has it → <code>markDuplicateDone</code></li><li>The broker finished consumption before <code>SEND_OK</code> returned: <code>markConsumed</code> fills in <code>sent_at</code></li></ul>`, 300)),
+]);
+
+scene('⑩ Forged messages', [
+  step('Finally, someone injects a forged message into the topic: eventId 9006 but aggregateId 1002 and userId 99, posing as an order event. The envelope is perfectly well-formed, so <em>step ① cannot stop it</em>.',
+    0, () => { clearMid(); clock('10:12:00.000', true); card('CG', 306, 134, 384, 'group order-events · consume()', 'run', 'running', 'Consumer'); },
+    500, () => fly('📨 9006 {aggregateId: 1002, userId: 99}', [330, 100], [330, 140], 'red'),
+    1300, () => gate('Forged 9006', [['① Validate envelope', ''], ['② Lock 9006 in DB, verify fields', ''], ['③④⑤', '']], 182),
+    1700, () => check(0, 'ok', 'well-formed')),
+  step('Step ② checks <em>the outbox row in the database</em>: the real 9006 is order 1006, user 42. The fields do not match, it throws, and the transaction rolls back. Message data is never trusted; it only tells the consumer "which row to look at".',
+    0, () => { lock('outbox', 9006, 'X', 'CG'); hl('outbox', 9006, 'hlr'); },
+    700, () => check(1, 'no', 'aggregate 1002 ≠ 1006'),
+    1200, () => { unlock('CG'); txs('CG', 'rb', 'rolled back'); hl('outbox', 9006, null); }),
+  step('Recording the failure re-verifies it, finds it cannot be attributed to any real event, and writes <code>message_failure</code> keyed by the broker message id (<code>broker:…</code>), then acknowledges so it is not redelivered. <em>Not a single field of the real 9006 changed</em>.',
+    0, () => fly('INSERT message_failure', MID, toDB('failure'), 'red'),
+    800, () => row('failure', 'fb', { group: 'order-events', key: 'broker:7F00…A21C', event_id: 'NULL', reason: 'aggregate mismatch' }),
+    1400, () => { txs('CG', 'ret', 'quarantined · acked'); hl('outbox', 9006, 'hlg'); }),
+]);
+
+scene('Recap & questions', [
+  step('One state machine ties it together: <code>PENDING → SENDING → SENT → DONE</code>. Send backoff, lease expiry, early claims and SENT timeouts are back edges to PENDING or SENDING; 5 consume failures or 10 send failures lead to <code>REVIEW</code>.',
+    0, () => ov(`<div class="kp">business_outbox state machine</div>
+      <svg class="sm" width="880" height="330" viewBox="0 0 880 330">
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#8d99b8"/></marker></defs>
+        <g font-size="17" font-weight="700" text-anchor="middle">
+          <rect x="20" y="110" width="150" height="56" rx="10" fill="#1b2440" stroke="#5aa9ff"/><text x="95" y="144" fill="#9fd0ff">PENDING</text>
+          <rect x="250" y="110" width="150" height="56" rx="10" fill="#1b2440" stroke="#ffc857"/><text x="325" y="144" fill="#ffe08a">SENDING</text>
+          <rect x="480" y="110" width="150" height="56" rx="10" fill="#1b2440" stroke="#b58cff"/><text x="555" y="144" fill="#e4dcff">SENT</text>
+          <rect x="710" y="110" width="150" height="56" rx="10" fill="#11452f" stroke="#3ecf8e"/><text x="785" y="144" fill="#7ff0bc">DONE</text>
+          <rect x="365" y="258" width="150" height="56" rx="10" fill="#3a1a20" stroke="#ff6b6b"/><text x="440" y="292" fill="#ffb1b1">REVIEW</text>
+        </g>
+        <g stroke="#8d99b8" stroke-width="2" fill="none" marker-end="url(#ar)">
+          <path d="M170 130 L248 130"/><path d="M400 130 L478 130"/><path d="M630 130 L708 130"/>
+          <path d="M325 166 C 300 230, 120 230, 95 168"/>
+          <path d="M555 110 C 520 10, 140 10, 100 108"/>
+          <path d="M325 110 C 330 70, 300 70, 300 108"/>
+          <path d="M380 166 L420 256"/>
+          <path d="M365 290 C 200 300, 60 250, 70 168"/>
+          <path d="M400 150 C 520 200, 640 200, 735 168"/>
+        </g>
+        <g font-size="13" fill="#cfd8ee" text-anchor="middle">
+          <text x="209" y="122">claim</text><text x="439" y="122">SEND_OK</text><text x="669" y="122">consumed</text>
+          <text x="215" y="218">send backoff / before deliver_at</text>
+          <text x="330" y="22">SENT not DONE after 30 s → redrive</text>
+          <text x="232" y="92" font-size="12" fill="#ffe08a">lease expired → reclaim ↻</text>
+          <text x="500" y="240" fill="#ffb1b1">5 consume / 10 send failures</text>
+          <text x="170" y="306" fill="#ffb1b1">retryReview</text>
+          <text x="610" y="206" fill="#7ff0bc">local: consumed synchronously → DONE</text>
+        </g>
+      </svg>`)),
+  step('Pause and think, question 1: the relay sent the message but crashed before <code>markSent</code>. What happens next, and is the final result correct?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">The relay has sent 9004 to the broker and crashes before <code>markSent</code>. What happens next? Can the event be lost, or applied twice?</div>`)),
+  step('Answer: the row stays SENDING; after the 30 s lease expires the next claim SQL selects it and resends, so the consumer may get two copies; the second locks the row, sees DONE or the inbox entry, and is dropped. Nothing is lost and nothing applies twice.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>The row stays <code>SENDING</code> with the crashed batch as owner; there is no notification</li>
+      <li>After 30 s, <code>lease_until &lt; NOW(3)</code>: the first branch of the claim SQL picks it and resends under a new owner</li>
+      <li>The broker may hold two copies: the first goes through five steps to <code>DONE</code>; the second locks the row, sees <code>DONE</code> / inbox and is dropped</li>
+      <li>Conclusion: <b>at-least-once delivery + exactly-once effect</b>; the old instance cannot change anything when it wakes, since its writes carry the old owner</li></ul></div>`)),
+  step('Pause and think, question 2: why does claiming use READ COMMITTED plus FOR UPDATE SKIP LOCKED? What does each solve?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">Why does the claim transaction run at <code>READ COMMITTED</code>, and why does the SQL use <code>FOR UPDATE SKIP LOCKED</code>? What does each solve? Why commit right after claiming and deliver outside the transaction?</div>`)),
+  step('Answer: RC is an isolation level that removes gap locks so new event inserts are never blocked; SKIP LOCKED is a locking behavior that keeps instances from queuing behind each other; committing right after the claim keeps locks from spanning network calls, and the lease replaces the lock to say "who is working on it".',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li><b>READ COMMITTED</b>: isolation level. Locking by state and time range takes no gap locks, so business transactions inserting outbox rows are not blocked</li>
+      <li><b>SKIP LOCKED</b>: locking behavior. Rows held by other instances are skipped; relays claim in parallel without waiting</li>
+      <li><b>Commit immediately</b>: publishing may be slow or time out; never hold row locks across the network. After commit, <code>SENDING + owner + lease_until</code> says "in progress" and can be taken over on expiry</li></ul></div>`)),
+  step('Pause and think, question 3: why does the consumer lock the outbox row and verify every field instead of trusting the message body? Where does a forged message end up?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">Why does the consumer first lock the outbox row with <code>FOR UPDATE</code> and verify every field instead of trusting the message body? Where does a forged message end up, and can it change a real event?</div>`)),
+  step('Answer: the message body is only a locator and the row in the database is the truth; locking the row also serializes copies of the same event so DONE and inbox de-dup are reliable. A forged message fails verification and is recorded in message_failure under its broker id, leaving the real event untouched.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li>The message carries only locator fields; <b>the truth is the outbox row in the database</b> — kind, aggregate_id, user_id, occurred and deliver time must all match</li>
+      <li>Locking the row makes copies of the same event queue up; the later one always sees <code>DONE</code>, so de-dup is reliable</li>
+      <li>Forged message: step ② fails and rolls back; it cannot be attributed → <code>message_failure</code> (key = <code>broker:messageId</code>), acknowledged and not redelivered, <b>no real task is modified</b></li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

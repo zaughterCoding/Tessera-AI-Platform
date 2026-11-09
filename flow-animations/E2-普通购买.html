@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E2 普通购买链路</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E2-standard-purchase.html', home: 'index.html', title: 'E2 · 普通购买、支付与关单', docTitle: 'E2 普通购买链路', example: '例子：用户 42 · 商品 7（标准积分包 ¥9.90）',
+  lanes: [['浏览器', '用户 42'], ['应用服务', '事务 · 判断'], ['MySQL', '表与行锁']] });
+/* ============ 剧本 ============ */
+const KEY = '3f9a7c…d21e', DIG = '9b1e4d…';
+const TY = { product: 88, request: 150, order: 252, payment: 356, outbox: 446 };
+const FE = [250, 210], APP = [330, 120], APPR = [600, 240];
+const toDB = tid => [760, TY[tid] + 4];
+
+scene('片头', [
+  step('这一集跟着用户 42 买一个 <em>标准积分包</em>：从点下“立即购买”，到付款成功，或者超时被关单。整条链路只碰 MySQL，<em>没有 Redis，也没有分布式锁</em>。',
+    0, () => ov(`<div class="kp">链路动画 · 第 2 集</div><h1>普通购买、支付与关单</h1><h2>一次购买意图只产生一张订单；支付和关单，只有一方能赢</h2>
+      <ol><li>请求键 + 唯一键：重复请求怎么<b>只建一单</b></li><li>订单快照 + outbox：<b>同一个事务</b>里写下“要做的事”</li><li>前端三种结果：什么时候<b>必须保留请求键</b></li><li>支付与关单：<b>同一把行锁 + 互补条件</b></li></ol>`)),
+  step('画面分三栏：左边是浏览器，中间是应用服务里正在跑的事务和判断，右边是 MySQL 里的五张表。<em>斜纹虚线的行表示还没提交</em>，其他事务看不到它。',
+    0, () => { ovOff(); },
+    300, () => {
+      feInit(); clock('10:00:00.120');
+      table('product', 722, TY.product, 532, 'usage_product', '商品', [['id', 'id', 40], ['title', 'title', 110], ['status', 'status', 60], ['sale_mode', 'sale_mode', 80], ['price', 'price(分)', 80]]);
+      row('product', 7, { id: 7, title: '标准积分包', status: 1, sale_mode: 0, price: 990 });
+    },
+    700, () => table('request', 722, TY.request, 532, 'purchase_request', '幂等台账 · 唯一键 (user_id, request_key)', [['id', 'id', 44], ['user_id', 'user_id', 62], ['request_key', 'request_key', 110], ['request_digest', 'digest', 80], ['order_id', 'order_id', 76]]),
+    1000, () => table('order', 722, TY.order, 532, 'purchase_order', '订单快照', [['id', 'id', 46], ['user_id', 'user', 42], ['status', 'status', 82], ['amount', 'amount', 56], ['expire_at', 'expire_at', 96], ['paid_at', 'paid / closed', 96]]),
+    1300, () => table('payment', 722, TY.payment, 532, 'purchase_payment', '支付事实 · 唯一键 order_id', [['order_id', 'order_id', 70], ['channel', 'channel', 70], ['amount', 'amount', 60], ['paid_at', 'paid_at', 96]]),
+    1600, () => table('outbox', 722, TY.outbox, 532, 'business_outbox', '可靠事件 · 和业务同事务写入', [['id', 'id', 44], ['kind', 'kind', 120], ['aggregate_id', 'aggregate', 70], ['state', 'state', 74], ['deliver_at', 'deliver_at', 96]]),
+    2000, () => note('图例', `<ul><li><span class="bd X">🔒X T1</span> 排他锁：别人读写都要等</li><li><span class="bd S">🔒S T1</span> 共享锁：可以一起读，不能改</li><li><span class="bd wait">⏳T2 等锁</span> 正在排队等锁</li><li><span class="bd tx">未提交·T1</span> 该行还在事务 T1 里</li></ul>`, 300)),
+]);
+
+scene('① 请求键', [
+  step('点击购买之前，前端先在 <code>sessionStorage</code> 里取请求键：没有就生成一个 32 位随机 hex，有就直接复用。它代表<em>“这一次购买意图”</em>，重试时不会变。',
+    0, () => { gone('note'); press(); },
+    500, () => feKey(KEY),
+    900, () => note('为什么放 sessionStorage？', `<ul><li>刷新页面键还在，重试仍然是“同一次购买”</li><li>关掉标签页就清空，不会污染下一次购买</li><li>按商品分 scope：<code>purchase:7</code>，买别的商品用别的键</li></ul>`, 300)),
+  step('请求带着商品号和请求键进入后端的 <code>create()</code>。整个方法是一个 <code>@Transactional</code> 事务：后面所有写入，<em>要么一起提交，要么一起消失</em>。',
+    0, () => { fly('POST /trade/orders { productId: 7, requestKey }', FE, APP); feBtn('提交中…', 'off'); gone('note'); },
+    1000, () => tx('T1', 0, 'create() · 第一次点击', 'run')),
+]);
+
+scene('② 锁读商品', [
+  step('第一步读商品，用的是 <code>FOR SHARE</code> 共享锁。共享锁之间互不冲突，很多人同时下单也能并行读；但管理员要下架、改价得拿排他锁，<em>必须等这些下单事务提交</em>。',
+    0, () => code('SELECT p.*, a.status FROM usage_product p\nJOIN ai_application a ON a.id = p.application_id\nWHERE p.id = 7\nFOR SHARE'),
+    700, () => { fly('读商品', APPR, toDB('product'), 'blue'); },
+    1500, () => { lock('product', 7, 'S', 'T1'); hl('product', 7); }),
+  step('锁住之后再判断能不能卖：商品上架、应用已发布、<code>sale_mode</code> 必须是 0。<code>sale_mode=1</code> 是限量活动，要走秒杀入口。任何一项不满足就返回 404，<em>此时还没写任何一行</em>。',
+    0, () => gate('这个商品能按普通方式下单吗？', [['商品已上架 status = 1', ''], ['所属应用已发布', ''], ['sale_mode = 0（普通售卖）', '']]),
+    800, () => check(0, 'ok', '是'), 1400, () => check(1, 'ok', '是'), 2000, () => check(2, 'ok', '是 → 继续'),
+    2400, () => hl('product', 7, null)),
+  step('同时算出请求摘要 <code>digest</code>，它是“这次买的是什么”的指纹。如果同一个请求键后来被拿去买别的商品，就靠它识别出来。',
+    0, () => note('请求摘要 digest', `<code>sha256("purchase-v1|product=7")</code> → <code>${DIG}</code><br>请求键回答“是不是同一次操作”，摘要回答“内容有没有被换掉”。两者都对上，才能把旧结果原样返回。`)),
+]);
+
+scene('③ 请求行竞争', [
+  step('现实里同一个请求可能到达两次：用户双击，或者网关超时后前端重发。我们让<em>第二个请求 T2 同时进来</em>，看系统怎么保证只建一单。',
+    0, () => { gone('note'); gone('gate'); },
+    200, () => fly('POST（同一个 requestKey）', FE, [330, 166], 'blue'),
+    1100, () => { tx('T2', 1, 'create() · 重复请求', 'run'); lock('product', 7, 'S', 'T2'); }),
+  step('T1 直接插入请求行，靠唯一键 <code>(user_id, request_key)</code> 裁决。为什么不先查再插？两个请求同时查，都会看到“没有”，然后都去插。<em>让唯一键来裁决竞争</em>，数据库保证只有一行。',
+    0, () => code('INSERT INTO purchase_request(user_id, request_key, request_digest)\nVALUES (42, \'3f9a7c…\', \'9b1e4d…\')\nON DUPLICATE KEY UPDATE user_id = user_id'),
+    800, () => fly('INSERT', APPR, toDB('request'), 'blue'),
+    1600, () => { row('request', 501, { id: 501, user_id: 42, request_key: KEY, request_digest: DIG, order_id: 'NULL' }, 'T1'); lock('request', 501, 'X', 'T1'); }),
+  step('T2 执行同一条 INSERT，撞上同一个唯一键。可 T1 还没提交，T2 不知道这一行最后是否存在，<em>只能排队等 T1 的锁</em>。<code>ON DUPLICATE KEY</code> 保证它最后不报错，而是落到“已存在”。',
+    0, () => fly('INSERT（同键）', [600, 290], toDB('request'), 'grey'),
+    900, () => { waitLock('request', 501, 'T2'); txs('T2', 'wait'); }),
+  step('T1 再用 <code>FOR UPDATE</code> 锁定读出这一行。插入没报错，不等于这行是自己插的，所以必须<em>锁住之后读出它的真实状态</em>，再决定怎么走。',
+    0, () => code('SELECT * FROM purchase_request\nWHERE user_id = 42 AND request_key = \'3f9a7c…\'\nFOR UPDATE'),
+    800, () => hl('request', 501)),
+]);
+
+scene('④ 判重', [
+  step('两道判断：摘要不一致，说明同一个键被拿去买了别的东西，返回 409；<code>order_id</code> 已经有值，说明之前建过单，直接返回那张订单。注意<em>判重看的是请求行的 order_id</em>，不去扫订单表。',
+    0, () => gate('这一行处于什么状态？', [['digest 和本次一致？', '否 → 409 CONFLICT'], ['order_id 已有值？', '是 → 返回原订单'], ['都不是：第一次处理', '']]),
+    900, () => check(0, 'ok', '一致'),
+    1600, () => check(1, 'ok', 'NULL，没有'),
+    2300, () => check(2, 'go', '继续建单'),
+    2600, () => hl('request', 501, null)),
+]);
+
+scene('⑤ 订单快照', [
+  step('写订单快照：商品标题、积分、价格、有效期整份复制进订单，以后商品改价、下架都不影响这张订单。状态是 <code>UNPAID</code>，截止时间用<em>数据库的 NOW(3) + 15 分钟</em>，不用应用服务器的时钟。',
+    0, () => { gone('gate'); code('INSERT INTO purchase_order(..., status, expire_at)\nVALUES (..., \'UNPAID\',\n  DATE_ADD(NOW(3), INTERVAL 15 MINUTE))\n-- id 由自增生成：1001'); },
+    900, () => fly('INSERT 订单', APPR, toDB('order'), 'blue'),
+    1700, () => row('order', 1001, { id: 1001, user_id: 42, status: 'UNPAID', amount: 990, expire_at: '10:15:00.120', paid_at: '' }, 'T1')),
+  step('如果商品免费，同一条 INSERT 直接写成 <code>PAID</code>，再补一条 <code>FREE</code> 支付记录。它没有截止时间，也就不用关单，outbox 写的是 <code>ORDER_CLAIMED</code>。',
+    0, () => note('分支：免费商品', `<ul><li><code>status = PAID</code>，<code>funding = FREE</code>，<code>paid_at = NOW(3)</code></li><li>同事务插入 <code>purchase_payment(channel = FREE, amount = 0)</code></li><li>outbox：<code>ORDER_CREATED</code> + <code>ORDER_CLAIMED</code></li></ul>本例是付费商品，继续走 UNPAID 分支。`)),
+]);
+
+scene('⑥ 同事务写 outbox', [
+  step('同一个事务里写两条 outbox：<code>ORDER_CREATED</code> 用来记订单历史；<code>ORDER_EXPIRE</code> 是一条<em>定时任务</em>，<code>deliver_at</code> 等于订单截止时间，到点才会投递，去触发关单。',
+    0, () => { gone('note'); code('INSERT INTO business_outbox(kind, aggregate_id, state, ...)\nVALUES (\'ORDER_CREATED\', 1001, \'PENDING\', ...)\n\nINSERT INTO business_outbox(kind, ..., deliver_at)\nVALUES (\'ORDER_EXPIRE\', 1001, ..., \'10:15:00.120\')'); },
+    900, () => fly('INSERT ×2', APPR, toDB('outbox'), 'blue'),
+    1700, () => row('outbox', 9001, { id: 9001, kind: 'ORDER_CREATED', aggregate_id: 1001, state: 'PENDING', deliver_at: '' }, 'T1'),
+    2200, () => row('outbox', 9002, { id: 9002, kind: 'ORDER_EXPIRE', aggregate_id: 1001, state: 'PENDING', deliver_at: '10:15:00.120' }, 'T1')),
+  step('写 outbox 的方法是 <code>@Transactional(propagation = MANDATORY)</code>：调用时必须已经在事务里，否则直接报错。这样就<em>不可能出现订单回滚了、消息却发出去了</em>，反过来也不会。',
+    0, () => note('为什么不在这里直接发 MQ？', `<ul><li>先发 MQ 再提交：提交失败，消息已经收不回来</li><li>先提交再发 MQ：进程在两步之间崩溃，消息永远丢了</li><li>outbox：<b>消息就是业务表里的一行</b>，和订单一起提交或一起消失；投递交给中继，失败可以重试（E1 详讲）</li></ul>`)),
+]);
+
+scene('⑦ 回填订单号', [
+  step('最后把订单号回填到请求行。必须放在最后，因为订单号是 <code>insertOrder</code> 时自增生成的。条件 <code>order_id IS NULL</code> 再保险一次：影响行数不是 1，<em>整个事务回滚</em>。',
+    0, () => { gone('note'); code('UPDATE purchase_request SET order_id = 1001\nWHERE id = 501 AND order_id IS NULL\n-- 影响行数必须 = 1，否则抛 409 回滚'); },
+    900, () => fly('UPDATE', APPR, toDB('request'), 'blue'),
+    1700, () => cell('request', 501, 'order_id', '1001', 'T1')),
+]);
+
+scene('⑧ 提交与重复请求', [
+  step('T1 提交：请求行、订单、两条 outbox <em>同时生效</em>，锁全部释放。提交之后才唤醒 outbox 中继；如果事务回滚了，这次唤醒根本不会发生。',
+    0, () => { commit('T1'); txs('T1', 'ok'); gone('code'); },
+    600, () => { ping(980, TY.outbox + 50); tagAt('wake', 'afterCommit → 唤醒 outbox 中继', 960, 416, 'ok'); },
+    1200, () => { fly('200 · 订单 1001', [330, 100], [60, 380], 'green'); },
+    2100, () => { feSt('✅ 下单成功：订单 <b>1001</b><br>待支付 ¥9.90，15 分钟内有效<br>请求键已清除', 'ok'); feBtn('去支付', 'ok'); feKey('（空）'); }),
+  step('T2 终于拿到锁。它的 INSERT 什么也没写，<code>FOR UPDATE</code> 读到的请求行已经带着 <code>order_id = 1001</code>，于是直接返回同一张订单。<em>两个请求，一张订单</em>，没用 Redis，也没用分布式锁。',
+    0, () => { gone('wake'); lock('request', 501, 'X', 'T2'); txs('T2', 'run'); hl('request', 501); },
+    700, () => gate('T2：这一行处于什么状态？', [['digest 和本次一致？', ''], ['order_id 已有值？', '']]),
+    1300, () => check(0, 'ok', '一致'),
+    1900, () => check(1, 'go', '1001 → 返回原订单'),
+    2600, () => { unlock('T2'); txs('T2', 'ret', '返回 1001'); hl('request', 501, null); }),
+]);
+
+scene('⑨ 回滚对照', [
+  step('换一个失败的例子：事务 T3（用户 42 买商品 8）已经写了请求行、订单和两条 outbox，回填订单号时出错抛异常。',
+    0, () => { clearApp(); gone('gate'); },
+    500, () => tx('T3', 0, 'create() · 另一个商品（演示失败）', 'run'),
+    900, () => row('request', 502, { id: 502, user_id: 42, request_key: 'a81c0f…77b2', request_digest: 'e03a5c…', order_id: 'NULL' }, 'T3'),
+    1300, () => row('order', 1002, { id: 1002, user_id: 42, status: 'UNPAID', amount: 1990, expire_at: '10:16:10.400', paid_at: '' }, 'T3'),
+    1700, () => row('outbox', 9003, { id: 9003, kind: 'ORDER_CREATED', aggregate_id: 1002, state: 'PENDING', deliver_at: '' }, 'T3'),
+    2000, () => row('outbox', 9004, { id: 9004, kind: 'ORDER_EXPIRE', aggregate_id: 1002, state: 'PENDING', deliver_at: '10:16:10.400' }, 'T3'),
+    2500, () => code('UPDATE purchase_request SET order_id = 1002\nWHERE id = 502 AND order_id IS NULL\n-- ✗ 抛出异常')),
+  step('事务回滚，<em>四行一起消失</em>：没有孤儿订单，也没有指向不存在订单的消息，afterCommit 也不会触发。被用掉的自增号不会回收，所以 id 出现空洞是正常的。',
+    0, () => { rollback('T3'); txs('T3', 'rb'); },
+    1400, () => note('事务边界就是一致性边界', `订单和“要做的事”（outbox）在同一个事务里：<br><b>要么都在，要么都不在。</b><br>这正是 outbox 能保证“业务成功 ⇔ 事件一定会被投递”的前提。`, 300)),
+]);
+
+scene('⑩ 前端三种结果', [
+  step('前端拿到响应后分三种情况。成功：清掉请求键，跳到订单页。4xx 这类明确失败：也清掉，下次购买用新键。最危险的是第三种，<em>结果未知</em>。',
+    0, () => { clearApp(); gone('fe_st'); feBtn('立即购买'); },
+    400, () => feSt(`<div class="br"><i>✅</i><div><b>成功</b>：清键 → 跳转订单页</div></div><div class="br"><i>⛔</i><div><b>4xx</b>（404 / 409）：清键 + 提示原因</div></div><div class="br"><i>❓</i><div><b>结果未知</b>（504 / 断网）：<b style="color:var(--yellow)">保留键</b> + “找回订单”</div></div>`)),
+  step('回到 T1 那次请求，假设它在后端<em>已经提交</em>，但响应在网关超时丢了。前端只看到 504，不知道到底有没有建单。',
+    0, () => { feKey(KEY); tx('T1', 0, 'create() · 已提交', 'ok'); },
+    500, () => fly('200 · 订单 1001', [330, 100], [60, 380], 'green', { lost: true }),
+    1400, () => { feSt('❓ <b>下单结果未知</b><br>网关 504：后端可能已经建单<br>请求键仍保留：<code>3f9a7c…</code>', 'warn'); feBtn('找回订单', 'warn'); }),
+  step('点“找回订单”，用同一个键再发一次。后端在请求行上查到 <code>order_id = 1001</code>，原样返回。如果刚才把键清掉了，重试就会生成新键，<em>建出第二张订单</em>。',
+    0, () => { press(); fly('POST（同一个 requestKey）', FE, APP, 'blue'); },
+    1000, () => { tx('T4', 1, 'create() · 找回订单', 'run'); hl('request', 501); },
+    1700, () => { gate('T4：请求行状态', [['digest 一致', '✓'], ['order_id = 1001', '返回原订单']]); check(0, 'ok'); check(1, 'go'); },
+    2400, () => { txs('T4', 'ret', '返回 1001'); hl('request', 501, null); fly('200 · 订单 1001', [330, 150], [60, 380], 'green'); },
+    3300, () => { feSt('✅ 找回成功：订单 <b>1001</b>，清除请求键', 'ok'); feKey('（空）'); feBtn('去支付', 'ok'); }),
+]);
+
+scene('⑪ 支付', [
+  step('3 分钟后用户付款，请求里带着页面上看到的金额 990。支付事务先用 <code>FOR UPDATE</code> 锁住订单行，<em>这把锁就是后面和关单竞争的关键</em>。',
+    0, () => { clearApp(); clock('10:03:20.500', true); feUrl('/orders/1001'); },
+    500, () => { press(); fly('POST /trade/orders/1001/pay { expectedAmount: 990 }', FE, APP, 'blue'); },
+    1400, () => { tx('T5', 0, 'pay() · 订单 1001', 'run'); code('SELECT * FROM purchase_order WHERE id = 1001\nFOR UPDATE'); },
+    2100, () => { lock('order', 1001, 'X', 'T5'); hl('order', 1001); }),
+  step('锁住后逐项判断：订单得是本人的；金额要和页面上的一致，防止用户按过期的价格付款；已经 <code>PAID</code> 就直接返回，所以<em>重复点支付是幂等的</em>；只有 <code>UNPAID</code> 才能继续。',
+    0, () => gate('这单能付吗？', [['订单属于用户 42？', '否 → 404'], ['金额 990 = expectedAmount？', '否 → 409'], ['已经 PAID？', '是 → 原样返回'], ['状态是 UNPAID？', '否 → 409']]),
+    700, () => check(0, 'ok', '是'), 1300, () => check(1, 'ok', '一致'), 1900, () => check(2, 'ok', '否'), 2500, () => check(3, 'go', '是 → 继续')),
+  step('条件更新把所有前提再写进 <code>WHERE</code>：本人、待支付、金额一致，并且 <code>expire_at &gt; NOW(3)</code>。截止时间以数据库时钟为准，影响行数不是 1 就返回 409。',
+    0, () => { gone('gate'); code('UPDATE purchase_order\nSET status = \'PAID\', funding = \'MOCK\', paid_at = NOW(3)\nWHERE id = 1001 AND user_id = 42 AND status = \'UNPAID\'\n  AND amount = 990 AND expire_at > NOW(3)'); },
+    900, () => fly('UPDATE', APPR, toDB('order'), 'blue'),
+    1700, () => { cell('order', 1001, 'status', 'PAID', 'T5'); cell('order', 1001, 'paid_at', '10:03:20.503', 'T5'); }),
+  step('写支付事实（<code>order_id</code> 唯一，一单只能付一次），再写 <code>ORDER_PAID</code>。注意<em>支付事务不给用户加积分</em>：额度由 <code>ORDER_PAID</code> 经 outbox 异步发放，权益那一集再讲。',
+    0, () => { fly('INSERT ×2', APPR, toDB('payment'), 'blue'); },
+    800, () => row('payment', 1001, { order_id: 1001, channel: 'MOCK', amount: 990, paid_at: '10:03:20.503' }, 'T5'),
+    1200, () => row('outbox', 9005, { id: 9005, kind: 'ORDER_PAID', aggregate_id: 1001, state: 'PENDING', deliver_at: '' }, 'T5'),
+    2200, () => { commit('T5'); txs('T5', 'ok'); hl('order', 1001, 'hlg'); gone('code'); },
+    2700, () => { feSt('✅ 支付成功：订单 <b>1001</b> 已支付<br>积分稍后到账（异步发放）', 'ok'); feBtn('已支付', 'off'); }),
+]);
+
+scene('⑫ 关单三条路', [
+  step('再看没付款的订单。用户 42 另下了一单 <b>1003</b>，一直没付。关单有三条路，它们最后都会<em>先锁订单行，再判断状态</em>。',
+    0, () => { clearApp(); hl('order', 1001, null); dim('order', 1001); dim('payment', 1001); dim('request', 501); clock('10:05:00.000', true); },
+    300, () => { cell('outbox', 9001, 'state', 'DONE'); cell('outbox', 9005, 'state', 'DONE'); },
+    1000, () => { rmRow('outbox', 9001); rmRow('outbox', 9005); },
+    1500, () => { row('order', 1003, { id: 1003, user_id: 42, status: 'UNPAID', amount: 990, expire_at: '10:20:00.000', paid_at: '' }); },
+    1900, () => row('outbox', 9007, { id: 9007, kind: 'ORDER_EXPIRE', aggregate_id: 1003, state: 'PENDING', deliver_at: '10:20:00.000' }),
+    2300, () => note('关单的三个入口', `<ul><li><b>① 延迟事件</b>：outbox 里的 <code>ORDER_EXPIRE</code> 到 <code>deliver_at</code> 才投递 → <code>closeExpired</code></li><li><b>② 兜底扫描</b>：每 5 秒查一次 <code>status='UNPAID' AND expire_at &lt;= NOW(3)</code> → <code>closeExpired</code></li><li><b>③ 用户取消</b>：<code>cancelUnpaid</code>，不看截止时间</li></ul>`, 182)),
+  step('10:15 到了，订单 1001 的 <code>ORDER_EXPIRE</code> 照样被投递：事件并不知道这单已经付过钱。关单逻辑锁住订单行后看到 <code>PAID</code>，直接返回。<em>事件只是提醒你去检查，真正的判断永远在锁里做</em>。',
+    0, () => { gone('note'); clock('10:15:00.120', true); hl('outbox', 9002); cell('outbox', 9002, 'state', 'SENDING'); },
+    800, () => fly('ORDER_EXPIRE · 1001', [800, TY.outbox + 50], [330, 100], 'grey'),
+    1700, () => { tx('T6', 0, 'closeExpired(1001) · 延迟事件', 'run'); lock('order', 1001, 'X', 'T6'); dim('order', 1001, false); hl('order', 1001); },
+    2300, () => gate('锁内判断', [['status = UNPAID？', '']]),
+    2700, () => check(0, 'no', 'PAID → return false'),
+    3300, () => { unlock('T6'); txs('T6', 'ret'); hl('order', 1001, null); dim('order', 1001); cell('outbox', 9002, 'state', 'DONE'); hl('outbox', 9002, null); }),
+  step('10:20 订单 1003 到期，延迟事件 T7 先到，锁住订单行；就在同一时刻，兜底扫描也查出了 1003，派出的 T8 只能排队等锁。',
+    0, () => { clearApp(); clock('10:20:00.000', true); hl('outbox', 9007); cell('outbox', 9007, 'state', 'SENDING'); },
+    800, () => fly('ORDER_EXPIRE · 1003', [800, TY.outbox + 50], [330, 100], 'grey'),
+    1600, () => { tx('T7', 0, 'closeExpired(1003) · 延迟事件', 'run'); lock('order', 1003, 'X', 'T7'); hl('order', 1003); },
+    2300, () => { tx('T8', 1, 'closeExpired(1003) · 5 秒兜底扫描', 'wait'); waitLock('order', 1003, 'T8'); }),
+  step('T7 锁内确认还是 <code>UNPAID</code>，再用条件更新关单：<code>expire_at &lt;= NOW(3)</code>。改成 <code>CANCELLED</code>，同事务写 <code>ORDER_CLOSED</code>，提交。',
+    0, () => code('UPDATE purchase_order\nSET status = \'CANCELLED\', closed_at = NOW(3)\nWHERE id = 1003 AND status = \'UNPAID\'\n  AND expire_at <= NOW(3)'),
+    900, () => { cell('order', 1003, 'status', 'CANCELLED', 'T7'); cell('order', 1003, 'paid_at', '10:20:00.004', 'T7'); },
+    1500, () => row('outbox', 9008, { id: 9008, kind: 'ORDER_CLOSED', aggregate_id: 1003, state: 'PENDING', deliver_at: '' }, 'T7'),
+    2400, () => { commit('T7'); txs('T7', 'ok'); cell('outbox', 9007, 'state', 'DONE'); hl('outbox', 9007, null); }),
+  step('T8 拿到锁，看到的已经是 <code>CANCELLED</code>，直接返回 false。重复触发是安全的：<em>每条路都是先锁行，再看状态</em>。',
+    0, () => { lock('order', 1003, 'X', 'T8'); txs('T8', 'run'); },
+    700, () => gate('T8 锁内判断', [['status = UNPAID？', '']]),
+    1200, () => check(0, 'no', 'CANCELLED → return false'),
+    1900, () => { unlock('T8'); txs('T8', 'ret'); hl('order', 1003, null); }),
+  step('还有两个细节。事件提前到达时，条件更新影响 0 行，代码会<em>重新登记一条 ORDER_EXPIRE</em>，关单的责任一直挂在 outbox 里。用户取消已关闭的单是幂等的；取消已支付的单返回 409，因为这里没有退款。',
+    0, () => { clearApp(); },
+    300, () => note('closeExpired 影响 0 行时', `锁内仍是 <code>UNPAID</code>，但 <code>expire_at &gt; NOW(3)</code>，说明还没到点：<br>→ <code>appendEventAt(ORDER_EXPIRE, deliver_at = expire_at)</code><br>不丢责任，到点再来。`, 88),
+    900, () => note2('cancelUnpaid 的状态规则', `<ul><li>已 <code>CANCELLED</code> → 直接返回（幂等，不会多写事件）</li><li>已 <code>PAID</code> → 409，<b>取消不是退款</b></li><li><code>UNPAID</code> → 条件更新为 <code>CANCELLED</code> + <code>ORDER_CLOSED</code></li></ul>`, 250)),
+]);
+
+scene('⑬ 支付与关单竞争', [
+  step('最后看最尖锐的竞争：订单 <b>1005</b> 截止于 <code>10:30:00.000</code>。在截止前后几毫秒，<em>支付请求和关单任务同时到达</em>。',
+    0, () => { gone('note'); gone('note2'); dim('order', 1003); rmRow('outbox', 9002); rmRow('outbox', 9007); rmRow('outbox', 9008); clock('10:29:59.990', true); },
+    900, () => row('order', 1005, { id: 1005, user_id: 42, status: 'UNPAID', amount: 990, expire_at: '10:30:00.000', paid_at: '' }),
+    1400, () => note('两条 SQL 的条件', `支付：<code>... AND expire_at &gt; NOW(3)</code><br>关单：<code>... AND expire_at &lt;= NOW(3)</code><br>再加上两边都先 <code>FOR UPDATE</code> 锁同一行。下面分别看两种到达顺序。`, 300)),
+  step('<b>情况 A：支付先拿到锁。</b>10:29:59.998，支付锁住 1005，<code>expire_at &gt; NOW(3)</code> 成立，改成 <code>PAID</code>。2 毫秒后关单到达，只能排队。',
+    0, () => { gone('note'); clock('10:29:59.998', true); fly('pay(1005)', FE, APP, 'blue'); },
+    900, () => { tx('P', 0, 'pay(1005)', 'run'); lock('order', 1005, 'X', 'P'); hl('order', 1005); },
+    1500, () => { cell('order', 1005, 'status', 'PAID', 'P'); cell('order', 1005, 'paid_at', '10:29:59.998', 'P'); },
+    2100, () => { clock('10:30:00.000', true); tx('C', 1, 'closeExpired(1005)', 'wait'); waitLock('order', 1005, 'C'); }),
+  step('支付写入支付事实和 <code>ORDER_PAID</code> 后提交。关单拿到锁，看到 <code>PAID</code>，直接返回。<em>用户付到了钱，订单没被关</em>。',
+    0, () => row('payment', 1005, { order_id: 1005, channel: 'MOCK', amount: 990, paid_at: '10:29:59.998' }, 'P'),
+    400, () => row('outbox', 9010, { id: 9010, kind: 'ORDER_PAID', aggregate_id: 1005, state: 'PENDING', deliver_at: '' }, 'P'),
+    1100, () => { commit('P'); txs('P', 'ok'); },
+    1600, () => { lock('order', 1005, 'X', 'C'); txs('C', 'run'); },
+    2100, () => gate('关单锁内判断', [['status = UNPAID？', '']]),
+    2500, () => check(0, 'no', 'PAID → return false'),
+    3000, () => { unlock('C'); txs('C', 'ret'); hl('order', 1005, 'hlg'); feUrl('/orders/1005'); feSt('✅ 支付成功：订单 <b>1005</b>', 'ok'); }),
+  step('<b>倒带，情况 B：关单先拿到锁。</b>10:30:00.001，关单锁住 1005，<code>expire_at &lt;= NOW(3)</code> 成立，改成 <code>CANCELLED</code>；支付晚 1 毫秒到达，只能排队。',
+    0, () => { clearApp(); rmRow('payment', 1005); rmRow('outbox', 9010); cell('order', 1005, 'status', 'UNPAID'); cell('order', 1005, 'paid_at', ''); hl('order', 1005, null); clock('10:30:00.001', true); },
+    900, () => { tx('C', 0, 'closeExpired(1005)', 'run'); lock('order', 1005, 'X', 'C'); hl('order', 1005); gone('fe_st'); },
+    1500, () => { cell('order', 1005, 'status', 'CANCELLED', 'C'); cell('order', 1005, 'paid_at', '10:30:00.001', 'C'); },
+    2000, () => row('outbox', 9010, { id: 9010, kind: 'ORDER_CLOSED', aggregate_id: 1005, state: 'PENDING', deliver_at: '' }, 'C'),
+    2400, () => { clock('10:30:00.002', true); fly('pay(1005)', FE, [330, 166], 'blue'); },
+    3300, () => { tx('P', 1, 'pay(1005)', 'wait'); waitLock('order', 1005, 'P'); }),
+  step('关单提交。支付拿到锁，看到 <code>CANCELLED</code>，不是 <code>UNPAID</code>，返回 409，前端提示订单已关闭。<em>不会出现“钱付了，订单却被关”</em>。',
+    0, () => { commit('C'); txs('C', 'ok'); },
+    600, () => { lock('order', 1005, 'X', 'P'); txs('P', 'run'); },
+    1100, () => gate('支付锁内判断', [['已经 PAID？', ''], ['状态是 UNPAID？', '']]),
+    1500, () => check(0, 'ok', '否'), 2000, () => check(1, 'no', 'CANCELLED → 409'),
+    2600, () => { unlock('P'); txs('P', 'rb', '409 已回滚'); hl('order', 1005, 'hlr'); fly('409 订单已关闭', [330, 150], [60, 380], 'red'); },
+    3400, () => feSt('⛔ 支付失败：订单 1005 已超时关闭', 'bad')),
+  step('总结一下为什么只有一方能赢：<em>同一把行锁让两边串行</em>，后到的一方一定能看到先到者的结果；两个条件又是互补的，任何一个时刻只有一边成立，<em>恰好等于截止时间的那一毫秒归关单</em>。',
+    0, () => { clearApp(); },
+    300, () => put('tl', 'note', `<div class="nt">时间轴上的互补条件</div>
+      <svg width="356" height="96" viewBox="0 0 356 96">
+        <line x1="10" y1="50" x2="346" y2="50" stroke="#8d99b8" stroke-width="2"/>
+        <rect x="10" y="38" width="168" height="24" rx="4" fill="rgba(62,207,142,.25)"/>
+        <rect x="178" y="38" width="168" height="24" rx="4" fill="rgba(255,107,107,.25)"/>
+        <line x1="178" y1="22" x2="178" y2="78" stroke="#ffc857" stroke-width="2" stroke-dasharray="4 3"/>
+        <circle cx="178" cy="50" r="5" fill="#ff6b6b"/>
+        <text x="178" y="16" fill="#ffc857" font-size="12" text-anchor="middle">expire_at = 10:30:00.000</text>
+        <text x="94" y="55" fill="#7ff0bc" font-size="12" text-anchor="middle">支付：expire_at &gt; NOW</text>
+        <text x="262" y="55" fill="#ffb1b1" font-size="12" text-anchor="middle">关单：expire_at ≤ NOW</text>
+        <text x="178" y="94" fill="#e4dcff" font-size="12" text-anchor="middle">边界点（实心）属于关单</text>
+      </svg>`, 306, 182, 384),
+    900, () => note('两层保证', `<ul><li><b>行锁</b>：<code>FOR UPDATE</code> 让支付、关单、取消对同一订单串行</li><li><b>条件更新</b>：<code>status='UNPAID'</code> + 互补的时间条件，即使判断写错，WHERE 也只会让一方影响 1 行</li></ul>`, 340)),
+]);
+
+scene('总结与思考', [
+  step('回顾这一集：请求键和唯一键让重复请求只建一单；订单、outbox 和回填在同一个事务里；结果未知时保留键；支付和关单靠同一把行锁加互补条件，只有一方能赢。',
+    0, () => ov(`<div class="kp">本集回顾</div><h1 style="font-size:32px">普通购买链路的 6 个关键点</h1><ol style="margin-top:14px">
+      <li><b>请求键</b>代表一次购买意图，存 sessionStorage，重试复用</li>
+      <li><b>ON DUPLICATE KEY</b> 让唯一键裁决竞争，再 <b>FOR UPDATE</b> 读出真实状态</li>
+      <li>判重看<b>请求行的 order_id</b>，摘要不一致返回 409</li>
+      <li>订单快照、outbox、回填订单号<b>同一个事务</b>，失败就一起消失</li>
+      <li>结果未知<b>保留请求键</b>，用“找回订单”拿回原单</li>
+      <li>支付与关单：<b>同一把行锁 + expire_at &gt; / ≤ NOW(3)</b>，支付事务不加额度</li></ol>`)),
+  step('暂停思考第 1 题：为什么请求行用 <code>ON DUPLICATE KEY</code> 插入，而不是先 SELECT 再 INSERT？想好了再继续。',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">为什么请求行用 <code>INSERT … ON DUPLICATE KEY</code>，而不是先 SELECT 查一下，没有再 INSERT？插入之后为什么还要再 <code>FOR UPDATE</code> 读一次？</div>`)),
+  step('参考答案：先查再插有竞争窗口，两个请求都可能查到“没有”。唯一键把竞争交给数据库裁决；插入不报错不代表是自己插的，所以要锁定读出真实状态。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>先查再插：T1、T2 同时 SELECT 都看到“没有”，然后都 INSERT，一个报唯一键冲突，或者在没有唯一键时建出两单</li>
+      <li>唯一键 <code>(user_id, request_key)</code> 由数据库保证只有一行；<code>ON DUPLICATE KEY UPDATE user_id = user_id</code> 让后到者不报错，而是等先到者提交</li>
+      <li>插入成功不代表这行是自己写的，必须 <code>FOR UPDATE</code> 锁住，读出已提交的 <code>digest</code> 和 <code>order_id</code> 再判断</li></ul></div>`)),
+  step('暂停思考第 2 题：下单请求超时、前端收到 504 时，为什么不能清掉请求键？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">下单请求超时，前端收到 504。为什么这时<b>不能</b>清掉请求键？如果收到的是 409，为什么又<b>应该</b>清掉？</div>`)),
+  step('参考答案：504 表示结果未知，后端可能已经提交。保留键重试，后端在请求行上找到原订单返回；清掉键重试就是一次新的购买，会建出第二张订单。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li>504 / 断网 = <b>结果未知</b>：事务可能已经提交，只是响应丢了</li>
+      <li>保留键重试 → 命中同一条请求行 → <code>order_id</code> 已有值 → 原样返回订单 1001</li>
+      <li>清掉键重试 → 新的请求行 → 第二张订单，用户可能付两次钱</li>
+      <li>409 / 404 是<b>明确失败</b>：后端没有为这个意图建单，留着旧键只会一直撞同一个结果，所以清掉</li></ul></div>`)),
+  step('暂停思考第 3 题：支付和关单同时到达，靠什么保证只有一方成功？恰好等于截止时间的那一毫秒归谁？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">支付和到期关单同时到达同一张订单，靠什么保证只有一方成功？恰好在 <code>NOW(3) = expire_at</code> 那一刻，谁赢？支付成功后积分是在支付事务里加的吗？</div>`)),
+  step('参考答案：两边都先 FOR UPDATE 锁同一个订单行，再用互补条件做条件更新；边界那一刻归关单。支付事务只写 PAID、支付事实和 ORDER_PAID，积分由 outbox 异步发放。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li><b>同一把行锁</b>：<code>pay</code>、<code>closeExpired</code>、<code>cancelUnpaid</code> 都先 <code>SELECT … FOR UPDATE</code>，后到者一定看到先到者提交后的状态</li>
+      <li><b>互补条件</b>：<code>markPaid … expire_at &gt; NOW(3)</code>，<code>closeExpired … expire_at &lt;= NOW(3)</code>，都以数据库时钟为准；相等时只有关单成立</li>
+      <li>支付事务<b>不加额度</b>：只写 <code>PAID</code>、<code>purchase_payment</code> 和 <code>ORDER_PAID</code>，积分由 outbox 分两跳异步发放（权益那一集）</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

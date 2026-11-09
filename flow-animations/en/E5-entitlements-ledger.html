@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E5 Entitlements & Ledger</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.bd.tx{display:none}
+.wal{font-size:13px}
+.wal .row{display:flex;justify-content:space-between;margin:3px 0}
+.wal .row b{font-family:var(--mono);font-size:15px}
+.wal .a b{color:var(--green)}.wal .f b{color:var(--yellow)}.wal .c b{color:#9fd0ff}.wal .e b{color:#ff8f8f}
+.wal .eq{margin-top:6px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E5-权益发放账务.html', home: '../index.html?lang=en', title: 'E5 · Entitlements & Ledger', docTitle: 'E5 Entitlements & Ledger', example: 'Example: order 1001 · 100 credits · valid 30 days',
+  lanes: [['User 42', 'order and credits'], ['App service', 'two-hop outbox · grant txn'], ['MySQL', 'order facts · credit packs · ledger']] });
+
+/* ============ Script ============ */
+const TY = { ord: 88, pay: 170, ob: 232, gr: 334, lg: 416 };
+const toDB = t => [770, TY[t] + 4];
+const MID = [600, 230];
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+// Left lane: the credits the user sees
+function wallet(a, f, c, e, extra = '') {
+  const t = a + f + c + e;
+  put('wal', 'fe st wal', `<div class="lb">Credit pack #11 (order 1001)</div>
+    <div class="row a"><span>available</span><b>${a}</b></div>
+    <div class="row f"><span>frozen</span><b>${f}</b></div>
+    <div class="row c"><span>consumed</span><b>${c}</b></div>
+    <div class="row e"><span>expired</span><b>${e}</b></div>
+    <div class="eq">total ${t} = ${a} + ${f} + ${c} + ${e}</div>${extra}`, 26, 200, 248, null);
+}
+function orderCard(text, tone = '') { put('oc', 'fe st ' + tone, text, 26, 88, 248, null); }
+function lg(id, key, type, d, after, tx) { row('lg', id, { key, type, d, after }, tx); }
+
+scene('Intro', [
+  step('This episode covers <em>entitlements and the ledger</em>: after the user pays, how do credits arrive, and when credits are frozen, consumed, released or expired, how is the bookkeeping kept right?',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 5</div><h1>Entitlements & Ledger</h1><h2>Payment only records the fact; credits travel a two-hop outbox; balances obey an identity and every change has a ledger entry</h2>
+      <ol><li>The payment txn <b>adds no credits</b>; hop one registers a task, hop two grants</li><li>Granting trusts only <b>the order snapshot + payment fact</b>, never the live product</li><li>Two unique keys + identity CHECKs: redelivery grants only once</li><li>Late grants <b>expire immediately</b>; validity is never extended</li><li>Ledger entries for freeze / consume / release / expire, plus reconciliation and backfill</li></ol>`)),
+  step('Order 1001 that user 42 bought in E2 is now paid: the order is PAID, there is a MOCK payment fact, and the outbox has an <code>ORDER_PAID</code> row. At this point the user still has 0 credits.',
+    0, () => ovOff(),
+    300, () => {
+      clock('11-08 10:03:20.503');
+      orderCard('Order <b>1001</b> · paid ¥9.90<br>Credit pack: 100 credits · 30 days<br><span style="color:var(--muted)">Credits: not yet granted</span>');
+      table('ord', 722, TY.ord, 532, 'purchase_order', 'order snapshot', [['id', 'id', 44], ['status', 'status', 50], ['funding', 'funding', 58], ['paid_at', 'paid_at', 134], ['credits', 'credits', 54], ['days', 'days', 44]]);
+      row('ord', 1001, { id: 1001, status: 'PAID', funding: 'MOCK', paid_at: '11-08 10:03:20.503', credits: 100, days: 30 });
+    },
+    700, () => { table('pay', 722, TY.pay, 532, 'purchase_payment', 'payment fact', [['o', 'order_id', 62], ['ch', 'channel', 60], ['amt', 'amount', 58], ['sim', 'simulated', 70], ['at', 'paid_at', 134]]); row('pay', 1001, { o: 1001, ch: 'MOCK', amt: 990, sim: 1, at: '11-08 10:03:20.503' }); },
+    1000, () => { table('ob', 722, TY.ob, 532, 'business_outbox', '', [['id', 'id', 40], ['kind', 'kind', 130], ['state', 'state', 66], ['key', 'idempotency_key', 210]]); row('ob', 9004, { id: 9004, kind: 'ORDER_PAID', state: 'PENDING', key: 'NULL' }); },
+    1300, () => table('gr', 722, TY.gr, 532, 'entitlement_grant', 'UNIQUE (order_id, item_key)', [['id', 'id', 26], ['o', 'order', 46], ['t', 'total', 46], ['a', 'avail', 46], ['f', 'frozen', 50], ['c', 'cons', 40], ['e', 'expired', 58], ['exp', 'expires_at', 90], ['st', 'status', 62]]),
+    1600, () => table('lg', 722, TY.lg, 532, 'entitlement_ledger', 'UNIQUE operation_key', [['key', 'operation_key', 170], ['type', 'type', 64], ['d', 'Δ avail/frozen/cons/exp', 140], ['after', 'balance after', 110]])),
+]);
+
+scene('① No credits at payment', [
+  step('First, the starting point: the payment transaction <em>writes only three things</em> — the order becomes PAID, a payment fact, and an <code>ORDER_PAID</code> event. It never touches the entitlement tables and adds no credits.',
+    0, () => note('What is and is not in the payment txn', `<ul><li>✔ <code>purchase_order</code>: UNPAID → PAID, <code>paid_at = NOW(3)</code></li><li>✔ <code>purchase_payment</code>: UNIQUE <code>order_id</code></li><li>✔ <code>business_outbox</code>: <code>ORDER_PAID</code></li><li>✘ No <code>entitlement_grant</code>, no credits</li></ul>`, 182)),
+  step('The benefit of this split: payment only records "it was bought", while granting is a separate job that can be retried, backfilled and reviewed by hand. <em>A granting problem never rolls back a successful payment</em>. Credits now travel through a two-hop outbox.',
+    0, () => note2('Two hops', `<b>Hop 1</b> ORDER_PAID (group <code>order-events</code>): write order history, register a grant task<br><b>Hop 2</b> ENTITLEMENT_GRANT (group <code>entitlement-grants</code>): actually create the credit pack and the ledger entry`, 360)),
+]);
+
+scene('② Hop 1: register', [
+  step('The relay delivers 9004, and the <code>order-events</code> group runs the five steps from E1. The projection <code>projectOrder</code> first confirms the order really is PAID + MOCK, then <code>INSERT IGNORE</code>s the order history.',
+    0, () => { clearMid(); tx('OE', 0, 'consume 9004 · order-events', 'run'); lock('ob', 9004, 'X', 'OE'); },
+    700, () => gate('projectOrder(ORDER_PAID)', [['Order status = PAID?', ''], ['Funding = MOCK?', ''], ['Write history (idempotent on event_id)', ''], ['Register the grant task', '']], 182),
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'ok'), 2000, () => check(2, 'ok', 'INSERT IGNORE')),
+  step('It then calls <code>registerForOrder</code> (MANDATORY, inside this consume transaction): it re-checks PAID, a paid_at and FREE or MOCK funding, and <code>INSERT IGNORE</code>s the second-hop task with idempotency key <code>entitlement-grant:1001:CREDITS</code>.',
+    0, () => { check(3, 'go', 'INSERT IGNORE'); fly('INSERT IGNORE', MID, toDB('ob'), 'blue'); },
+    800, () => row('ob', 9005, { id: 9005, kind: 'ENTITLEMENT_GRANT', state: 'PENDING', key: 'entitlement-grant:1001:CREDITS' }, 'OE'),
+    1500, () => { cell('ob', 9004, 'state', 'DONE', 'OE'); },
+    2000, () => { commit('OE'); txs('OE', 'ok'); }),
+  step('If 9004 is redelivered, locking the row shows DONE and it is dropped; even if it reached the projection, the unique <code>idempotency_key</code> makes <code>INSERT IGNORE</code> affect 0 rows — <em>no second grant task is registered</em>.',
+    0, () => { fly('📨 9004 (duplicate)', [140, 120], [330, 140], 'grey'); },
+    900, () => { gate('Duplicate 9004', [['Lock row: state = DONE?', ''], ['Even at the projection: INSERT IGNORE', '']], 182); },
+    1300, () => check(0, 'go', 'duplicate → drop'), 1700, () => check(1, 'ok', 'unique key → 0 rows')),
+  step('Why two outbox rows instead of granting in hop one? Because the two jobs <em>each reach DONE, retry and go to REVIEW on their own</em>: if grant verification fails, only 9005 retries, while the order-history hop is long done and is not dragged into a rollback or a rerun.',
+    0, () => { clearMid(); gone('tx_OE'); note('Two hops isolate failures', `<ul><li>The two events belong to <b>different consumer groups</b>; their states are independent</li><li>Grant fails 5 times → only <code>ENTITLEMENT_GRANT</code> goes to REVIEW, and an admin can <code>retryReview</code> it alone</li><li>Note: this is not about "making users wait less" — both hops are asynchronous</li></ul>`, 182); }),
+]);
+
+scene('③ Hop 2: grant txn', [
+  step('The relay delivers 9005 to the <code>entitlement-grants</code> group, which calls <code>grantForTask</code>. First: lock the order row with <code>FOR UPDATE</code> and check that the task\'s user matches the order.',
+    0, () => { clearMid(); clock('11-08 10:03:21.100', true); tx('EG', 0, 'consume 9005 · entitlement-grants', 'run'); lock('ob', 9005, 'X', 'EG'); },
+    700, () => { lock('ord', 1001, 'X', 'EG'); hl('ord', 1001); code('PurchaseOrder order = orders.selectOrderForUpdate(1001);\nif (!task.userId.equals(order.userId)) throw ORDER_IDENTITY;\nTrustedEntitlement source = verifier.verify(order);', 182); }),
+  step('<code>verify</code> is the basis of the grant and <em>trusts only two things</em>: the order snapshot and the payment fact. After checking each item, the validity is computed as <code>paid_at + valid_days</code>. Note it <em>never reads the live product</em>: later price changes or delisting do not affect what was bought.',
+    0, () => { gone('code'); gate('EntitlementSourceVerifier.verify', [['Order PAID, funding FREE / MOCK', ''], ['Has paid_at; credits / days / spec &gt; 0', ''], ['Payment fact exists, same user and channel', ''], ['Amount, simulated, paid_at match order', ''], ['expires_at = paid_at + 30 days', '']], 182); },
+    600, () => check(0, 'ok'), 1000, () => check(1, 'ok'), 1400, () => { check(2, 'ok'); hl('pay', 1001); },
+    1800, () => check(3, 'ok', '990 · 1 · same time'), 2300, () => check(4, 'go', '12-08 10:03:20.503')),
+  step('Is there already a pack for this order? No. So credit pack #11 is inserted: <code>total = available = 100</code>, <code>effective_from = paid_at</code>, expiring on 12-08, status ACTIVE.',
+    0, () => { clearMid(); hl('pay', 1001, null); code('existing = selectBySource(1001, "CREDITS");   // null\nINSERT entitlement_grant(total = 100, available = 100,\n  effective_from = paid_at, expires_at = paid_at + 30d, status = ACTIVE)', 182); },
+    900, () => fly('INSERT pack', MID, toDB('gr'), 'blue'),
+    1700, () => row('gr', 11, { id: 11, o: 1001, t: 100, a: 100, f: 0, c: 0, e: 0, exp: '12-08 10:03', st: 'ACTIVE' }, 'EG')),
+  step('The same transaction writes a <code>GRANT</code> ledger entry: operation key <code>GRANT:1001:CREDITS</code>, the per-component change +100/0/0/0 and the balance after. <em>Balances can be rebuilt entirely from the ledger</em>.',
+    0, () => fly('INSERT ledger', MID, toDB('lg'), 'blue'),
+    800, () => lg('g11', 'GRANT:1001:CREDITS', 'GRANT', '+100 / 0 / 0 / 0', '100/0/0/0', 'EG')),
+  step('The grant and the five consume steps share one transaction: pack, ledger entry, inbox row and 9005\'s DONE commit together. The user refreshes the page — <em>100 credits have arrived</em>.',
+    0, () => { cell('ob', 9005, 'state', 'DONE', 'EG'); },
+    600, () => { commit('EG'); txs('EG', 'ok'); hl('ord', 1001, null); },
+    1100, () => { orderCard('Order <b>1001</b> · paid ¥9.90<br>Credit pack: 100 credits · 30 days<br><span style="color:var(--green)">Credits granted</span>', 'ok'); wallet(100, 0, 0, 0); }),
+]);
+
+scene('④ Idempotency & identity', [
+  step('Suppose an admin resets 9005 with <code>retryReview</code>, it is delivered again, the inbox does not stop it, and it really enters <code>grantForTask</code>. Now <code>selectBySource</code> finds #11, so it <em>compares every field</em> — credits, days, paid time, expiry, product, application, spec… 16 items — and only if all match returns it unchanged, with no new ledger entry.',
+    0, () => { clearMid(); tx('EG', 0, 'consume 9005 again', 'run'); },
+    600, () => gate('Existing pack #11: verifyExisting', [['User, credits, days, funding', ''], ['paid_at, effective_from, expires_at, total', ''], ['Product, app, version, model, size, count', ''], ['All equal?', '']], 182),
+    1100, () => check(0, 'ok'), 1500, () => check(1, 'ok'), 1900, () => check(2, 'ok'),
+    2300, () => { check(3, 'go', 'return as-is, no ledger'); txs('EG', 'ret', 'idempotent'); }),
+  step('If anything differs (say the order snapshot was tampered with), it throws <code>GRANT_MISMATCH</code>, consumption fails, and after 5 retries 9005 goes to REVIEW. <em>One source order can never silently reuse a pack with different content</em>.',
+    0, () => note('On mismatch', `<code>GRANT_MISMATCH</code> → consume fails → <code>consume_attempts + 1</code> → after 5: <code>REVIEW</code> + <code>message_failure</code>, waiting for a human.`, 350)),
+  step('The database adds three more safeguards: the pack unique key <code>(order_id, item_key)</code>, the ledger unique key <code>operation_key</code>, and <code>CHECK</code> identities on both tables: <em>total = available + frozen + consumed + expired</em>, and in the ledger the four deltas must add up to the total delta.',
+    0, () => { clearMid(); gone('tx_EG'); code('-- entitlement_grant\nUNIQUE (order_id, item_key)\nCHECK (total_credits = available_credits + frozen_credits\n                      + consumed_credits + expired_credits)\n-- entitlement_ledger\nUNIQUE (operation_key)\nCHECK (delta_total = delta_available + delta_frozen\n                   + delta_consumed + delta_expired)\nCHECK (total_after = available_after + frozen_after + …)', 182); },
+    900, () => { hl('gr', 11); hl('lg', 'g11'); },
+    2400, () => { hl('gr', 11, null); hl('lg', 'g11', null); }),
+]);
+
+scene('⑤ Late grants', [
+  step('A special case: order 1002 was paid 40 days ago (10-01) with 30-day validity. Its grant task got stuck in REVIEW and was only fixed and replayed today. By the rules it should have expired on 10-31.',
+    0, () => { clearMid(); row('ord', 1002, { id: 1002, status: 'PAID', funding: 'MOCK', paid_at: '10-01 09:00:00.000', credits: 50, days: 30 }); },
+    600, () => row('ob', 9010, { id: 9010, kind: 'ENTITLEMENT_GRANT', state: 'SENDING', key: 'entitlement-grant:1002:CREDITS' }),
+    1100, () => tx('EG2', 0, 'consume 9010 · late grant', 'run')),
+  step('It verifies and creates the pack as usual; the expiry from <code>paid_at + 30 days</code> is 10-31, already before the database clock. The code <em>does not extend validity</em> but calls <code>expireImmediately</code>: all 50 available credits move to expired, status EXPIRED, and an EXPIRE entry is written.',
+    0, () => { row('gr', 12, { id: 12, o: 1002, t: 50, a: 50, f: 0, c: 0, e: 0, exp: '10-31 09:00', st: 'ACTIVE' }, 'EG2'); lg('g12', 'GRANT:1002:CREDITS', 'GRANT', '+50 / 0 / 0 / 0', '50/0/0/0', 'EG2'); },
+    1000, () => { cell('gr', 12, 'a', '0', 'EG2'); cell('gr', 12, 'e', '50', 'EG2'); cell('gr', 12, 'st', 'EXPIRED', 'EG2'); },
+    1500, () => lg('x12', 'EXPIRE:12:1793437200000', 'EXPIRE', '0 / 0 / 0 / +50', '50/0/0/50', 'EG2'),
+    2100, () => { cell('ob', 9010, 'state', 'DONE', 'EG2'); commit('EG2'); txs('EG2', 'ok'); }),
+  step('Why: the promise is "usable for 30 days after payment". A late grant just records honestly <em>what was owed back then</em>; the user does not get extra days because the system was late. The books are clear: 50 granted, 50 expired.',
+    0, () => note('Principles of late grants', `<ul><li>Validity is <b>counted only from paid_at</b>, never from grant time</li><li>GRANT then EXPIRE — both entries are kept, so it is auditable</li><li>If a historical order cannot even prove its payment, backfill records an <code>entitlement_anomaly</code> — <b>no guessed times, no silent grants</b></li></ul>`, 182)),
+]);
+
+scene('⑥ Freeze · consume · release', [
+  step('Once the pack exists, balance changes come from generation tasks (next episode). Submitting task 301 <em>freezes</em> 1 credit: a conditional update requires the pack to be ACTIVE, within validity and have available ≥ 1; available → frozen, plus a <code>FREEZE:task:301</code> entry.',
+    0, () => { clearMid(); gone('tx_EG2'); rmRow('lg', 'g12'); rmRow('lg', 'x12'); dim('gr', 12); dim('ord', 1002); clock('11-08 11:00:00.000', true); },
+    700, () => code('UPDATE entitlement_grant\nSET available_credits = available_credits - 1,\n    frozen_credits = frozen_credits + 1\nWHERE id = 11 AND status = \'ACTIVE\'\n  AND effective_from <= NOW(3) AND expires_at > NOW(3)\n  AND available_credits >= 1', 182),
+    1400, () => { cell('gr', 11, 'a', '99'); cell('gr', 11, 'f', '1'); lg('f301', 'FREEZE:task:301:CREDITS', 'FREEZE', '−1 / +1 / 0 / 0', '99/1/0/0'); wallet(99, 1, 0, 0); }),
+  step('Task 301\'s image is saved successfully, so it settles by <em>consuming</em>: frozen → consumed. Settlement first checks that this task has a FREEZE entry; nothing can settle without a freeze.',
+    0, () => code('UPDATE entitlement_grant\nSET frozen_credits = frozen_credits - 1,\n    consumed_credits = consumed_credits + 1\nWHERE id = 11 AND frozen_credits >= 1\n-- requires a FREEZE:task:301 entry', 182),
+    800, () => { cell('gr', 11, 'f', '0'); cell('gr', 11, 'c', '1'); lg('c301', 'CONSUME:task:301:CREDITS', 'CONSUME', '0 / −1 / +1 / 0', '99/0/1/0'); wallet(99, 0, 1, 0); }),
+  step('Task 302 also froze 1 credit, but upstream rejected it, so it settles by <em>releasing</em>. While holding the pack\'s row lock it <em>decides by the database clock</em>: still valid → back to available; expired → into expired. It is still valid here, so it goes back to available.',
+    0, () => { lg('f302', 'FREEZE:task:302:CREDITS', 'FREEZE', '−1 / +1 / 0 / 0', '98/1/1/0'); cell('gr', 11, 'a', '98'); cell('gr', 11, 'f', '1'); wallet(98, 1, 1, 0); },
+    900, () => { gone('code'); gate('releaseForTask(302)', [['Pack ACTIVE and expires_at &gt; NOW(3)?', ''], ['Valid → frozen back to available', ''], ['Expired → frozen into expired', '']], 182); },
+    1400, () => check(0, 'ok', 'valid'), 1800, () => check(1, 'go'),
+    2300, () => { cell('gr', 11, 'a', '99'); cell('gr', 11, 'f', '0'); lg('r302', 'RELEASE:task:302:CREDITS', 'RELEASE', '+1 / −1 / 0 / 0', '99/0/1/0'); wallet(99, 0, 1, 0); }),
+  step('A task has exactly one final outcome: CONSUME or RELEASE. Ledger operation keys include the task id, so the same operation is never written twice; "not both consume and release" is guaranteed by <code>generation_settlement</code>\'s unique key per task, covered in the next episode.',
+    0, () => { clearMid(); note('Five ledger entry types', `<ul><li><b>GRANT</b>: +total / +available</li><li><b>FREEZE</b>: available → frozen</li><li><b>CONSUME</b>: frozen → consumed</li><li><b>RELEASE</b>: frozen → available, or frozen → expired</li><li><b>EXPIRE</b>: available → expired</li></ul>Each records "delta + balance after", both checked by CHECK constraints.`, 182); }),
+]);
+
+scene('⑦ Expiry', [
+  step('30 days later. The expiry job runs every 60 s: it selects due packs without locks, then opens a short transaction <em>per pack</em> — lock the pack, confirm by the database clock that it is really due, move the remaining 99 available credits to expired, and set EXPIRED.',
+    0, () => { clearMid(); clock('12-08 10:03:21.000', true); tx('EX', 0, 'expireDueGrants · every 60 s', 'run'); },
+    700, () => { lock('gr', 11, 'X', 'EX'); code('SELECT … FOR UPDATE;  NOW(3) >= expires_at ✓\nUPDATE entitlement_grant\nSET available_credits = available_credits - 99,\n    expired_credits = expired_credits + 99, status = \'EXPIRED\'\nWHERE id = 11 AND available_credits = 99 AND expires_at <= NOW(3)', 182); },
+    1500, () => { cell('gr', 11, 'a', '0', 'EX'); cell('gr', 11, 'e', '99', 'EX'); cell('gr', 11, 'st', 'EXPIRED', 'EX'); },
+    2000, () => lg('x11', 'EXPIRE:11:1796724200503', 'EXPIRE', '−99 / 0 / 0 / +99', '0/0/1/99', 'EX'),
+    2500, () => { commit('EX'); txs('EX', 'ok'); wallet(0, 0, 1, 99); }),
+  step('Two details. First, the EXPIRE operation key is "pack id + expiry time", so <em>repeated scans produce a single entry</em>. Second, expiry only touches "available", <em>never frozen</em>: a credit frozen by a running task is settled when the task ends, and RELEASE then decides by the database clock to put it into expired.',
+    0, () => note('Expiry and frozen credits', `<ul><li>Expiry: moves only <b>available</b> to expired</li><li>Frozen credits still belong to their task; at the end: success → CONSUME; failure → RELEASE into <b>expired</b> (pack expired)</li><li>Both lock the same pack row and decide by the DB clock, one after the other</li></ul>`, 330)),
+]);
+
+scene('⑧ Reconcile & backfill', [
+  step('The admin side has an entitlement reconciliation: owed-but-unregistered tasks, DONE without a pack, pending, REVIEW, failed messages, duplicate packs, identity violations, ledger mismatches and open anomalies. <em>Only all zeros count as exact</em>; otherwise it asks for manual review.',
+    0, () => { clearMid(); gone('tx_EX'); gate('EntitlementAdmin.reconcile', [['Owed but no task: missingTasks', '0'], ['Task DONE but no pack: doneWithoutGrant', '0'], ['Pending / REVIEW / failed messages', '0'], ['Duplicates / identity / ledger mismatch', '0'], ['Unresolved openAnomalies', '0']], 182); },
+    800, () => { [0, 1, 2, 3, 4].forEach(i => check(i, 'ok')); }),
+  step('<em>Backfill</em> walks paid orders with an order-id cursor: pack exists → skip and resolve any anomaly; task exists → skip; verification passes → <code>INSERT IGNORE</code> a grant task; verification fails (e.g. no payment fact) → record an <code>entitlement_anomaly</code> — <em>no guessing, no silent grants</em>.',
+    0, () => { clearMid(); code('for order in paidOrdersAfter(cursor, limit):\n  if grant exists      → skip, resolve anomaly\n  if task exists       → skip\n  try verify(order)    → INSERT IGNORE ENTITLEMENT_GRANT\n  catch SourceException → upsert entitlement_anomaly(type, detail)', 182); },
+    900, () => note('Unique key of the anomaly table', `<code>(order_id, item_key, anomaly_type)</code>: one row per order per kind of problem; once fixed, rerunning backfill marks it RESOLVED.`, 330)),
+]);
+
+scene('Recap & questions', [
+  step('Recap: payment only records the fact; ORDER_PAID registers a task and ENTITLEMENT_GRANT grants; granting trusts only the order snapshot and payment fact; unique keys, identities and the ledger give every credit a source and a destination.',
+    0, () => ov(`<div class="kp">Episode recap</div><h1 style="font-size:32px">Key points of entitlements & ledger</h1><ol style="margin-top:14px">
+      <li>The payment txn writes only <b>PAID + payment fact + ORDER_PAID</b>, no credits</li>
+      <li>Hop 1 <b>INSERT IGNORE</b>s the task (key entitlement-grant:1001:CREDITS); two hops <b>isolate failures</b></li>
+      <li>Hop 2: lock order → <b>verify trusts only snapshot and payment</b> → compare existing pack → create pack + GRANT entry</li>
+      <li>Constraints: <b>(order_id, item_key)</b>, <b>operation_key</b>, <b>total = available + frozen + consumed + expired</b></li>
+      <li>Late grants <b>expire at once</b>; expiry touches only available; frozen credits RELEASE by the DB clock at the end</li></ol>`)),
+  step('Pause and think, question 1: why not add credits inside the payment transaction? Why split into two outbox rows?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">Why not add credits to the user inside the payment transaction? After ORDER_PAID, why register yet another ENTITLEMENT_GRANT instead of granting directly in hop one?</div>`)),
+  step('Answer: payment only records the purchase; granting is an independent job that can be retried, backfilled and reviewed, and its errors must never roll back a payment. Two rows isolate failures: each consumer group reaches DONE, retries and goes to REVIEW on its own.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>Keep the payment txn short: only <b>PAID, the payment fact, ORDER_PAID</b>; a grant error never rolls back a successful payment</li>
+      <li>Granting is its own task: retryable, backfillable, and manually <code>retryReview</code>-able</li>
+      <li>The two outbox rows belong to different groups: order history is long DONE, so on a grant failure <b>only the grant row</b> retries or goes to REVIEW</li>
+      <li>It is not about "less waiting": both hops are asynchronous</li></ul></div>`)),
+  step('Pause and think, question 2: the grant for one order is delivered repeatedly — how many lines of defense ensure it is granted only once?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">Granting for order 1001 is triggered repeatedly (ORDER_PAID redelivered, ENTITLEMENT_GRANT redelivered, an admin replay). Which lines of defense ensure exactly one credit pack and one GRANT entry?</div>`)),
+  step('Answer: DONE and the inbox on the consumer side; the idempotency_key unique key on task registration; at grant time, lock the order, find any existing pack and compare every field; and the (order_id, item_key) and operation_key unique keys in the database.',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li>Messaging: the outbox row's <code>DONE</code> + the <code>message_inbox</code> primary key</li>
+      <li>Registration: <code>INSERT IGNORE</code> + unique <code>idempotency_key</code> → a single grant task</li>
+      <li>Business: lock the order → <code>selectBySource</code>; an existing pack is <b>compared field by field and returned as-is</b>, mismatch → GRANT_MISMATCH</li>
+      <li>Database: <code>UNIQUE(order_id, item_key)</code> and <code>UNIQUE(operation_key)</code></li></ul></div>`)),
+  step('Pause and think, question 3: what happens if an order is granted 40 days late? When a pack expires, where does a credit currently frozen by a task end up?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">An order paid 40 days ago with 30-day validity is granted only today — what is the result? When a pack expires, where does the 1 credit currently frozen by a generation task end up?</div>`)),
+  step('Answer: validity counts only from paid_at, so the pack is created and immediately expired, with both GRANT and EXPIRE entries. The expiry scan touches only available credits; the frozen one waits for the task: success → CONSUME, failure → by the DB clock the pack has expired, so RELEASE puts it into expired.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li>Late grant: <code>expires_at = paid_at + 30d</code> is before NOW → the pack <b>expires immediately</b>, no extension; entries GRANT + EXPIRE</li>
+      <li>Expiry scan: <code>expireAvailable</code> moves only <b>available</b>; frozen and consumed stay</li>
+      <li>The frozen credit: task succeeds → <b>CONSUME</b> (frozen → consumed); fails → <b>RELEASE</b>, which holds the pack lock, sees it expired by the DB clock → frozen → <b>expired</b></li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

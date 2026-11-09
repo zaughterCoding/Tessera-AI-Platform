@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E4 活动重建与对账</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.tn{font-size:11.5px}
+.bd.tx{display:none}
+.gd{font-size:13px;line-height:1.6}
+.gd .big{font-size:20px;font-weight:700;margin:2px 0 4px}
+.gd .big.open{color:var(--green)}.gd .big.shut{color:var(--red)}
+.bal{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px}
+.bal .r{display:flex;align-items:center;gap:8px;margin:5px 0}
+.bal .l{width:64px;color:var(--muted)}
+.bal .bar{height:16px;border-radius:4px;transition:width .6s}
+.bal .v{font-family:var(--mono);color:#fff;width:24px;text-align:right}
+.bal .verdict{margin-top:4px;font-weight:600}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E4-rebuild-reconciliation.html', home: 'index.html', title: 'E4 · 活动重建与对账', docTitle: 'E4 活动重建与对账', example: '例子：活动 7 · 初始 10 件 · 代次 3',
+  cols: [[16, 214], [238, 376], [622, 642]],
+  lanes: [['守卫 · 管理员', 'entryGuard'], ['应用服务', '对账 · 恢复 · 重建'], ['Redis 入口副本', '｜ MySQL 事实']] });
+
+/* ============ 剧本 ============ */
+const TY = { rk: 88, sg: 232, camp: 88, gen: 150, res: 252, ob: 418 };
+const RX = 632, MX = 948;
+const toR = t => [660, TY[t] + 4], toM = t => [975, TY[t] + 4];
+const MID = [520, 240];
+function clearMid() { ['code', 'gate', 'note', 'note2', 'bal'].forEach(gone); }
+function rk(id, k, t, v) { row('rk', id, { k, t, v }); }
+function rv(id, v) { cell('rk', id, 'v', v); }
+// 入口守卫：JVM 内的开关
+function guard(open, reason) {
+  put('guard', 'fe st gd ' + (open ? 'ok' : 'bad'), `<div class="lb">CampaignEntryGuard（本实例内存）</div>
+    <div class="big ${open ? 'open' : 'shut'}">${open ? '● 入口开放' : '● 入口关闭'}</div>
+    <div>${reason || ''}</div>`, 26, 88, 194, null);
+}
+function admin(text, st = 'run') { card('ADM', 26, 210, 194, '', st, text, '管理员'); }
+// 库存天平：Redis 与 MySQL 两根条
+function bal(r, m, verdict, tone = '', y = 400) {
+  const w = v => Math.max(4, v * 22);
+  put('bal', 'bal', `<div class="nt" style="color:var(--purple);font-weight:700">库存对照</div>
+    <div class="r"><span class="l">Redis</span><div class="bar" style="width:${w(r)}px;background:#ff8f8f"></div><span class="v">${r}</span></div>
+    <div class="r"><span class="l">MySQL</span><div class="bar" style="width:${w(m)}px;background:#7cc0ff"></div><span class="v">${m}</span></div>
+    <div class="verdict" style="color:${tone || 'var(--yellow)'}">${verdict}</div>`, M.x, y, M.w);
+}
+function res(o, u, g, s, r = 0) { row('res', o, { o, u, g, s, r }); }
+
+scene('片头', [
+  step('上一集说过：Redis 是秒杀的入口副本，MySQL 才是事实。这一集回答两个问题：<em>怎么判断两边是否一致</em>，以及<em>Redis 坏了怎么按数据库安全地重建</em>。',
+    0, () => ov(`<div class="kp">链路动画 · 第 4 集</div><h1>活动重建与对账</h1><h2>Redis 只是入口副本：发现不一致就关门，按数据库事实换代重建</h2>
+      <ol><li>库存方向不变量：<b>正常只会 Redis ≤ MySQL</b></li><li>60 秒对账：公式、在途解释、<b>只告警不自动修</b></li><li>入口守卫：谁会关门、谁能开门</li><li>发布 / 暂停的写入顺序，恢复的三种情况</li><li>重建：<b>前置条件 409</b>、换新代次、carried、PREPARING</li></ol>`)),
+  step('初始状态：活动 7 初始 10 件，已卖出 4 单（5001～5004 都是 SUCCESS），MySQL 剩 6；Redis 库存也是 6，代次都是 3，入口开放。',
+    0, () => ovOff(),
+    300, () => {
+      clock('10:05:00.000'); guard(true, '启动核对通过');
+      table('rk', RX, TY.rk, 306, 'Redis Keys', 'campaign:*', [['k', 'key', 88], ['t', 'type', 52], ['v', 'value', 156]]);
+      rk('stock', 'stock:7', 'string', '6'); rk('act', 'activity:7', 'hash', 'ACTIVE · gen 3');
+      rk('buyers', 'buyers:7', 'set', '{42, 77, 88, 91}'); rk('reqs', 'requests:7', 'hash', '4 个映射'); rk('carried', 'carried:7', 'hash', '{ }');
+    },
+    700, () => { table('sg', RX, TY.sg, 306, 'stream:orders', '消费组水位', [['g', 'group', 92], ['p', 'pending', 62], ['l', 'lag', 50], ['d', 'last-delivered', 90]]); row('sg', 'f', { g: 'fulfillment', p: 0, l: 0, d: '4-0' }); },
+    1000, () => { table('camp', MX, TY.camp, 306, 'limited_campaign', '', [['id', 'id', 24], ['rem', 'remaining', 70], ['init', 'initial', 58], ['gen', 'gen', 34], ['st', 'state', 64]]); row('camp', 7, { id: 7, rem: 6, init: 10, gen: 3, st: 'ACTIVE' }); },
+    1300, () => { table('gen', MX, TY.gen, 306, 'campaign_generation', '代次历史', [['g', 'generation', 76], ['s', 'status', 80], ['r', 'remaining', 70]]); row('gen', 3, { g: 3, s: 'ACTIVE', r: 10 }); },
+    1600, () => { table('res', MX, TY.res, 306, 'campaign_reservation', '', [['o', 'order', 46], ['u', 'uid', 34], ['g', 'gen', 30], ['s', 'state', 84], ['r', 'released', 60]]); res(5001, 42, 3, 'SUCCESS'); res(5002, 77, 3, 'SUCCESS'); res(5003, 88, 3, 'SUCCESS'); res(5004, 91, 3, 'SUCCESS'); },
+    1900, () => table('ob', MX, TY.ob, 306, 'business_outbox', '活动事件', [['id', 'id', 40], ['k', 'kind', 170], ['s', 'state', 64]])),
+]);
+
+scene('① 库存方向', [
+  step('先建立一个直觉。用户 93 抢购：<em>Redis 先扣</em>（Lua 受理），MySQL 要等 fulfill 才扣。这中间 Redis 是 5，MySQL 还是 6，Redis 比 MySQL 少 1。',
+    0, () => { clock('10:05:10.000', true); rv('stock', '5'); rv('buyers', '{42, 77, 88, 91, 93}'); },
+    500, () => res(5005, 93, 3, 'PROCESSING'),
+    900, () => bal(5, 6, 'Redis 少 1：一笔 PROCESSING 在途', '', 182)),
+  step('再看还库存：订单 5001 超时关单，<em>MySQL 先还</em>（关单事务里 remaining + 1，写释放标记），Redis 要等 <code>CAMPAIGN_STOCK_RELEASED</code> 事件执行 release Lua 才还。中间 MySQL 7、Redis 5，差 2。',
+    0, () => { clock('10:15:00.300', true); cell('camp', 7, 'rem', '7'); cell('res', 5001, 'r', '1'); },
+    700, () => row('ob', 7201, { id: 7201, k: 'CAMPAIGN_STOCK_RELEASED', s: 'PENDING' }),
+    1100, () => bal(5, 7, 'Redis 少 2：1 笔 PROCESSING + 1 个未完成释放事件', '', 182)),
+  step('所以有一条<em>方向不变量</em>：扣的时候 Redis 先、还的时候 MySQL 先，正常在途只会让 <em>Redis ≤ MySQL</em>。反过来 Redis 比 MySQL 多，任何在途都解释不了，一定是事故，而且是危险的方向：Redis 会多受理用户。',
+    0, () => note('方向不变量', `<ul><li>扣：<b>Redis 先扣</b> → MySQL 后扣（fulfill）</li><li>还：<b>MySQL 先还</b> → Redis 后还（release Lua）</li><li>正常差额：<code>Redis − MySQL ≤ 0</code></li><li><b>Redis &gt; MySQL</b>：多受理的人建单时 <code>consumeStock</code> 失败 → REVIEW。数据库不会超卖，但“受理成功”的承诺被打破</li></ul>`, 300)),
+]);
+
+scene('② 60 秒对账', [
+  step('对账任务每 60 秒跑一次。第一项是数据库内部的公式：<code>initial = remaining + 已建单未释放的 SUCCESS</code>，也就是 10 = 7 + 3。再看 Redis 可读、代次一致。',
+    0, () => { clearMid(); tx('REC', 0, '对账 reconcile(7) · 每 60 秒', 'run'); },
+    500, () => gate('对账判断', [['公式 initial = remaining + committed', ''], ['Redis 可读，代次一致？', ''], ['差额 = Redis − MySQL', ''], ['−差额 ≤ 可解释的在途数？', '']], 182),
+    1000, () => check(0, 'ok', '10 = 7 + 3'), 1500, () => check(1, 'ok', 'gen 3 = 3')),
+  step('差额是 5 − 7 = −2，方向对（Redis 更少）；能解释的在途是 1 笔 PROCESSING + 0 笔 REVIEW + 1 个未完成的活动事件 = 2，够解释，判为 <code>IN_FLIGHT</code>。但因为还有在途，<code>exact = false</code>，只打一条 warn 日志和指标。',
+    0, () => { check(2, 'ok', '−2'); hl('res', 5005); hl('ob', 7201); },
+    700, () => check(3, 'go', '2 ≤ 1+0+1 → IN_FLIGHT'),
+    1300, () => { txs('REC', 'ret', 'IN_FLIGHT'); hl('res', 5005, null); hl('ob', 7201, null); }),
+  step('这个公式踩过坑：最早只算了 PROCESSING 和 REVIEW，<em>漏了未完成的 outbox 事件</em>，关单后 Redis 回补还在排队，就会被误报“无法解释”。现在还有一个已知缺口：Stream 里还没被 register 登记的消息，只写进告警说明，没进公式。',
+    0, () => note('对账的边界', `<ul><li>事件计数只统计 <code>CAMPAIGN_FULFILL / CAMPAIGN_STOCK_RELEASED / CAMPAIGN_RETRY</code> 且未 DONE</li><li>Stream 积压时，消息还没变成 PROCESSING，可能被误判为“无法解释”（已登记的已知缺口）</li><li><b>对账只读</b>：只打日志和指标，从不修改库存</li></ul>`, 336)),
+  step('几秒后，释放事件执行完，Redis 回补到 6；5005 也建单成功，MySQL 扣到 6。两边都是 6，公式 10 = 6 + 4，下一轮对账判为 <code>CONFIRMED</code>，<code>exact = true</code>。',
+    0, () => { clearMid(); clock('10:15:03.000', true); cell('ob', 7201, 's', 'DONE'); rv('stock', '6'); rv('buyers', '{77, 88, 91, 93}'); },
+    800, () => { cell('res', 5005, 's', 'SUCCESS'); cell('camp', 7, 'rem', '6'); },
+    1400, () => { rmRow('ob', 7201); txs('REC', 'ok', 'CONFIRMED · exact'); bal(6, 6, '一致：CONFIRMED', 'var(--green)', 182); }),
+  step('现在出事故：一次人工误操作把 Redis 库存改成了 8，在 [0, 10] 范围内，代次也对。对账算出差额 +2，<em>方向就错了</em>，判为 <code>UNEXPLAINED</code>。注意：<em>对账仍然只告警</em>，不会自动把 Redis 改回 6，因为它不能确定哪边才是错的。',
+    0, () => { clock('10:20:00.000', true); rv('stock', '<span style="color:var(--red)">8</span>'); },
+    700, () => bal(8, 6, 'Redis 多 2：UNEXPLAINED（事故）', 'var(--red)', 182),
+    1400, () => { txs('REC', 'rb', 'UNEXPLAINED · 告警'); note('为什么不自动修', `自动修正等于让程序去猜“谁是对的”。猜错时会用错误事实覆盖正确事实，而且可能和正在进行的受理、回补并发。<br>所以对账<b>只发现</b>，修复交给人工触发的<b>恢复重建</b>。`, 300); }),
+]);
+
+scene('③ 入口守卫', [
+  step('那谁来关门？有两道门。第一道是 Redis 里的 <code>activity.state</code>，Lua 看到不是 ACTIVE 就返回 3；第二道是每个实例内存里的 <code>CampaignEntryGuard</code>，关着时 admit() 直接拒绝，<em>连 Redis 都不碰</em>。',
+    0, () => { clearMid(); gone('tx_REC'); },
+    300, () => note('谁会关、谁能开 entryGuard', `<ul><li><b>关</b>：① 启动核对发现不一致（状态、代次不同，或 Redis 库存 &gt; MySQL 剩余）；② 受理时 Lua 返回 4，或返回 5 且库里代次没变；③ 重建开始时</li><li><b>开</b>：发布成功、恢复成功、启动核对一致</li><li>它是 <b>JVM 内的 Map</b>：只对本实例生效，重启后由启动核对重新决定</li></ul>`, 182)),
+  step('回到 Redis = 8 的事故：Lua 只能发现“库存超出 [0, 初始库存]”或“代次不符”，<em>发现不了“比数据库多但仍在范围内”</em>，所以入口还开着。此时用户 95 又被受理了一单，Redis 8 → 7，5006 进入 PROCESSING。',
+    0, () => { rv('stock', '<span style="color:var(--red)">7</span>'); rv('buyers', '{77, 88, 91, 93, 95}'); },
+    600, () => res(5006, 95, 3, 'PROCESSING'),
+    1100, () => bal(7, 6, '仍是 Redis 多：入口没被自动关上', 'var(--red)', 400)),
+  step('管理员看到告警，决定执行<em>恢复</em>。实际上，如果这时重启应用，启动核对看到 Redis 库存 7 &gt; MySQL 剩余 6，也会把入口关上。',
+    0, () => { admin('recover · 执行中', 'run'); })
+]);
+
+scene('④ 发布与暂停', [
+  step('先补两个写入顺序。<em>发布</em>：锁活动行，DRAFT → ACTIVE，激活草稿代次；然后在事务提交前执行 rebuild Lua，把库存、状态写进 Redis；最后打开入口。Redis 写失败就抛异常，数据库一起回滚。<em>先库后 Redis</em>。',
+    0, () => { clearMid(); code('@Transactional publish(7):\n  SELECT … FROM limited_campaign WHERE id = 7 FOR UPDATE\n  markPublished: DRAFT → ACTIVE\n  activateDraftGeneration\n  campaign-rebuild.lua(state = ACTIVE, buyers = ∅)   -- 失败则回滚\n  entryGuard.unblock(7)', 182); }),
+  step('<em>暂停</em>反过来：<em>先把 Redis 状态改成 PAUSED</em>，所有受理立刻被 Lua 返回 3 挡住；再改数据库 ACTIVE → PAUSED。Redis 写失败，事务回滚，不会出现“库里暂停了、入口却还开着”的半开状态。',
+    0, () => code('@Transactional pause(7):\n  SELECT … FOR UPDATE\n  HSET activity:7 state PAUSED        -- 先关 Redis 入口\n  UPDATE limited_campaign SET publish_state = \'PAUSED\'\n  WHERE id = 7 AND publish_state = \'ACTIVE\'', 182),
+    700, () => note('记忆方法', `开门：先把事实写进库，再放人进来（<b>先库后 Redis</b>）<br>关门：先把门关上，再记账（<b>先 Redis 后库</b>）<br>两种顺序都保证：出错时入口是<b>关着</b>的。`, 330)),
+]);
+
+scene('⑤ 恢复的三种情况', [
+  step('<code>recover</code> 先拿分布式锁 <code>campaign:recover:7</code>（10 秒），防止两个管理员同时恢复。然后看数据库状态是 ACTIVE 时，Redis 处于哪种情况。',
+    0, () => { clearMid(); },
+    300, () => gate('recover(7)：库里 ACTIVE 时看 Redis', [['ACTIVE · 同代次 · 库存可用', '→ 只解封'], ['PREPARING · 同代次 · 库存可用', '→ 改 ACTIVE + 解封'], ['其他任何情况', '→ 重建'], ['库里是 PAUSED', '→ 重建']], 182),
+    1000, () => check(0, 'no', '库存 7 &gt; 6'),
+    1500, () => check(1, 'no', '否'),
+    2000, () => check(2, 'go', '走重建')),
+  step('第二种情况看起来奇怪：为什么 Redis 会停在 PREPARING？这是重建<em>最后一步没做完</em>留下的痕迹，后面讲重建时会看到。',
+    0, () => note('库存“可用”的判断', `<code>0 ≤ Redis 库存 ≤ 数据库剩余</code><br>比数据库少可以接受（可能有在途）；<b>比数据库多</b>就不可信，必须重建。`, 400)),
+]);
+
+scene('⑥ 重建', [
+  step('重建第 1 步：<em>先关入口</em>。第 2 步检查前置条件，任何一项不满足就返回 409。现在 5006 还是 PROCESSING，第一项就不满足，<em>拒绝重建</em>，入口保持关闭，等它处理完。',
+    0, () => { clearMid(); guard(false, '活动恢复重建中'); },
+    600, () => gate('重建前置条件（否则 409）', [['没有 PROCESSING / REVIEW 预约', ''], ['Stream 全部消费组追平', ''], ['没有未完成的活动事件', ''], ['有效预约数 = 已建单未释放数', '']], 182),
+    1200, () => { check(0, 'no', '5006 → 409'); hl('res', 5006, 'hlr'); admin('recover → 409', 'rb'); }),
+  step('为什么必须等？重建是拿数据库的一张<em>静态快照</em>覆盖 Redis。如果 5006 还在途：重建按数据库写库存 6、buyers 里没有 95；随后 5006 建单，数据库变 5，Redis 却还是 6，又成了 Redis 多。<em>快照只在数据库不再变化时才成立</em>。',
+    0, () => note('三个条件分别覆盖三类在途', `<ul><li>库里的 <b>PROCESSING / REVIEW</b> 预约</li><li>Stream 里<b>还没登记</b>的消息（pending、lag 都为 0）</li><li>outbox 里<b>还没执行</b>的回补 / 建单事件</li></ul>外加一项核对：有效预约数与已建单数一致，否则直接报错。`, 330)),
+  step('几秒后 5006 建单完成：MySQL 剩余 5，预约 SUCCESS，Stream 追平。管理员再次执行恢复，四项前置条件全部通过。',
+    0, () => { clearMid(); clock('10:21:00.000', true); cell('res', 5006, 's', 'SUCCESS'); hl('res', 5006, null); cell('camp', 7, 'rem', '5'); cell('sg', 'f', 'd', '6-0'); },
+    700, () => { admin('第 2 次 recover', 'run'); gate('重建前置条件（否则 409）', [['没有 PROCESSING / REVIEW 预约', ''], ['Stream 全部消费组追平', ''], ['没有未完成的活动事件', ''], ['有效预约数 = 已建单未释放数', '']], 182); },
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'ok', 'pending 0 · lag 0'), 2000, () => check(2, 'ok'), 2400, () => check(3, 'ok', '5 = 5')),
+  step('第 3 步：Redis 状态先改成 <code>PREPARING</code>。第 4 步：用<em>新代次 4</em> 执行 rebuild Lua：删掉 buyers、requests、carried，库存写成数据库剩余 5，再把 5 个有效预约写回 buyers 和 requests，并在 <code>carried</code> 里登记“订单 → 代次 4”。',
+    0, () => { clearMid(); rv('act', 'PREPARING · gen 3'); },
+    700, () => code('DEL buyers:7  requests:7  carried:7\nSET stock:7 5\nHSET activity:7 generation 4 state PREPARING\nfor (user, order) in 有效 SUCCESS 预约:\n  SADD buyers:7 user\n  HSET requests:7 user order\n  HSET carried:7 order 4\nreturn 写入数   -- 必须等于 5', 182),
+    1500, () => { rv('stock', '5'); rv('act', 'PREPARING · gen 4'); rv('buyers', '{77, 88, 91, 93, 95}'); rv('reqs', '5 个映射'); rv('carried', '{5002…5006 → 4}'); }),
+  step('第 5 步：Redis 覆盖确认无误后，才在数据库事务里换代：插入代次 4 的记录，把代次 3 标为 <code>REPLACED</code>，活动的 generation 改成 4。<em>在这之前，数据库一直认为代次是 3</em>。',
+    0, () => code('BEGIN\n  INSERT campaign_generation(7, 4, \'ACTIVE\', 5)\n  UPDATE campaign_generation SET status = \'REPLACED\' WHERE … generation <> 4\n  UPDATE limited_campaign SET generation = 4, publish_state = \'ACTIVE\'\nCOMMIT', 182),
+    800, () => { row('gen', 4, { g: 4, s: 'ACTIVE', r: 5 }); cell('gen', 3, 's', 'REPLACED'); },
+    1400, () => cell('camp', 7, 'gen', '4')),
+  step('第 6 步：Redis 状态改回 <code>ACTIVE</code>，解除入口封锁。如果这一步写 Redis 失败，数据库会被改成 PAUSED 并返回 503，入口<em>不会在半成品状态下打开</em>。',
+    0, () => { rv('act', 'ACTIVE · gen 4'); },
+    600, () => { guard(true, '恢复成功'); admin('recover → 200', 'ok'); },
+    1100, () => bal(5, 5, '重建完成：两边一致', 'var(--green)', 400)),
+  step('<code>carried</code> 的作用：5003 是代次 3 出生的订单，被代次 4 接收了。以后它关单，release Lua 发现预约代次 3 ≠ 当前代次 4，但 <code>carried[5003] = 4</code>，照常回补。<em>不在 carried 里的旧代次订单</em>，回补一律空操作。',
+    0, () => { clearMid(); gate('release Lua · 订单 5003（代次 3）', [['预约代次 = 当前代次 4？', ''], ['carried[5003] = 4？', ''], ['requests[88] = 5003？', '']], 182); },
+    600, () => check(0, 'no', '3 ≠ 4'), 1100, () => check(1, 'ok', '被带入 → 继续'), 1600, () => check(2, 'ok', '回补'),
+    2100, () => note('代次 = fencing token', `每次重建换一个新值，旧值发出的东西全部失效：<br>受理 Lua（代次不符返回 5）、register（代次过期 → STALE / REVIEW）、fulfill（拒绝建单）、release Lua（不在 carried 就空操作）。<br>旧代次<b>不是全部作废</b>，而是只认数据库确认过、被带入的那部分。`, 330)),
+  step('<code>PREPARING</code> 的作用：如果进程在第 4 步后、第 5 步前崩溃，Redis 是“PREPARING + 代次 4”，数据库还是代次 3，Lua 看到不是 ACTIVE 一律返回 3，<em>入口事实上关着</em>；恢复时代次对不上，重新执行一遍重建即可。',
+    0, () => { clearMid(); note('崩溃在不同位置时', `<ul><li><b>第 4、5 步之间</b>：Redis PREPARING·gen 4，库里 gen 3 → 不对齐 → 重新重建（再生成一次 gen 4，覆盖写）</li><li><b>第 5、6 步之间</b>：库里 gen 4，Redis PREPARING·gen 4 → 恢复的<b>第二种情况</b>：只改回 ACTIVE 并解封</li><li>重启后 entryGuard 由启动核对重新决定：Redis 状态与库不一致 → 关闭</li></ul>`, 182); }),
+]);
+
+scene('⑦ Stream 裁剪', [
+  step('最后一个后台任务：每 60 秒尝试裁剪 Stream。只要有 pending、lag 未知或大于 0、处理中预约、未完成交接中的任何一项，就不裁。真正执行时，<em>Lua 在 Redis 单线程里重新核对所有消费组</em>，只裁到所有组都确认过的位置。',
+    0, () => { clearMid(); code('trimIfSafe():\n  blockers = [pending > 0, lag 未知, lag > 0,\n              PROCESSING/REVIEW, 未完成交接, 无水位]\n  if blockers 非空: return\n  campaign-stream-trim.lua:\n    XINFO GROUPS → 全部 pending = 0 且 lag = 0\n    XTRIM MINID <所有组 last-delivered 的最小值>', 182); },
+    900, () => note('为什么脚本里要再查一遍', `展示判断和真正执行之间，可能新建了消费组、又投递了新消息。放进 Lua 里原子地“查完就裁”，就不会误删还没被某个组读到的消息。`, 360)),
+]);
+
+scene('总结与思考', [
+  step('回顾：Redis 只是入口副本。方向不变量帮你判断差异是在途还是事故；对账只发现不修复；恢复按情况解封或重建；重建要等在途清零、换新代次、用 PREPARING 和守卫保证中途出错时入口一直关着。',
+    0, () => ov(`<div class="kp">本集回顾</div><h1 style="font-size:32px">重建与对账的关键点</h1><ol style="margin-top:14px">
+      <li>方向不变量：正常只会 <b>Redis ≤ MySQL</b>；Redis 多一定是事故</li>
+      <li>对账：<b>initial = remaining + committed</b>；−差额 ≤ <b>processing + review + 未完成事件</b> 为在途；只告警</li>
+      <li>入口两道门：Redis <b>activity.state</b> 与 JVM 内 <b>entryGuard</b></li>
+      <li>发布<b>先库后 Redis</b>，暂停<b>先 Redis 后库</b>；恢复分三种情况</li>
+      <li>重建：关入口 → <b>409 前置条件</b> → PREPARING → <b>新代次</b> rebuild（含 carried）→ 库里换代 → ACTIVE + 解封</li></ol>`)),
+  step('暂停思考第 1 题：MySQL 97、Redis 95，同时有 1 条 PROCESSING 预约和 1 个未完成的释放事件，差 2 能解释吗？反过来 Redis 99、MySQL 97 呢？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">MySQL 剩 97、Redis 95，同时有 1 条 PROCESSING 预约和 1 个未完成的 <code>CAMPAIGN_STOCK_RELEASED</code>。差 2 能否解释？为什么两笔在途都让 Redis 更少？如果是 Redis 99、MySQL 97 呢？</div>`)),
+  step('参考答案：能解释。PROCESSING 是 Redis 先扣、MySQL 未扣；未完成的释放事件是 MySQL 先还、Redis 未还，都让 Redis 更少，2 ≤ 1 + 1。Redis 99 是反方向，任何在途都解释不了，判 UNEXPLAINED，只告警，交给人工恢复重建。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>PROCESSING：Redis 已扣、MySQL 未扣 → Redis 少 1</li>
+      <li>未完成释放事件：MySQL 已还、Redis 未还 → Redis 少 1</li>
+      <li>−(95 − 97) = 2 ≤ 1 + 0 + 1 → <code>IN_FLIGHT</code>，不精确但可解释</li>
+      <li>Redis 99 &gt; 97：方向错误 → <code>UNEXPLAINED</code>；对账只打日志和指标，<b>不自动改库存</b>；人工执行恢复重建，重启时启动核对也会关入口</li></ul></div>`)),
+  step('暂停思考第 2 题：重建为什么必须等在途清零？为什么一定要换新代次，而不是沿用旧代次只改库存数字？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">重建为什么必须等 PROCESSING / REVIEW、Stream 和活动事件全部清零？为什么一定要换新代次，而不能沿用旧代次、只把库存数字改对？</div>`)),
+  step('参考答案：重建是用数据库快照覆盖 Redis，在途的东西会在覆盖之后改变数据库，又造成 Redis 多或资格丢失。换代次是为了让重建前发出的旧消息、旧回补全部失效，只有被 carried 带入的订单继续有效。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li>在途 PROCESSING：重建写库存 = 剩余、buyers 不含该用户；随后它建单 → 数据库再减 1 → <b>Redis 又多 1</b>，且该用户可再抢</li>
+      <li>未完成释放事件：重建后再执行回补 → 库存被多加一次</li>
+      <li>换新代次 = fencing token：受理、register、fulfill、release 都检查代次，<b>旧代次的消息和事件自动失效</b></li>
+      <li>carried：旧代次中数据库确认有效的订单被带入新代次，以后关单照常回补</li></ul></div>`)),
+  step('暂停思考第 3 题：发布为什么先库后 Redis，暂停却先 Redis 后库？PREPARING 状态解决了什么问题？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">发布为什么是先写库、再写 Redis，暂停却是先写 Redis、再写库？重建过程中的 <code>PREPARING</code> 状态解决了什么问题？</div>`)),
+  step('参考答案：两种顺序都保证出错时入口是关着的。开门前事实必须先落库，关门要先让入口立即生效。PREPARING 让重建中途崩溃时 Lua 一律返回 3，入口事实上关着，恢复时也能识别出只差最后一步。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li>发布：Redis 写失败 → 事务回滚，库里仍是 DRAFT，<b>入口没开</b></li>
+      <li>暂停：先 <code>activity.state = PAUSED</code>，受理立即返回 3；库更新失败只是多关了一会，不会半开</li>
+      <li>PREPARING：重建期间 Lua 返回 3，入口关闭；崩溃后 recover 能区分“重建没做完 → 再做一次”和“只差改回 ACTIVE → 解封即可”</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

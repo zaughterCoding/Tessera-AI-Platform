@@ -38,7 +38,10 @@ English · [简体中文](README.zh-CN.md)
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white" />
 </p>
 
+<p><a href="https://zaughtercoding.github.io/Tessera-AI-Platform/flow-animations/?lang=en"><b>▶ Watch the interactive flow animations</b></a> · English &amp; 中文</p>
+
 [Overview](#overview) ·
+[Flow Animations](#flow-animations) ·
 [Highlights](#highlights) ·
 [Architecture](#architecture) ·
 [Benchmarks](#benchmarks) ·
@@ -50,6 +53,25 @@ English · [简体中文](README.zh-CN.md)
 </div>
 
 ---
+
+## Flow Animations
+
+> 🎬 **New to the codebase? Start here.** [**Open the animation index →**](https://zaughtercoding.github.io/Tessera-AI-Platform/flow-animations/?lang=en)
+
+Eight step-by-step animated walkthroughs explain the core flows the way you would trace them in a debugger: database rows appear and change, row locks are taken and released, outbox messages travel between components, and every decision point is checked one condition at a time. Each episode ends with three pause-and-think questions.
+
+| Episode | What it walks through |
+| --- | --- |
+| E0 · Overview | One map connecting every flow; what MySQL, Redis and RocketMQ are each responsible for |
+| E1 · Reliable outbox | Same-transaction writes, `SKIP LOCKED` claims and leases, five-step idempotent consumption, `SENT ≠ DONE` |
+| E2 · Standard purchase | Request keys and unique keys, order snapshots, unknown outcomes, the payment-vs-expiry race |
+| E3 · Flash sale | Atomic Lua admission, Stream `register` / `fulfill`, `XCLAIM` takeover, stock release and the deadlock fix |
+| E4 · Rebuild & reconciliation | Stock direction invariant, reconciliation formula, entry guard, generation-based rebuild |
+| E5 · Entitlements & ledger | Two-hop grant, balance identity, late grants, freeze / consume / release / expire |
+| E6 · Generation scheduling | `NOWAIT` grant selection, fair picking, AIMD, five upstream outcomes, single settlement |
+| E7 · Catalog cache | Five-layer reads, single-flight and mutex, version-based invalidation, Redis outage fallback |
+
+Every page has a language switch that keeps your current step. The pages are plain HTML with no build step: open [`flow-animations/index.html`](flow-animations/index.html) locally, or append `?step=12` to jump to a step.
 
 ## Overview
 
@@ -282,6 +304,7 @@ Health endpoints: `/actuator/health`, `/actuator/health/liveness` and `/actuator
 ├── web/              # Next.js 16 + React 19 BFF frontend
 ├── deploy/           # self-contained delivery: Compose, Nginx, monitoring, backup/restore
 ├── dev/              # isolated dev / test / load environments
+├── flow-animations/  # bilingual interactive walkthroughs of the core flows (static HTML)
 └── config/           # Checkstyle rules
 ```
 

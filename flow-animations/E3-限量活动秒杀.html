@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E3 限量活动秒杀</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.tn{font-size:11.5px}
+.bd.tx{display:none}
+.sub{font-size:12px;color:var(--muted);letter-spacing:.5px}
+.sub b{color:#ff8f8f;font-weight:600}.sub b.m{color:#7cc0ff}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E3-limited-campaign.html', home: 'index.html', title: 'E3 · 限量活动秒杀', docTitle: 'E3 限量活动秒杀', example: '例子：活动 7 · 限量 2 件 · 代次 3',
+  cols: [[16, 214], [238, 376], [622, 642]],
+  lanes: [['用户', '抢购请求'], ['应用服务', '受理 · Stream 消费线程'], ['Redis 入口副本', '｜ MySQL 事实']] });
+
+/* ============ 剧本 ============ */
+const TY = { rk: 88, st: 272, camp: 88, res: 150, ord: 252, ob: 334, dl: 436 };
+const RX = 632, MX = 948;
+const toR = t => [660, TY[t] + 4], toM = t => [975, TY[t] + 4];
+const MID = [520, 240];
+const UY = { 42: 88, 77: 134, 88: 180 };
+const fromU = u => [60, UY[u] + 10];
+const toApp = (slot = 0) => [260, 96 + slot * 46];
+
+function user(u, label, st = 'run') { card('U' + u, 26, UY[u], 194, '', st, label, '用户 ' + u); }
+function panel(html, tone = '') { put('upanel', 'fe st ' + tone, html, 26, 232, 194, null); }
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+function rk(id, k, t, v) { row('rk', id, { k, t, v }); }
+
+scene('片头', [
+  step('这一集讲限量活动秒杀。和普通购买最大的不同是：<em>同步受理只碰 Redis，建单在后台异步落库</em>。Redis 是入口副本，MySQL 才是事实。',
+    0, () => ov(`<div class="kp">链路动画 · 第 3 集</div><h1>限量活动秒杀</h1><h2>Redis 原子受理扛住瞬时流量，Stream 异步建单，数据库兜底一致</h2>
+      <ol><li>同步受理：前置检查、用户锁、先生成订单号、<b>Lua 一次判定并写入</b></li><li>异步两段事务：<b>register</b> 登记预约 → <b>fulfill</b> 扣库存建单 → 最后才 <b>XACK</b></li><li>崩溃与重投：<b>PEL + XCLAIM</b>、预约状态挡住重复、死信与 REVIEW</li><li>关单释放：固定加锁顺序、生成列 <b>active_user</b>、Redis 回补</li></ol>`)),
+  step('为了画面清楚，活动 7 只放 <em>2 件</em>，当前代次是 3。右侧左半边是 Redis 里的几个 Key 和 Stream，右半边是 MySQL 里的活动、预约、订单、outbox 和死信表。订单号用短号演示。',
+    0, () => ovOff(),
+    300, () => {
+      clock('10:00:00.200');
+      table('rk', RX, TY.rk, 306, 'Redis Keys', 'campaign:*', [['k', 'key', 88], ['t', 'type', 52], ['v', 'value', 156]]);
+      rk('stock', 'stock:7', 'string', '2');
+      rk('act', 'activity:7', 'hash', 'ACTIVE · gen 3');
+      rk('buyers', 'buyers:7', 'set', '{ }');
+      rk('reqs', 'requests:7', 'hash', '{ }');
+    },
+    700, () => table('st', RX, TY.st, 306, 'stream:orders', '消费组 fulfillment', [['id', 'entry', 44], ['f', 'fields', 120], ['pel', 'PEL', 110]]),
+    1000, () => {
+      table('camp', MX, TY.camp, 306, 'limited_campaign', '活动', [['id', 'id', 24], ['rem', 'remaining', 70], ['init', 'initial', 58], ['gen', 'generation', 80]]);
+      row('camp', 7, { id: 7, rem: 2, init: 2, gen: 3 });
+    },
+    1300, () => table('res', MX, TY.res, 306, 'campaign_reservation', '预约', [['o', 'order', 42], ['u', 'uid', 28], ['g', 'gen', 26], ['s', 'state', 74], ['r', 'rel', 28], ['a', 'active', 50]]),
+    1600, () => table('ord', MX, TY.ord, 306, 'purchase_order', '订单', [['id', 'id', 42], ['u', 'uid', 34], ['c', 'campaign', 62], ['s', 'status', 80]]),
+    1900, () => table('ob', MX, TY.ob, 306, 'business_outbox', '', [['id', 'id', 40], ['k', 'kind', 160], ['s', 'state', 64]]),
+    2200, () => table('dl', MX, TY.dl, 306, 'campaign_dead_letter', '死信', [['m', 'message_id', 70], ['o', 'order', 42], ['r', 'reason', 150]])),
+]);
+
+scene('① 前置检查', [
+  step('10:00:00 开抢，用户 42 点击抢购，带着活动号和请求键调用 <code>admit()</code>。注意这个方法<em>没有 @Transactional</em>：它只读库做判断，真正的写入全在 Redis。',
+    0, () => { clock('10:00:00.200', true); user(42, '点击抢购', 'run'); },
+    500, () => fly('POST /campaigns/admit {campaignId: 7, requestKey}', fromU(42), toApp(0), 'blue'),
+    1400, () => tx('A42', 0, 'admit() · 用户 42', 'run'),
+    1800, () => gate('前置检查（读库，无事务）', [['活动存在且已发布', ''], ['入口开关 entryGuard 打开', ''], ['商品可售 · sale_mode = 1', ''], ['ACTIVE 且在时间窗内', '']], 182),
+    2300, () => check(0, 'ok'), 2700, () => check(1, 'ok', 'JVM 内开关'), 3100, () => check(2, 'ok'), 3500, () => check(3, 'ok')),
+  step('接着加用户锁：<code>SET NX EX 5</code>，Key 是 <code>campaign:admit:7:42</code>，把同一个用户的并发抢购串起来。进锁之后<em>重新读一遍活动</em>：后台恢复可能刚把代次推进了，拿旧代次去 Redis 会被误判成“Redis 损坏”。',
+    0, () => { gone('gate'); code('SET campaign:admit:7:42 <owner> NX EX 5\n-- 抢不到锁 → 503，请稍后重试\n\nLimitedCampaign current = campaigns.selectById(7);  // 锁内重读\nrequireJoinable(current);', 182); },
+    900, () => fly('SET NX EX 5', MID, toR('rk'), 'blue'),
+    1600, () => rk('lock', 'admit:7:42', 'string', '锁 · 5 秒')),
+  step('然后<em>先生成订单号</em>，再执行 Lua。订单号 = 距 2022-01-01 的秒数左移 32 位，或上当天的 Redis 自增序列。这个号会被写进 Redis 和 Stream 消息，后面登记、建单、重投用的都是<em>同一个号</em>，订单表主键才能挡住重复。',
+    0, () => code('long seq = INCR icr:campaign-order:2026:11:08;\nlong orderId = (seconds - EPOCH) << 32 | seq;\n-- 演示里简写为 5001', 182),
+    900, () => tagAt('oid', '订单号 5001（演示短号）', 260, 290, 'ok')),
+]);
+
+scene('② Lua 原子受理', [
+  step('<code>campaign-admit.lua</code> 在 Redis 里<em>一次性</em>做完所有判断和写入，中间不会插进别的命令。判断的顺序很讲究，从上往下依次检查，任何一项不满足就返回对应的码。',
+    0, () => { clearMid(); gone('oid'); },
+    300, () => gate('campaign-admit.lua 判断顺序', [['Key 类型冲突？', '→ 4'], ['请求键已存在？', '→ 6 重复请求'], ['activity.state = ACTIVE？', '否 → 3'], ['代次 = 库里的代次，库存在 [0, 2]？', '否 → 5'], ['在时间窗内？', '否 → 3'], ['用户已在 buyers？', '是 → 2'], ['库存 &gt; 0？', '否 → 1 售罄'], ['全部通过', '→ 0 受理']], 182),
+    900, () => check(0, 'ok', '无冲突'), 1300, () => check(1, 'ok', '首次'), 1700, () => check(2, 'ok'), 2100, () => check(3, 'ok', 'gen 3 · 库存 2'),
+    2500, () => check(4, 'ok'), 2900, () => check(5, 'ok', '不在'), 3300, () => check(6, 'ok', '2 件'), 3700, () => check(7, 'go', '受理')),
+  step('通过后，同一个脚本里写下 6 件事：库存减 1、用户进 buyers、记下“用户 → 订单”、写订单哈希（状态 <code>PROCESSING</code>）、写请求键映射，最后 <code>XADD</code> 一条消息到 Stream。<em>要么全做，要么全不做</em>。',
+    0, () => { fly('EVALSHA admit', MID, toR('rk'), 'blue'); },
+    700, () => cell('rk', 'stock', 'v', '1'),
+    1100, () => cell('rk', 'buyers', 'v', '{ 42 }'),
+    1500, () => cell('rk', 'reqs', 'v', '{42→5001}'),
+    1900, () => rk('req', 'request:5001', 'hash', 'PROCESSING · gen 3'),
+    2300, () => rk('rkey', 'request-key:7:42:…', 'string', '5001'),
+    2800, () => row('st', 'e1', { id: '1-0', f: '5001 · u42 · g3', pel: '' })),
+  step('脚本返回 0，接口释放用户锁，返回 <code>PROCESSING</code> 和订单号 5001。<em>这一段完全没有写数据库</em>。前端拿着请求键轮询结果，页面提示“已受理，订单正在创建”。',
+    0, () => { rmRow('rk', 'lock'); txs('A42', 'ok', '返回 PROCESSING'); },
+    500, () => fly('200 · PROCESSING · 订单 5001', toApp(0), fromU(42), 'green'),
+    1300, () => { user(42, '已受理 5001', 'ok'); panel('用户 42 看到：<br>“已受理预购请求，订单正在创建；受理不代表建单成功或已付款”', 'ok'); }),
+  step('同一时刻，用户 77 走完同样的流程，拿到最后一件：库存 1 → 0，Stream 里多了第二条消息。',
+    0, () => { clearMid(); gone('tx_A42'); user(77, '点击抢购', 'run'); },
+    500, () => fly('admit', fromU(77), toApp(1), 'blue'),
+    1200, () => { cell('rk', 'stock', 'v', '0'); cell('rk', 'buyers', 'v', '{ 42, 77 }'); cell('rk', 'reqs', 'v', '{42→5001, 77→5002}'); },
+    1700, () => row('st', 'e2', { id: '2-0', f: '5002 · u77 · g3', pel: '' }),
+    2200, () => user(77, '已受理 5002', 'ok')),
+  step('用户 88 来晚了：前面几项都通过，用户不在 buyers 里，但库存是 0，返回 1 售罄，接口回 409。<em>Redis 挡住了这个请求，数据库完全没被打扰</em>。',
+    0, () => { user(88, '点击抢购', 'run'); fly('admit', fromU(88), toApp(0), 'blue'); },
+    900, () => gate('Lua · 用户 88', [['类型 / 请求键 / 状态 / 代次 / 时间窗', ''], ['已在 buyers？', ''], ['库存 &gt; 0？', '']], 182),
+    1300, () => check(0, 'ok'), 1700, () => check(1, 'ok', '不在'), 2100, () => check(2, 'no', '0 → 返回 1'),
+    2600, () => { user(88, '409 已售罄', 'rb'); }),
+  step('用户 42 换了个新请求键又点一次。这次“请求键已存在”拦不住（键是新的），但“已在 buyers”命中，返回 2，接口把<em>原订单 5001</em> 还给他。注意 2 排在售罄 1 前面：已经抢到的人，即使售罄了也能拿回自己的资格。',
+    0, () => { user(42, '新请求键再点一次', 'run'); fly('admit（新 requestKey）', fromU(42), toApp(0), 'blue'); },
+    900, () => gate('Lua · 用户 42 再次请求', [['请求键已存在？', ''], ['已在 buyers？', ''], ['库存 &gt; 0？', '']], 182),
+    1300, () => check(0, 'ok', '新键，不存在'), 1800, () => check(1, 'no', '在 → 返回 2'),
+    2300, () => { user(42, '原订单 5001', 'ok'); note('两道判重，别混', `<ul><li><b>6 请求键</b>：同一次请求的重试（网络重发、双击），返回原结果</li><li><b>2 buyers 集合</b>：一人一单，不管请求键是不是新的</li><li>数据库里还有第三道：预约表唯一键 <code>(campaign_id, active_user)</code></li></ul>`, 300); }),
+]);
+
+scene('③ 异步登记 register', [
+  step('后台有一个专门的消费线程，循环做两件事：<em>先 reclaim 接管别人卡住的消息，再读新消息</em>。读新消息用 <code>XREADGROUP … COUNT 10 BLOCK 1000 &gt;</code>。读到 5001 后，它进入消费组的待确认列表 PEL。',
+    0, () => { clearMid(); panel('', ''); gone('upanel'); },
+    300, () => tx('C', 0, '消费线程 campaign-stream-consumer', 'run', '循环中'),
+    800, () => code('while (running) {\n  reclaim();   // PEL 里空闲 ≥ 5 秒的消息 → XCLAIM\n  readNew();   // XREADGROUP GROUP fulfillment … COUNT 10 BLOCK 1000 >\n}', 182),
+    1600, () => fly('XREADGROUP', MID, toR('st'), 'blue'),
+    2300, () => { cell('st', 'e1', 'pel', 'c1 · 第 1 次投递'); hl('st', 'e1'); }),
+  step('事务 ① <code>register</code>：先 <code>FOR UPDATE</code> 锁预约行。库里还没有这一行，就必须去 Redis 核对受理事实：订单哈希、用户→订单、请求键映射、buyers <em>四个 Key 全部对上</em>，才插入一行 <code>PROCESSING</code> 预约。消息本身不能自证身份。',
+    0, () => code('reservation = selectReservationForUpdate(5001);   // 没有\nadmitted(message):\n  request:5001 的 state/order/user/campaign/gen/requestKey 一致\n  requests:7[42] == 5001\n  request-key:7:42:… == 5001\n  SISMEMBER buyers:7 42', 182),
+    900, () => fly('核对 4 个 Key', MID, toR('rk'), 'blue'),
+    1500, () => { hl('rk', 'req'); hl('rk', 'reqs'); hl('rk', 'rkey'); hl('rk', 'buyers'); },
+    2300, () => { ['req', 'reqs', 'rkey', 'buyers'].forEach(k => hl('rk', k, null)); fly('INSERT IGNORE 预约', MID, toM('res'), 'blue'); },
+    3000, () => { row('res', 5001, { o: 5001, u: 42, g: 3, s: 'PROCESSING', r: 0, a: 42 }, 'R1'); lock('res', 5001, 'X', 'R1'); }),
+  step('预约已存在的情况（比如重投）就反过来：<em>不查 Redis，而是拿消息和库里这一行比对四个字段</em>（活动、用户、代次、请求键）。然后看状态：SUCCESS / FAILED / REVIEW 各自返回；消息代次和活动当前代次不同，就标 REVIEW，返回 STALE。',
+    0, () => note('register 的两条路', `<ul><li><b>没有行</b> → 核对 Redis 四个 Key → 插入 PROCESSING</li><li><b>已有行</b> → 比对四个字段，不一致返回 INVALID（进死信）</li><li>状态：SUCCESS → 直接 ACK；REVIEW / 代次过期 → 死信 + ACK；PROCESSING → 继续建单</li></ul>`, 300)),
+  step('5001 是 PROCESSING、代次一致，事务 ① 提交。<em>注意这时并不 ACK</em>：默认的 stream 模式下，同一个线程接着调用 <code>fulfill</code>。两个事务之间，靠<em>预约的 PROCESSING 状态 + 还没确认的 Stream 消息</em>衔接，任何一边崩溃都能接着干。',
+    0, () => { gone('note'); commit('R1'); },
+    600, () => note('另一种交接：outbox 模式', `配置 <code>fulfillment-mode=outbox</code> 时，register 在同一事务里插入 <code>CAMPAIGN_FULFILL</code>（<code>INSERT IGNORE</code>，键 <code>campaign-fulfill:5001</code>），提交后<b>立刻 ACK</b>。建单责任从 Stream 转移到 outbox 表，由 E1 讲的中继负责。`, 300)),
+]);
+
+scene('④ 建单 fulfill', [
+  step('事务 ② <code>fulfill</code>：再次锁预约行，确认还是 PROCESSING；预约代次等于活动当前代次；在事务里<em>按实时状态重新确认商品可售</em>，不能只信受理时的判断；订单 5001 还不存在。',
+    0, () => { clearMid(); lock('res', 5001, 'X', 'F1'); hl('res', 5001); },
+    500, () => gate('fulfill 的前置检查', [['预约状态 = PROCESSING？', 'SUCCESS → 直接返回'], ['预约代次 = 活动代次？', '否 → 抛异常'], ['商品与应用仍可售？', '否 → 抛异常'], ['订单 5001 已存在？', '是 → 核对后 markSuccess']], 182),
+    1000, () => check(0, 'ok'), 1500, () => check(1, 'ok', '3 = 3'), 2000, () => check(2, 'ok'), 2500, () => check(3, 'ok', '不存在 → 建单')),
+  step('真正扣数据库库存：<code>remaining_stock - 1 WHERE remaining_stock &gt; 0</code>，活动行加 X 锁；用<em>同一个订单号 5001 显式插入</em>订单（不走自增）；同事务写 <code>ORDER_CREATED</code> 和 <code>ORDER_EXPIRE</code>；最后把预约标成 <code>SUCCESS</code>。',
+    0, () => { gone('gate'); hl('res', 5001, null); code('UPDATE limited_campaign SET remaining_stock = remaining_stock - 1\nWHERE id = 7 AND remaining_stock > 0;\nINSERT INTO purchase_order(id, ...) VALUES (5001, ...);  -- 显式订单号\noutbox: ORDER_CREATED, ORDER_EXPIRE\nUPDATE campaign_reservation SET state = \'SUCCESS\'\nWHERE order_id = 5001 AND state = \'PROCESSING\';', 182); },
+    900, () => { fly('扣库存', MID, toM('camp'), 'blue'); },
+    1500, () => { lock('camp', 7, 'X', 'F1'); cell('camp', 7, 'rem', '1', 'F1'); },
+    2100, () => row('ord', 5001, { id: 5001, u: 42, c: 7, s: 'UNPAID' }, 'F1'),
+    2500, () => { row('ob', 7101, { id: 7101, k: 'ORDER_CREATED', s: 'PENDING' }, 'F1'); row('ob', 7102, { id: 7102, k: 'ORDER_EXPIRE', s: 'PENDING' }, 'F1'); },
+    3000, () => cell('res', 5001, 's', 'SUCCESS', 'F1')),
+  step('事务 ② 提交后，<code>afterCommit</code> 把 Redis 订单哈希改成 <code>BOOKED</code>，这只用于前端展示；<em>最后才 XACK</em>，消息离开 PEL。顺序记住：<code>markSuccess</code> 在事务里，BOOKED 在提交后，ACK 在最后。',
+    0, () => { commit('F1'); },
+    700, () => { cell('rk', 'req', 'v', 'BOOKED · gen 3'); },
+    1300, () => fly('XACK', MID, toR('st'), 'green'),
+    2000, () => { cell('st', 'e1', 'pel', '已确认'); dim('st', 'e1'); hl('st', 'e1', null); user(42, '订单 5001 待支付', 'ok'); }),
+]);
+
+scene('⑤ 崩溃与重投', [
+  step('再看 5002 出事的情况。消费线程读到 5002，事务 ① 登记成 PROCESSING 并提交；事务 ② 正在建单时，<em>进程崩溃</em>：建单事务回滚，订单不存在，消息还在 PEL 里，没有被确认。',
+    0, () => { clearMid(); clock('10:00:00.900', true); cell('st', 'e2', 'pel', 'c1 · 第 1 次投递'); hl('st', 'e2'); },
+    700, () => row('res', 5002, { o: 5002, u: 77, g: 3, s: 'PROCESSING', r: 0, a: 77 }),
+    1300, () => { lock('res', 5002, 'X', 'F2'); lock('camp', 7, 'X', 'F2'); cell('camp', 7, 'rem', '0', 'F2'); row('ord', 5002, { id: 5002, u: 77, c: 7, s: 'UNPAID' }, 'F2'); },
+    2100, () => { txs('C', 'rb', '💥 进程崩溃'); rollback('F2'); },
+    2800, () => note('此刻的状态', `Redis 库存 0，MySQL 剩余 1：差的 1 件就是<b>在途</b>的 5002。<br>预约 PROCESSING + 消息未确认 = 建单责任还挂着，<b>不会少卖，也不会超卖</b>。`, 300)),
+  step('应用重启后，消费循环第一件事就是 <code>reclaim()</code>：查 PEL，空闲超过 5 秒、投递次数不到 5 次的消息，用 <code>XCLAIM</code> 接管过来重新处理。<em>这是 Redis Stream 的接管方式</em>，和 outbox 的租约过期是两回事。',
+    0, () => { gone('note'); clock('10:00:07.000', true); tx('C', 0, '消费线程（重启后）', 'run', 'reclaim'); },
+    600, () => code('XPENDING stream:orders fulfillment - + 10\n-- 5002：空闲 6.1 秒，投递 1 次\nXCLAIM stream:orders fulfillment c1 5000 2-0 JUSTID', 182),
+    1400, () => fly('XCLAIM', MID, toR('st'), 'blue'),
+    2000, () => cell('st', 'e2', 'pel', 'c1 · 第 2 次投递')),
+  step('重新处理：register 发现预约已经存在，比对四个字段一致、状态 PROCESSING，于是接着 fulfill，这次成功：扣库存、建单、SUCCESS。提交后写 BOOKED……就在 <em>XACK 之前，进程又崩了</em>。',
+    0, () => { lock('res', 5002, 'X', 'F3'); },
+    500, () => { lock('camp', 7, 'X', 'F3'); cell('camp', 7, 'rem', '0', 'F3'); row('ord', 5002, { id: 5002, u: 77, c: 7, s: 'UNPAID' }, 'F3'); cell('res', 5002, 's', 'SUCCESS', 'F3'); },
+    1400, () => { commit('F3'); rk('req2', 'request:5002', 'hash', 'BOOKED · gen 3'); },
+    2100, () => txs('C', 'rb', '💥 XACK 前崩溃')),
+  step('再次重启、再次 XCLAIM。这回 register 锁住预约行，看到 <code>SUCCESS</code>，直接返回 SUCCESS，消费者<em>只做 ACK</em>，根本走不到扣库存那一步。所以重投不会重复扣库存，也不会重复建单。',
+    0, () => { clock('10:00:14.000', true); tx('C', 0, '消费线程（再次重启）', 'run', 'reclaim'); cell('st', 'e2', 'pel', 'c1 · 第 3 次投递'); },
+    700, () => { gone('code'); lock('res', 5002, 'X', 'R3'); gate('register · 5002 第 3 次', [['预约已存在，四字段一致？', ''], ['状态？', '']], 182); },
+    1200, () => check(0, 'ok'), 1700, () => check(1, 'go', 'SUCCESS → 直接 ACK'),
+    2300, () => { unlock('R3'); fly('XACK', MID, toR('st'), 'green'); },
+    3000, () => { cell('st', 'e2', 'pel', '已确认'); dim('st', 'e2'); hl('st', 'e2', null); txs('C', 'run', '循环中'); user(77, '订单 5002 待支付', 'ok'); }),
+  step('如果只靠订单表主键去重会怎样？重投时先扣库存、再插订单撞主键，整个事务回滚，数据倒是对的；但一次<em>已经成功</em>的建单被当成失败，白白抢一次活动行的热点锁，还会累计失败次数，最后误进死信。所以要<em>先看预约状态，再动库存</em>。',
+    0, () => { clearMid(); note('重试上限', `<ul><li>建单失败：<code>recordFailure</code> 让预约 <code>attempts + 1</code>，<b>不 ACK</b>，等 XCLAIM 再来；累计 5 次 → 预约标 REVIEW + 写死信 + ACK</li><li>投递次数达到 5：reclaim 时直接写死信并 ACK</li><li>死信写入失败：<b>不 ACK</b>，宁可再投也不丢</li></ul>`, 182); },
+    700, () => row('dl', 'demo', { m: '（示例）9-0', o: '…', r: '建单重试次数超限' })),
+]);
+
+scene('⑥ 关单释放', [
+  step('用户 42 一直没付款，订单 5001 在 10:15 到期关单（E2 讲过的 <code>closeExpired</code>）。活动订单多了一步：<em>在同一个关单事务里把库存还给数据库</em>。加锁顺序是固定的：订单 X → 预约 X → 活动 X → 写释放标记。',
+    0, () => { clearMid(); rmRow('dl', 'demo'); rmRow('ob', 7101); rmRow('ob', 7102); dim('st', 'e1'); clock('10:15:00.300', true); tx('CL', 1, 'closeExpired(5001)', 'run'); },
+    500, () => { lock('ord', 5001, 'X', 'CL'); cell('ord', 5001, 's', 'CANCELLED', 'CL'); },
+    1100, () => { lock('res', 5001, 'X', 'CL'); hl('res', 5001); },
+    1700, () => { lock('camp', 7, 'X', 'CL'); cell('camp', 7, 'rem', '1', 'CL'); },
+    2300, () => code('1 订单行 FOR UPDATE → CANCELLED\n2 预约行 FOR UPDATE：SUCCESS 且 stock_released = 0\n3 returnStock：remaining + 1 WHERE remaining < initial   ← 先拿活动行 X\n4 markStockReleased：stock_released = 1\n5 outbox：CAMPAIGN_STOCK_RELEASED + ORDER_CLOSED', 182)),
+  step('写释放标记 <code>stock_released = 1</code>。<code>stock_released</code> 保证库存只还一次；生成列 <code>active_user</code> 跟着变成 NULL。唯一键 <code>(campaign_id, active_user)</code> 允许多个 NULL，所以<em>用户 42 在数据库层面又可以抢了</em>。变 NULL 的是预约行，不是订单行。',
+    0, () => { cell('res', 5001, 'r', '1', 'CL'); },
+    500, () => cell('res', 5001, 'a', 'NULL', 'CL'),
+    1100, () => { row('ob', 7201, { id: 7201, k: 'CAMPAIGN_STOCK_RELEASED', s: 'PENDING' }, 'CL'); row('ob', 7202, { id: 7202, k: 'ORDER_CLOSED', s: 'PENDING' }, 'CL'); },
+    1800, () => { commit('CL'); txs('CL', 'ok'); hl('res', 5001, null); }),
+  step('为什么先还库存、再写标记？写标记会改 <code>active_user</code>，而它所在的唯一索引正是外键依托的索引，InnoDB 做外键检查会给<em>父表的活动行加 S 锁</em>。先拿 S 再要 X，两个关单事务就会 S/S 互等升级，死锁。先拿 X，S 就被覆盖了。',
+    0, () => note('修复前后对比（同一活动两单同时关闭）', `<b>修复前</b>：A 写标记 → 活动行 S；B 写标记 → 活动行 S；A 要 X 等 B；B 要 X 等 A → <b style="color:#ff8f8f">死锁</b><br><b>修复后</b>：A returnStock 拿 X；B 要 X 排队（手里没有活动行的锁）；A 写标记，S 被自己的 X 覆盖 → 提交 → B 继续`, 300)),
+  step('Redis 这一半由 outbox 异步完成：投递 <code>CAMPAIGN_STOCK_RELEASED</code>，执行 <code>campaign-release.lua</code>。它先确认代次（等于当前代次，或者在 carried 里），再确认 <code>requests[42]</code> 仍然是 5001，库存不超过初始值，然后才回补。',
+    0, () => { clearMid(); fly('CAMPAIGN_STOCK_RELEASED', toM('ob'), MID, ''); },
+    900, () => gate('campaign-release.lua', [['代次 = 3，或订单在 carried 里？', '否 → 0 空操作'], ['requests[42] = 5001？', '否 → 0 空操作'], ['库存 &lt; 初始库存 2？', '否 → -3'], ['全部通过', '→ 1 回补']], 182),
+    1400, () => check(0, 'ok'), 1800, () => check(1, 'ok'), 2200, () => check(2, 'ok', '0 &lt; 2'), 2600, () => check(3, 'go'),
+    3100, () => { cell('rk', 'stock', 'v', '1'); cell('rk', 'buyers', 'v', '{ 77 }'); cell('rk', 'reqs', 'v', '{77→5002}'); cell('rk', 'req', 'v', 'RELEASED'); rmRow('rk', 'rkey'); },
+    3600, () => cell('ob', 7201, 's', 'DONE')),
+  step('同一个释放事件如果被投递两次，第二次执行时 <code>requests[42]</code> 已经被删掉，不等于 5001，脚本返回 0 安全空操作，库存不会被多加。另外注意方向：<em>MySQL 先还、Redis 后还</em>，中间这段时间 Redis 比 MySQL 少，这是正常的在途，下一集对账会讲。',
+    0, () => { fly('CAMPAIGN_STOCK_RELEASED（重复）', toM('ob'), MID, 'grey'); },
+    800, () => gate('campaign-release.lua · 第二次', [['代次检查', ''], ['requests[42] = 5001？', '']], 182),
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'no', '已删除 → 返回 0'),
+    2200, () => note('库存的方向', `扣：<b>Redis 先扣</b>（Lua）→ MySQL 后扣（fulfill）<br>还：<b>MySQL 先还</b>（关单事务）→ Redis 后还（release Lua）<br>所以正常在途只会让 <b>Redis ≤ MySQL</b>；Redis 更多一定是事故。`, 300)),
+]);
+
+scene('总结与思考', [
+  step('回顾：受理在 Redis 里一次判定、一次写入；建单分成 register 和 fulfill 两个事务，最后才 ACK；重投靠预约状态挡住重复；关单时数据库先还、Redis 后还。',
+    0, () => ov(`<div class="kp">本集回顾</div><h1 style="font-size:32px">秒杀链路的关键点</h1><ol style="margin-top:14px">
+      <li>admit() <b>无事务</b>：前置检查 → 用户锁 <b>SET NX EX 5</b> → 锁内重读 → <b>先生成订单号</b></li>
+      <li>Lua 判定顺序 <b>4 → 6 → 3 → 5 → 3 → 2 → 1 → 0</b>，通过后 6 项写入含 XADD；<b>不写库</b></li>
+      <li>register：无行查 Redis 四个 Key、有行比四个字段 → PROCESSING；stream 模式<b>不 ACK</b></li>
+      <li>fulfill：再锁预约 → 真扣库存 → <b>同一订单号</b>建单 → outbox → SUCCESS → 提交后 BOOKED → <b>XACK</b></li>
+      <li>崩溃：消息留在 PEL，空闲 5 秒被 <b>XCLAIM</b>；重投先看预约状态；5 次进死信 / REVIEW</li>
+      <li>关单：订单 X → 预约 X → <b>活动 X → 释放标记</b>；active_user 变 NULL；Redis 由事件回补</li></ol>`)),
+  step('暂停思考第 1 题：Lua 返回 0 之后、建单之前进程崩溃，这件库存会丢吗？谁来接着推进？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">Lua 已经返回 0：Redis 库存扣了，Stream 里有消息。这时应用在建单前崩溃。这件库存处于什么状态？会不会少卖或超卖？重启后靠什么推进？</div>`)),
+  step('参考答案：Redis 比 MySQL 少 1 件，是在途。消息没被确认，留在 Stream 里：没读过的用读新消息读到，读过的在 PEL 里，空闲 5 秒后被 XCLAIM 接管。重投时 register 和 fulfill 都先锁预约看状态，只会建一单。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>Redis 已扣、MySQL 未扣：差额就是在途，责任凭证是那条<b>未确认的 Stream 消息</b></li>
+      <li>不超卖：判重、判库存、扣减在一个 Lua 里原子完成；不少卖：消息不确认就一直在</li>
+      <li>重启后：没读过的 → <code>XREADGROUP &gt;</code>；读过未确认的 → PEL，空闲 ≥ 5 秒被 <code>XCLAIM</code></li>
+      <li>重投安全：register / fulfill 都先 <code>FOR UPDATE</code> 锁预约看状态；SUCCESS 直接 ACK，订单已存在只核对</li></ul></div>`)),
+  step('暂停思考第 2 题：为什么 ACK 要放在 fulfill 之后？如果收到消息就先 ACK，会出什么问题？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">为什么 XACK 必须放在 fulfill 提交之后？如果读到消息就先 ACK 再建单，崩溃时会出什么问题？outbox 模式为什么又可以在 register 之后就 ACK？</div>`)),
+  step('参考答案：ACK 等于宣布“这件事我负责完了”。先 ACK 再崩溃，消息离开 PEL，没人会再接管，用户受理成功却永远建不了单。outbox 模式下，register 同事务写了 CAMPAIGN_FULFILL，责任已经转移到 outbox 表，所以可以先 ACK。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li>ACK = 消息离开 PEL，<b>再也不会被 XCLAIM 接管</b></li>
+      <li>先 ACK 后崩溃：预约停在 PROCESSING，没有任何机制推进；Redis 已扣库存、用户已收到“受理成功”，却建不了单</li>
+      <li>stream 模式：PROCESSING 状态 + 未确认消息共同承担责任，fulfill 提交后才 ACK</li>
+      <li>outbox 模式：register 同事务插入 <code>CAMPAIGN_FULFILL</code>（<code>INSERT IGNORE</code> 幂等键），<b>责任已落库</b>，ACK 后也不会丢</li></ul></div>`)),
+  step('暂停思考第 3 题：关单还库存时，为什么必须先 returnStock 再写释放标记？释放后用户为什么能再抢一次？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">关单事务里，为什么必须先 <code>returnStock</code>、再 <code>markStockReleased</code>？释放之后，同一个用户为什么又能再抢一次（数据库和 Redis 两层分别说）？</div>`)),
+  step('参考答案：写释放标记会改外键依托的唯一索引，外键检查给活动行加 S 锁，之后再要 X 会和别的关单互等死锁；先拿 X 就覆盖了 S。数据库层 active_user 变 NULL，唯一键允许多个 NULL；Redis 层 release Lua 把用户移出 buyers 并删除 requests 映射。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li>写 <code>stock_released</code> → 生成列 <code>active_user</code> 变化 → 外键依托的唯一索引删旧插新 → 外键检查给<b>父表活动行加 S</b></li>
+      <li>先 S 后 X：两个关单都拿到 S，再互等升级成 X → 死锁。先 <code>returnStock</code> 拿 X，后面的 S 被覆盖，别的事务在第一步就排队</li>
+      <li>数据库：<code>active_user = NULL</code>，唯一键 <code>(campaign_id, active_user)</code> 中 NULL 不算重复</li>
+      <li>Redis：release Lua <code>SREM buyers</code>、<code>HDEL requests</code>、<code>INCR stock</code>，并删除请求键映射</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

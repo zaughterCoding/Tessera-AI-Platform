@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E7 目录缓存</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 5px;font-size:11.5px}
+.bd.tx{display:none}
+.inst{font-size:12.5px;line-height:1.55}
+.inst .h{display:flex;justify-content:space-between;align-items:center;font-weight:700;color:#fff;margin-bottom:4px}
+.inst .h span{font-size:11px;font-weight:400;color:var(--muted)}
+.inst .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11.5px;color:#cfd8ee}
+.inst .row b{color:var(--yellow);font-weight:600}
+.inst .ent{margin-top:4px;padding:3px 6px;border-radius:5px;background:#0b1020;font-family:var(--mono);font-size:11px;color:#9fd0ff;min-height:20px}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E7-catalog-cache.html', home: 'index.html', title: 'E7 · 目录缓存', docTitle: 'E7 目录缓存', example: '例子：应用 7 的详情 · key = catalog:application:7',
+  lanes: [['应用实例', 'A 与 B'], ['应用服务', '读取路径 · 失效'], ['共享存储', 'Memcache · Redis · MySQL']] });
+
+/* ============ 剧本 ============ */
+const K = 'catalog:application:7';
+const TY = { rd: 88, mc: 212, db: 296, ob: 360 };
+const toDB = t => [770, TY[t] + 4];
+const MID = [600, 230];
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+// 实例面板：本地缓存、本地版本、单飞表
+function inst(id, y, o) {
+  put('inst' + id, 'fe st inst', `<div class="h">实例 ${id}<span>${o.tag || ''}</span></div>
+    <div class="row"><span>Caffeine（5 秒）</span><b>${o.local || '空'}</b></div>
+    <div class="row"><span>本地版本 app:7</span><b>${o.ver ?? 0}</b></div>
+    <div class="row"><span>inFlight 单飞</span><b>${o.fly || '无'}</b></div>
+    <div class="ent">${o.note || ''}</div>`, 26, y, 248, null);
+}
+// 五层读取的逐层判断
+function ladder(title, marks) {
+  const names = ['① 请求作用域（本次请求内）', '② Caffeine（本实例，5 秒）', '③ Memcache（key 带版本号）', '④ Redis（共享，带 TTL）', '⑤ MySQL（回源）'];
+  gate(title, names.map(n => [n, '']), 182);
+  marks.forEach(([i, st, oc], k) => later(400 + k * 450, () => check(i, st, oc)));
+}
+
+scene('片头', [
+  step('最后一集讲<em>目录缓存</em>：应用和商品详情这类公开读多写少的数据，怎么做到读得快、不被击穿、改了以后很快失效，而且 Redis 挂了也不会把数据库压垮。',
+    0, () => ov(`<div class="kp">链路动画 · 第 7 集</div><h1>目录缓存</h1><h2>五层读取、两层防击穿、版本号失效、Redis 故障时有界降级</h2>
+      <ol><li>逐层读：请求作用域 → Caffeine → Memcache → Redis → MySQL</li><li><b>进程内单飞</b> + <b>跨进程互斥锁</b>，两层别混</li><li>cache-fill.lua：<b>锁 owner + 版本号</b>双重校验才回填</li><li>失效路线 A：同事务写 outbox → <b>INCR 版本、DEL、PUBLISH</b></li><li>降级信号量；可选的路线 B：Canal</li></ol>`)),
+  step('画面：左边是两个应用实例 A、B，各有自己的 Caffeine 本地缓存和本地版本号；右边是所有实例共享的 Redis、Memcache 和 MySQL。应用 7 当前是已发布状态，各层缓存都是空的。',
+    0, () => ovOff(),
+    300, () => {
+      inst('A', 88, {}); inst('B', 300, {});
+      table('rd', 722, TY.rd, 532, 'Redis', '数据 · 版本 · 锁', [['k', 'key', 270], ['v', 'value', 150], ['ttl', 'TTL', 70]]);
+      row('rd', 'ver', { k: K + ':version', v: '0', ttl: '—' });
+      table('mc', 722, TY.mc, 532, 'Memcache', 'key = sha256(key) + 版本号', [['k', 'key', 270], ['v', 'value', 150]]);
+      table('db', 722, TY.db, 532, 'ai_application', 'MySQL', [['id', 'id', 40], ['name', 'name', 160], ['st', 'status', 90]]);
+      row('db', 7, { id: 7, name: 'AI 海报', st: '1 已发布' });
+      table('ob', 722, TY.ob, 532, 'business_outbox', '', [['id', 'id', 50], ['kind', 'kind', 200], ['s', 'state', 80]]);
+    }),
+]);
+
+scene('① 逐层读取', [
+  step('一个请求打到实例 A 读应用 7 详情。前两层都在本进程内：请求作用域（同一个请求里重复读不再查）、Caffeine（5 秒）。都没有命中，先记下本地版本 0，进入加载。',
+    0, () => { clearMid(); fly('GET /applications/7', [140, 60], [140, 100], 'blue'); },
+    600, () => ladder('读取 catalog:application:7', [[0, 'no', '未命中'], [1, 'no', '未命中']]),
+    1700, () => inst('A', 88, { ver: 0, note: '记下 version = 0，开始加载' })),
+  step('第三层 Memcache：它的 key 是 <em>key 的摘要 + Redis 里的版本号</em>，先读 <code>…:version</code> 得到 0，再查 <code>mc:…:0</code>，没有。第四层 Redis 也没有。需要回源。',
+    0, () => { fly('GET …:version', MID, toDB('rd'), 'blue'); hl('rd', 'ver'); },
+    700, () => { check(2, 'no', 'mc:…:0 未命中'); hl('rd', 'ver', null); },
+    1300, () => check(3, 'no', '未命中')),
+  step('同一时刻实例 A 上有 100 个请求读同一个 key。第一道防线是<em>进程内单飞</em>：<code>inFlight.putIfAbsent(key, future)</code>，只有第一个请求真正去加载，其余 99 个等同一个 future。',
+    0, () => { inst('A', 88, { ver: 0, fly: 'app:7 → 1 个加载者', note: '其余 99 个请求等待同一个 future' }); },
+    600, () => { for (let i = 0; i < 4; i++) later(i * 150, () => fly('请求', [60 + i * 40, 60], [120, 120], 'grey')); },
+    1400, () => code('CompletableFuture<…> mine = new CompletableFuture<>();\nrunning = inFlight.putIfAbsent(key, mine);\nif (running != null) return await(running);   // 等第一个人\ntry { 加载各层 } finally { inFlight.remove(key, mine); }', 330)),
+  step('但实例 B 也同时没命中。<em>单飞只管本进程</em>，跨进程靠第二道防线：Redis 互斥锁 <code>SET lock:cache:… NX PX 10s</code>。A 抢到了；B 没抢到，就每隔 20～40 毫秒重试，每次都<em>先重读 Redis</em>，最多等 2 秒，超时返回 503。',
+    0, () => { clearMid(); inst('B', 300, { ver: 0, fly: 'app:7 → 1 个加载者', note: '抢锁失败，20～40ms 后重读 Redis' }); },
+    500, () => { fly('SET NX PX 10s', [600, 160], toDB('rd'), 'blue'); },
+    1100, () => row('rd', 'lock', { k: 'lock:cache:' + K, v: 'owner=A·5e1', ttl: '10 s' }),
+    1600, () => fly('SET NX（失败）', [600, 380], toDB('rd'), 'red'),
+    2300, () => note('两层防击穿，别说成一层', `<ul><li><b>进程内单飞</b>：<code>inFlight</code> Map，同一实例同一 key 只有一个加载者</li><li><b>跨进程互斥</b>：Redis <code>SET NX PX</code>，所有实例同一 key 只有一个回源</li><li>抢不到锁的：重读 Redis，最多 2 秒，然后 503（不排队压数据库）</li></ul>`, 182)),
+  step('A 拿到锁后<em>双重检查</em>：再读一次 Redis（可能别人刚写好），仍然没有；读当前版本 0；然后才查 MySQL。写回用 <code>cache-fill.lua</code>：<em>锁的 owner 还是我，并且版本仍是 0</em>，两个条件都满足才 SET。',
+    0, () => { clearMid(); fly('SELECT … WHERE id = 7', MID, toDB('db'), 'blue'); hl('db', 7); },
+    800, () => code('-- cache-fill.lua\nif GET(lock:cache:…) ~= owner  then return 0 end   -- 锁已过期或被别人拿走\nif GET(…:version)   ~= "0"    then return 0 end   -- 加载期间被失效过\nSET catalog:application:7 <json> PX <ttl>\nreturn 1', 182),
+    1600, () => { hl('db', 7, null); row('rd', 'data', { k: K, v: '{name: AI 海报 …}', ttl: '5 min' }); },
+    2100, () => { row('mc', 'v0', { k: 'mc:sha(…app:7):0', v: '{name: AI 海报 …}' }); rmRow('rd', 'lock'); }),
+  step('写回成功后顺手放进 Memcache（带版本 0），释放锁（unlock 脚本也校验 owner）。A 的加载结束：<em>加载前后本地版本没变</em>，所以写入 Caffeine 和请求作用域。B 的下一次重试读到 Redis 命中，直接返回。',
+    0, () => { inst('A', 88, { ver: 0, local: 'app:7', note: '本地版本前后一致 → 写入 Caffeine' }); },
+    800, () => { fly('GET（重试）→ 命中', [600, 380], toDB('rd'), 'green'); },
+    1500, () => inst('B', 300, { ver: 0, local: 'app:7', note: 'Redis 命中，放入 Memcache 与本地' })),
+  step('5 秒内再有请求，在 Caffeine 层就命中了，连 Redis 都不碰。如果读的是<em>不存在的应用 99</em>，回源得到空值，也会把空串 <code>""</code> 写进 Redis，TTL 120 秒，防止有人反复用不存在的 id 打穿到数据库。',
+    0, () => { clearMid(); ladder('再次读取 app:7', [[0, 'no'], [1, 'go', '命中，直接返回']]); },
+    1500, () => row('rd', 'null', { k: 'catalog:application:99', v: '""（空值）', ttl: '120 s' })),
+  step('还有一个容易漏的点：<em>缓存只存内容，不决定可见性</em>。详情接口拿到缓存内容后，<em>每次都用 <code>selectStatus</code> 查一次实时状态</em>。应用被下架的那一刻，即使缓存里还有旧内容，接口也立刻返回 404。',
+    0, () => { clearMid(); code('detail = cache.query("catalog:application:7", …);\nInteger liveStatus = mapper.selectStatus(7);   // 每次都查\nif (liveStatus != PUBLISHED) throw NOT_FOUND;', 182); },
+    900, () => { hl('db', 7); },
+    1800, () => hl('db', 7, null)),
+]);
+
+scene('② 失效路线 A', [
+  step('管理员修改应用 7 的名称。<em>改表和写 outbox 在同一个事务里</em>：<code>APPLICATION_INVALIDATE</code>。回滚时，事件和缓存失效都不会发生；提交了，失效就一定会被执行（E1 的保证）。',
+    0, () => { clearMid(); rmRow('rd', 'null'); clock('10:30:00.000'); tx('ADM', 0, 'updateApplication(7) · @Transactional', 'run'); },
+    700, () => cell('db', 7, 'name', 'AI 海报 Pro', 'ADM'),
+    1200, () => row('ob', 9301, { id: 9301, kind: 'APPLICATION_INVALIDATE', s: 'PENDING' }, 'ADM'),
+    1800, () => { commit('ADM'); txs('ADM', 'ok'); }),
+  step('outbox 投递给 <code>catalog-cache</code> 消费组，投影删除<em>三类 key</em>：应用详情、该应用的商品列表、所有应用搜索结果（按前缀扫描）。每一个 key 的失效都走同一个 <code>invalidate(key)</code>。',
+    0, () => { gone('tx_ADM'); tx('CC', 0, '消费 9301 · catalog-cache', 'run'); },
+    600, () => code('invalidate("catalog:application:7")\ninvalidate("catalog:product:list:7")\ninvalidatePrefix("catalog:application:search:")   // SCAN 后逐个 invalidate\n任一失败 → 抛 CacheUnavailableException → outbox 退避重试', 182)),
+  step('<code>invalidate(key)</code> 一共做<em>五件事</em>：本实例先 ① 本地版本 +1 ② 删 Caffeine 和请求作用域；再执行 <code>cache-invalidate.lua</code>：③ <code>INCR …:version</code> ④ <code>DEL key</code> ⑤ <code>PUBLISH</code> 通知其他实例。实例 B 收到通知，同样把本地版本 +1、删掉本地条目。<em>Memcache 不用删</em>。',
+    0, () => { clearMid(); inst('A', 88, { ver: 1, local: '空', note: '① 本地版本 +1 ② 删除本地条目' }); },
+    800, () => { fly('EVAL cache-invalidate.lua', MID, toDB('rd'), 'blue'); },
+    1500, () => { cell('rd', 'ver', 'v', '1'); rmRow('rd', 'data'); },
+    2100, () => fly('PUBLISH → 实例 B', [800, 100], [140, 320], 'green'),
+    2800, () => { inst('B', 300, { ver: 1, local: '空', note: '收到通知：evictLocal(key)' }); txs('CC', 'ok'); cell('ob', 9301, 's', 'DONE'); }),
+  step('为什么 Memcache 不用删？因为版本号变成了 1，以后所有读取都去找 <code>mc:…:1</code>，旧的 <code>mc:…:0</code> 再也不会被读到，等它自然过期就行。<em>版本号 +1 一次做成了三件事</em>，下面用一个竞态来演示。',
+    0, () => { gone('tx_CC'); dim('mc', 'v0'); cell('mc', 'v0', 'k', 'mc:sha(…app:7):0（不会再被读到）'); },
+    800, () => note('版本号 +1 的三个作用', `<ol style="margin:2px 0 0;padding-left:18px"><li><b>挡住旧回源</b>：加载前记下的版本 ≠ 当前版本 → <code>cache-fill.lua</code> 拒绝写回</li><li><b>Memcache 旧条目读不到</b>：key 里带着版本号</li><li><b>本地判断</b>：加载期间本地版本变了 → 不写 Caffeine</li></ol>`, 182)),
+  step('竞态：实例 B 此时开始回源，记下版本 1，读到名称“AI 海报 Pro”。就在它写回之前，管理员又改了一次，新的失效把版本推进到 2。B 执行 <code>cache-fill.lua</code>：版本 1 ≠ 2，<em>返回 0，拒绝写回</em>；B 本地版本也变了，<em>不写 Caffeine</em>。这次请求照常返回，但旧值不会留在任何一层缓存里。',
+    0, () => { clearMid(); inst('B', 300, { ver: 1, fly: 'app:7 加载中', note: '加载开始：记下 version = 1' }); fly('SELECT（读到旧值）', [600, 380], toDB('db'), 'grey'); },
+    1000, () => { cell('db', 7, 'name', 'AI 海报 Max'); cell('rd', 'ver', 'v', '2'); inst('B', 300, { ver: 2, fly: 'app:7 加载中', note: '收到 PUBLISH：本地版本 → 2' }); inst('A', 88, { ver: 2, local: '空', note: '第二次失效：本地版本 → 2' }); },
+    1800, () => { fly('cache-fill.lua(version=1)', [600, 380], toDB('rd'), 'red'); },
+    2500, () => { gate('cache-fill.lua · 实例 B', [['锁 owner 仍是我？', ''], ['当前版本 = 1？', '']], 182); },
+    2900, () => check(0, 'ok'), 3300, () => check(1, 'no', '已是 2 → 拒绝写回'),
+    3800, () => inst('B', 300, { ver: 2, local: '空', note: '本地版本 1 → 2：不写 Caffeine（fenced）' })),
+]);
+
+scene('③ Redis 故障降级', [
+  step('如果 Redis 挂了：读 Redis 报错时，进入一个 1 秒的“降级窗口”，窗口内直接跳过 Redis。回源要先拿<em>公平信号量</em>：全实例最多 4 个并发，最多等 50 毫秒，拿不到直接返回 503。而且<em>降级读到的结果不回填</em>任何缓存。',
+    0, () => { clearMid(); dim('rd', 'ver'); },
+    500, () => code('if (redisDown()) return degraded(…);\ntry (Permit p = fallback.acquire()) {   // Semaphore(4, fair)，tryAcquire 50ms\n  if (p == null) throw 503 "缓存服务不可用";\n  json = source.get();                     // 回源 MySQL\n  return new CacheSnapshot(json, ttl, cacheable = false);   // 不回填\n}', 182),
+    1300, () => note('为什么要限流回源', `缓存挂掉时，所有读请求都会冲向数据库。信号量把回源并发压在 <b>4</b> 以内，多出来的请求快速失败，保住数据库和写链路。<br>Redis 恢复后，下一个请求正常走逐层读取并回填。`, 350),
+    2500, () => dim('rd', 'ver', false)),
+]);
+
+scene('④ 路线 B：Canal（可选）', [
+  step('还有一条可选的失效路线：Canal 订阅 MySQL binlog。它<em>默认关闭</em>（<code>APP_CDC_ENABLED=false</code>），只在需要“绕过应用直接改表也能失效”时打开。它只订阅两张表：<code>ai_application</code> 和 <code>usage_product</code>。',
+    0, () => { clearMid(); tx('CDC', 0, 'CanalCacheConsumer · 单一 leader', 'wait', '默认关闭'); },
+    600, () => note('为什么只能有一个 leader', `同一个 destination 只能有一个消费者在拉批次、确认位点：多个实例同时 <code>getWithoutAck</code> / <code>ack</code> 会互相确认对方的批次，导致漏处理。<br>所以先用 Redis 租约 <code>SET NX</code> 选出 leader，定期用脚本续租（校验 owner）。`, 182)),
+  step('一个批次的流程：<code>getWithoutAck</code> 取批次 → 按表映射成 <code>invalidate</code> → <em>确认自己仍是 leader</em> → 写检查点 → <em>再确认一次 leader</em> → <code>ack</code>。任何一步失败就 <code>rollback(batchId)</code>，让 Canal 重放。连接建立时先 <code>rollback()</code> 一次，从未确认的位置重新开始。',
+    0, () => { txs('CDC', 'run', 'leader'); code('connect(); subscribe("schema\\.(ai_application|usage_product)"); rollback();\nloop:\n  batch = getWithoutAck(size, timeout)\n  projector 映射 → cache.invalidate / invalidatePrefix\n  requireLeadership()  → 写 checkpoint（审计用）\n  requireLeadership()  → ack(batch.id)\n  失败 → rollback(batch.id)，从同一位点重放', 182); },
+    1200, () => note('检查点只做审计', `续读位置由 <b>Canal 自己的 meta</b> 保存；<code>cache_cdc_checkpoint</code> 只记录处理到哪里，用于观察延迟和排查，不作为续读依据。`, 380)),
+]);
+
+scene('总结与思考', [
+  step('回顾：五层逐层读；单飞管本进程、互斥锁管跨进程；写回要锁 owner 和版本号都对上；失效走 outbox，五件事里版本号 +1 是核心；Redis 故障时限流回源、不回填。',
+    0, () => ov(`<div class="kp">本集回顾</div><h1 style="font-size:32px">目录缓存的关键点</h1><ol style="margin-top:14px">
+      <li>读：请求作用域 → Caffeine 5 秒 → Memcache（带版本）→ Redis → MySQL</li>
+      <li>防击穿两层：<b>inFlight 单飞</b> + <b>SET NX PX 10s</b>，等不到 2 秒返回 503；空值 <b>""</b> 缓存 120 秒</li>
+      <li>写回：<b>cache-fill.lua 校验锁 owner + 版本号</b>；本地版本变了不写 Caffeine</li>
+      <li>失效：改表与 outbox 同事务 → 三类 key → <b>本地版本 +1、删本地、INCR、DEL、PUBLISH</b></li>
+      <li>可见性靠 <b>selectStatus</b>；降级 <b>信号量 4、等 50ms、不回填</b>；Canal 可选、单 leader</li></ol>`)),
+  step('暂停思考第 1 题：进程内单飞和 Redis 互斥锁都是防击穿，为什么两个都要？只留一个会怎样？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">进程内单飞（inFlight）和 Redis 互斥锁都能防缓存击穿，为什么两个都要？只留其中一个会出现什么问题？</div>`)),
+  step('参考答案：单飞只能合并本进程内的并发，多个实例仍会各自回源；互斥锁能管住所有实例，但如果没有单飞，同一实例里成百上千个线程都会去抢锁、重试、读 Redis。两层分工：单飞把本实例收敛成一个加载者，互斥锁把所有实例收敛成一个回源者。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>只有单飞：N 个实例就有 N 个回源者，热点 key 过期时数据库被打 N 次</li>
+      <li>只有互斥锁：同一实例上千个线程都去 <code>SET NX</code>、每 20～40ms 重试读 Redis，Redis 压力和线程占用都很大</li>
+      <li>两层叠加：本实例 1 个加载者 → 全集群 1 个回源者；其余请求等 future 或重读 Redis</li>
+      <li>拿锁后还要<b>双重检查</b> Redis，避免别人刚写完又回源一次</li></ul></div>`)),
+  step('暂停思考第 2 题：失效时为什么要把版本号 +1？只 DEL 掉 Redis 的 key 不够吗？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">失效时只 <code>DEL</code> Redis 里的 key 不够吗？为什么还要 <code>INCR …:version</code>？它同时解决了哪几个问题？Memcache 为什么不用删？</div>`)),
+  step('参考答案：只删 key，正在回源的旧加载者随后会把旧值写回去，缓存又脏了。版本号让写回带上“加载开始时的版本”，不一致就拒绝；Memcache 的 key 带版本，旧条目自动读不到；本地也用版本判断加载期间是否被失效过。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li>竞态：A 读到旧值 → 失效 DEL → A 写回旧值 → 缓存脏了。<b>只 DEL 挡不住</b></li>
+      <li>① <code>cache-fill.lua</code> 比较版本：加载前的版本 ≠ 当前版本 → 拒绝写回</li>
+      <li>② Memcache key = 摘要 + 版本：版本一变，旧条目再也不会被读到，<b>不用删</b></li>
+      <li>③ 本地版本：加载期间收到失效（本地版本变了）→ 不写 Caffeine</li></ul></div>`)),
+  step('暂停思考第 3 题：Redis 整个挂掉时，目录读取会发生什么？为什么降级读到的结果不回填缓存？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">Redis 整个挂掉时，目录读取会怎么走？为什么要用信号量限制回源？为什么降级时读到的结果不回填到任何缓存？</div>`)),
+  step('参考答案：进入 1 秒降级窗口，跳过 Redis 直接回源，但要先拿到公平信号量（4 个许可、最多等 50 毫秒），拿不到就 503，保护数据库。不回填是因为此时没有锁和版本号的保护，回填可能写入旧值，等 Redis 恢复后按正常路径回填。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li>Redis 报错 → <code>markRedisDown</code>：1 秒窗口内直接走 <code>degraded</code></li>
+      <li><code>Semaphore(4, fair)</code> + <code>tryAcquire(50ms)</code>：最多 4 个并发回源，其余快速 503</li>
+      <li>不回填：没有锁 owner 和版本号校验，写进去可能是旧值；本地也不放（<code>cacheable = false</code>）</li>
+      <li>可见性不受影响：详情仍会实时 <code>selectStatus</code></li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

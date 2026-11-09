@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E4 Campaign Rebuild & Reconciliation</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.tn{font-size:11.5px}
+.bd.tx{display:none}
+.gd{font-size:13px;line-height:1.6}
+.gd .big{font-size:19px;font-weight:700;margin:2px 0 4px}
+.gd .big.open{color:var(--green)}.gd .big.shut{color:var(--red)}
+.bal{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px}
+.bal .r{display:flex;align-items:center;gap:8px;margin:5px 0}
+.bal .l{width:64px;color:var(--muted)}
+.bal .bar{height:16px;border-radius:4px;transition:width .6s}
+.bal .v{font-family:var(--mono);color:#fff;width:24px;text-align:right}
+.bal .verdict{margin-top:4px;font-weight:600}
+</style>
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E4-活动重建对账.html', home: '../index.html?lang=en', title: 'E4 · Campaign Rebuild & Reconciliation', docTitle: 'E4 Campaign Rebuild & Reconciliation', example: 'Example: campaign 7 · 10 units · generation 3',
+  cols: [[16, 214], [238, 376], [622, 642]],
+  lanes: [['Guard · admin', 'entryGuard'], ['App service', 'reconcile · recover · rebuild'], ['Redis entry replica', '| MySQL truth']] });
+
+/* ============ Script ============ */
+const TY = { rk: 88, sg: 232, camp: 88, gen: 150, res: 252, ob: 418 };
+const RX = 632, MX = 948;
+const toR = t => [660, TY[t] + 4], toM = t => [975, TY[t] + 4];
+const MID = [520, 240];
+function clearMid() { ['code', 'gate', 'note', 'note2', 'bal'].forEach(gone); }
+function rk(id, k, t, v) { row('rk', id, { k, t, v }); }
+function rv(id, v) { cell('rk', id, 'v', v); }
+// Entry guard: an in-JVM switch
+function guard(open, reason) {
+  put('guard', 'fe st gd ' + (open ? 'ok' : 'bad'), `<div class="lb">CampaignEntryGuard (this instance's memory)</div>
+    <div class="big ${open ? 'open' : 'shut'}">${open ? '● Entry open' : '● Entry closed'}</div>
+    <div>${reason || ''}</div>`, 26, 88, 194, null);
+}
+function admin(text, st = 'run') { card('ADM', 26, 210, 194, '', st, text, 'Admin'); }
+// Stock balance: two bars, Redis and MySQL
+function bal(r, m, verdict, tone = '', y = 400) {
+  const w = v => Math.max(4, v * 22);
+  put('bal', 'bal', `<div class="nt" style="color:var(--purple);font-weight:700">Stock comparison</div>
+    <div class="r"><span class="l">Redis</span><div class="bar" style="width:${w(r)}px;background:#ff8f8f"></div><span class="v">${r}</span></div>
+    <div class="r"><span class="l">MySQL</span><div class="bar" style="width:${w(m)}px;background:#7cc0ff"></div><span class="v">${m}</span></div>
+    <div class="verdict" style="color:${tone || 'var(--yellow)'}">${verdict}</div>`, M.x, y, M.w);
+}
+function res(o, u, g, s, r = 0) { row('res', o, { o, u, g, s, r }); }
+
+scene('Intro', [
+  step('As the last episode said, Redis is the flash sale\'s entry replica and MySQL is the truth. This episode answers two questions: <em>how to tell whether the two agree</em>, and <em>how to rebuild Redis safely from the database when it breaks</em>.',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 4</div><h1>Campaign Rebuild & Reconciliation</h1><h2>Redis is only an entry replica: on disagreement, close the door and rebuild a new generation from database facts</h2>
+      <ol><li>Stock direction invariant: <b>normally Redis ≤ MySQL</b></li><li>60 s reconciliation: formula, in-flight explanation, <b>alert only, never auto-fix</b></li><li>Entry guard: who closes the door and who may open it</li><li>Write order of publish / pause; three cases of recovery</li><li>Rebuild: <b>409 preconditions</b>, a new generation, carried, PREPARING</li></ol>`)),
+  step('Starting point: campaign 7 had 10 units and sold 4 (5001–5004, all SUCCESS), so MySQL has 6 left; Redis stock is also 6, both at generation 3, and the entry is open.',
+    0, () => ovOff(),
+    300, () => {
+      clock('10:05:00.000'); guard(true, 'startup check passed');
+      table('rk', RX, TY.rk, 306, 'Redis keys', 'campaign:*', [['k', 'key', 88], ['t', 'type', 52], ['v', 'value', 156]]);
+      rk('stock', 'stock:7', 'string', '6'); rk('act', 'activity:7', 'hash', 'ACTIVE · gen 3');
+      rk('buyers', 'buyers:7', 'set', '{42, 77, 88, 91}'); rk('reqs', 'requests:7', 'hash', '4 mappings'); rk('carried', 'carried:7', 'hash', '{ }');
+    },
+    700, () => { table('sg', RX, TY.sg, 306, 'stream:orders', 'group watermarks', [['g', 'group', 92], ['p', 'pending', 62], ['l', 'lag', 50], ['d', 'last-delivered', 90]]); row('sg', 'f', { g: 'fulfillment', p: 0, l: 0, d: '4-0' }); },
+    1000, () => { table('camp', MX, TY.camp, 306, 'limited_campaign', '', [['id', 'id', 24], ['rem', 'remaining', 70], ['init', 'initial', 58], ['gen', 'gen', 34], ['st', 'state', 64]]); row('camp', 7, { id: 7, rem: 6, init: 10, gen: 3, st: 'ACTIVE' }); },
+    1300, () => { table('gen', MX, TY.gen, 306, 'campaign_generation', 'generation history', [['g', 'generation', 76], ['s', 'status', 80], ['r', 'remaining', 70]]); row('gen', 3, { g: 3, s: 'ACTIVE', r: 10 }); },
+    1600, () => { table('res', MX, TY.res, 306, 'campaign_reservation', '', [['o', 'order', 46], ['u', 'uid', 34], ['g', 'gen', 30], ['s', 'state', 84], ['r', 'released', 60]]); res(5001, 42, 3, 'SUCCESS'); res(5002, 77, 3, 'SUCCESS'); res(5003, 88, 3, 'SUCCESS'); res(5004, 91, 3, 'SUCCESS'); },
+    1900, () => table('ob', MX, TY.ob, 306, 'business_outbox', 'campaign events', [['id', 'id', 40], ['k', 'kind', 170], ['s', 'state', 64]])),
+]);
+
+scene('① Stock direction', [
+  step('First, an intuition. User 93 buys: <em>Redis deducts first</em> (Lua admission), MySQL only when fulfill runs. In between Redis is 5 and MySQL is still 6 — Redis is one lower.',
+    0, () => { clock('10:05:10.000', true); rv('stock', '5'); rv('buyers', '{42, 77, 88, 91, 93}'); },
+    500, () => res(5005, 93, 3, 'PROCESSING'),
+    900, () => bal(5, 6, 'Redis 1 lower: one PROCESSING in flight', '', 182)),
+  step('Now returning stock: order 5001 times out and closes. <em>MySQL returns first</em> (remaining + 1 and the release flag in the closing txn), and Redis only after the <code>CAMPAIGN_STOCK_RELEASED</code> event runs the release Lua. In between MySQL is 7 and Redis 5 — a gap of 2.',
+    0, () => { clock('10:15:00.300', true); cell('camp', 7, 'rem', '7'); cell('res', 5001, 'r', '1'); },
+    700, () => row('ob', 7201, { id: 7201, k: 'CAMPAIGN_STOCK_RELEASED', s: 'PENDING' }),
+    1100, () => bal(5, 7, 'Redis 2 lower: 1 PROCESSING + 1 pending release event', '', 182)),
+  step('Hence a <em>direction invariant</em>: Redis goes first when deducting, MySQL goes first when returning, so normal in-flight work only makes <em>Redis ≤ MySQL</em>. If Redis is higher, no in-flight work can explain it — it is always an incident, and the dangerous kind: Redis will admit too many users.',
+    0, () => note('Direction invariant', `<ul><li>Deduct: <b>Redis first</b> → MySQL later (fulfill)</li><li>Return: <b>MySQL first</b> → Redis later (release Lua)</li><li>Normal gap: <code>Redis − MySQL ≤ 0</code></li><li><b>Redis &gt; MySQL</b>: extra admissions fail <code>consumeStock</code> at fulfill → REVIEW. The DB never oversells, but the "accepted" promise is broken</li></ul>`, 300)),
+]);
+
+scene('② 60 s reconciliation', [
+  step('Reconciliation runs every 60 seconds. First a formula inside the database: <code>initial = remaining + unreleased SUCCESS with an order</code>, i.e. 10 = 7 + 3. Then: Redis is readable and the generation matches.',
+    0, () => { clearMid(); tx('REC', 0, 'reconcile(7) · every 60 s', 'run'); },
+    500, () => gate('Reconciliation checks', [['initial = remaining + committed', ''], ['Redis readable, generation matches?', ''], ['gap = Redis − MySQL', ''], ['−gap ≤ explainable in-flight?', '']], 182),
+    1000, () => check(0, 'ok', '10 = 7 + 3'), 1500, () => check(1, 'ok', 'gen 3 = 3')),
+  step('The gap is 5 − 7 = −2, the right direction (Redis lower). Explainable in-flight work is 1 PROCESSING + 0 REVIEW + 1 unfinished campaign event = 2, enough, so it is <code>IN_FLIGHT</code>. Because something is still in flight, <code>exact = false</code>: just a warn log and a metric.',
+    0, () => { check(2, 'ok', '−2'); hl('res', 5005); hl('ob', 7201); },
+    700, () => check(3, 'go', '2 ≤ 1+0+1 → IN_FLIGHT'),
+    1300, () => { txs('REC', 'ret', 'IN_FLIGHT'); hl('res', 5005, null); hl('ob', 7201, null); }),
+  step('This formula once had a bug: it counted only PROCESSING and REVIEW and <em>missed unfinished outbox events</em>, so after a close, a queued Redis top-up was falsely reported as "unexplained". A known gap remains: Stream messages not yet registered appear only in the alert text, not in the formula.',
+    0, () => note('Limits of reconciliation', `<ul><li>Events counted: only <code>CAMPAIGN_FULFILL / CAMPAIGN_STOCK_RELEASED / CAMPAIGN_RETRY</code> not DONE</li><li>With a Stream backlog, messages not yet PROCESSING may be misjudged as "unexplained" (a recorded known gap)</li><li><b>Read-only</b>: it only logs and emits metrics, never modifies stock</li></ul>`, 336)),
+  step('A few seconds later the release event runs and Redis is topped up to 6; 5005 is also fulfilled and MySQL drops to 6. Both are 6, the formula gives 10 = 6 + 4, and the next round reports <code>CONFIRMED</code> with <code>exact = true</code>.',
+    0, () => { clearMid(); clock('10:15:03.000', true); cell('ob', 7201, 's', 'DONE'); rv('stock', '6'); rv('buyers', '{77, 88, 91, 93}'); },
+    800, () => { cell('res', 5005, 's', 'SUCCESS'); cell('camp', 7, 'rem', '6'); },
+    1400, () => { rmRow('ob', 7201); txs('REC', 'ok', 'CONFIRMED · exact'); bal(6, 6, 'In agreement: CONFIRMED', 'var(--green)', 182); }),
+  step('Now an incident: a manual mistake sets Redis stock to 8, still inside [0, 10] with the right generation. Reconciliation computes a gap of +2 — <em>the wrong direction</em> — and reports <code>UNEXPLAINED</code>. Note: <em>it still only alerts</em> and never sets Redis back to 6, because it cannot know which side is wrong.',
+    0, () => { clock('10:20:00.000', true); rv('stock', '<span style="color:var(--red)">8</span>'); },
+    700, () => bal(8, 6, 'Redis 2 higher: UNEXPLAINED (incident)', 'var(--red)', 182),
+    1400, () => { txs('REC', 'rb', 'UNEXPLAINED · alert'); note('Why not auto-fix', `Auto-fixing means letting a program guess "who is right". A wrong guess overwrites correct facts with wrong ones, and it may race with ongoing admissions and top-ups.<br>So reconciliation <b>only detects</b>; repair is a manually triggered <b>recover / rebuild</b>.`, 300); }),
+]);
+
+scene('③ Entry guard', [
+  step('So who closes the door? There are two doors. The first is <code>activity.state</code> in Redis: Lua returns 3 if it is not ACTIVE. The second is the in-memory <code>CampaignEntryGuard</code> of each instance: when closed, admit() rejects immediately <em>without touching Redis</em>.',
+    0, () => { clearMid(); gone('tx_REC'); },
+    300, () => note('Who closes / opens entryGuard', `<ul><li><b>Close</b>: ① startup check finds a mismatch (state or generation differs, or Redis stock &gt; MySQL remaining); ② admission Lua returns 4, or 5 while the DB generation is unchanged; ③ a rebuild starts</li><li><b>Open</b>: publish succeeds, recover succeeds, startup check agrees</li><li>It is <b>an in-JVM map</b>: per instance only; after restart the startup check decides again</li></ul>`, 182)),
+  step('Back to Redis = 8: Lua can only detect "stock outside [0, initial]" or "generation mismatch"; it <em>cannot detect "higher than the DB but still in range"</em>, so the entry stays open. Meanwhile user 95 is admitted: Redis 8 → 7, and 5006 becomes PROCESSING.',
+    0, () => { rv('stock', '<span style="color:var(--red)">7</span>'); rv('buyers', '{77, 88, 91, 93, 95}'); },
+    600, () => res(5006, 95, 3, 'PROCESSING'),
+    1100, () => bal(7, 6, 'Redis still higher: entry not closed automatically', 'var(--red)', 400)),
+  step('The admin sees the alert and decides to <em>recover</em>. In fact, restarting the app now would also close the entry, since the startup check sees Redis stock 7 &gt; MySQL remaining 6.',
+    0, () => { admin('recover · running', 'run'); })
+]);
+
+scene('④ Publish & pause', [
+  step('First, two write orders. <em>Publish</em>: lock the campaign row, DRAFT → ACTIVE, activate the draft generation; then, before commit, run the rebuild Lua to write stock and state to Redis; finally open the entry. If the Redis write fails it throws and the DB rolls back. <em>Database first, then Redis</em>.',
+    0, () => { clearMid(); code('@Transactional publish(7):\n  SELECT … FROM limited_campaign WHERE id = 7 FOR UPDATE\n  markPublished: DRAFT → ACTIVE\n  activateDraftGeneration\n  campaign-rebuild.lua(state = ACTIVE, buyers = ∅)   -- rollback on failure\n  entryGuard.unblock(7)', 182); }),
+  step('<em>Pause</em> is the reverse: <em>set the Redis state to PAUSED first</em>, so Lua immediately returns 3 to every admission; then update the DB ACTIVE → PAUSED. If the Redis write fails the transaction rolls back, so there is never a half-open state where the DB says paused but the entry is still open.',
+    0, () => code('@Transactional pause(7):\n  SELECT … FOR UPDATE\n  HSET activity:7 state PAUSED        -- close the Redis entry first\n  UPDATE limited_campaign SET publish_state = \'PAUSED\'\n  WHERE id = 7 AND publish_state = \'ACTIVE\'', 182),
+    700, () => note('How to remember', `Opening: write the facts to the DB, then let people in (<b>DB first, Redis later</b>)<br>Closing: shut the door, then do the bookkeeping (<b>Redis first, DB later</b>)<br>Both orders guarantee the entry is <b>closed</b> when something fails.`, 330)),
+]);
+
+scene('⑤ Three recovery cases', [
+  step('<code>recover</code> first takes a distributed lock <code>campaign:recover:7</code> (10 s) so two admins cannot recover at once. Then, with the DB state ACTIVE, it looks at which case Redis is in.',
+    0, () => { clearMid(); },
+    300, () => gate('recover(7): DB is ACTIVE, check Redis', [['ACTIVE · same gen · stock usable', '→ just unblock'], ['PREPARING · same gen · usable', '→ set ACTIVE + unblock'], ['Anything else', '→ rebuild'], ['DB is PAUSED', '→ rebuild']], 182),
+    1000, () => check(0, 'no', 'stock 7 &gt; 6'),
+    1500, () => check(1, 'no', 'no'),
+    2000, () => check(2, 'go', 'rebuild')),
+  step('The second case looks odd: why would Redis be stuck in PREPARING? It is the trace of a rebuild whose <em>last step did not finish</em>, as the rebuild section will show.',
+    0, () => note('When is stock "usable"', `<code>0 ≤ Redis stock ≤ DB remaining</code><br>Lower than the DB is acceptable (possibly in flight); <b>higher than the DB</b> cannot be trusted and must be rebuilt.`, 400)),
+]);
+
+scene('⑥ Rebuild', [
+  step('Rebuild step 1: <em>close the entry first</em>. Step 2 checks the preconditions and returns 409 if any fails. 5006 is still PROCESSING, so the first one fails: <em>the rebuild is refused</em> and the entry stays closed until it finishes.',
+    0, () => { clearMid(); guard(false, 'recovery rebuild in progress'); },
+    600, () => gate('Rebuild preconditions (else 409)', [['No PROCESSING / REVIEW reservations', ''], ['Every Stream group caught up', ''], ['No unfinished campaign events', ''], ['Active reservations = unreleased orders', '']], 182),
+    1200, () => { check(0, 'no', '5006 → 409'); hl('res', 5006, 'hlr'); admin('recover → 409', 'rb'); }),
+  step('Why wait? A rebuild overwrites Redis with a <em>static snapshot</em> of the database. If 5006 were still in flight, the rebuild would write stock 6 with 95 not in buyers; then 5006 is fulfilled, the DB becomes 5 while Redis stays 6 — Redis higher again. <em>A snapshot is valid only when the database has stopped changing</em>.',
+    0, () => note('The three conditions cover three kinds of in-flight work', `<ul><li><b>PROCESSING / REVIEW</b> reservations in the DB</li><li>Stream messages <b>not yet registered</b> (pending and lag both 0)</li><li>Outbox top-up / fulfill events <b>not yet executed</b></li></ul>Plus one more check: active reservations must equal fulfilled orders, otherwise it errors out.`, 330)),
+  step('A few seconds later 5006 is fulfilled: MySQL has 5 left, the reservation is SUCCESS and the Stream has caught up. The admin runs recover again and all four preconditions pass.',
+    0, () => { clearMid(); clock('10:21:00.000', true); cell('res', 5006, 's', 'SUCCESS'); hl('res', 5006, null); cell('camp', 7, 'rem', '5'); cell('sg', 'f', 'd', '6-0'); },
+    700, () => { admin('recover, 2nd try', 'run'); gate('Rebuild preconditions (else 409)', [['No PROCESSING / REVIEW reservations', ''], ['Every Stream group caught up', ''], ['No unfinished campaign events', ''], ['Active reservations = unreleased orders', '']], 182); },
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'ok', 'pending 0 · lag 0'), 2000, () => check(2, 'ok'), 2400, () => check(3, 'ok', '5 = 5')),
+  step('Step 3: set the Redis state to <code>PREPARING</code>. Step 4: run the rebuild Lua with <em>a new generation, 4</em>: delete buyers, requests and carried, set stock to the DB remaining 5, write the 5 active reservations back into buyers and requests, and record "order → generation 4" in <code>carried</code>.',
+    0, () => { clearMid(); rv('act', 'PREPARING · gen 3'); },
+    700, () => code('DEL buyers:7  requests:7  carried:7\nSET stock:7 5\nHSET activity:7 generation 4 state PREPARING\nfor (user, order) in active SUCCESS reservations:\n  SADD buyers:7 user\n  HSET requests:7 user order\n  HSET carried:7 order 4\nreturn written   -- must equal 5', 182),
+    1500, () => { rv('stock', '5'); rv('act', 'PREPARING · gen 4'); rv('buyers', '{77, 88, 91, 93, 95}'); rv('reqs', '5 mappings'); rv('carried', '{5002…5006 → 4}'); }),
+  step('Step 5: only after Redis is confirmed overwritten does a DB transaction switch generations: insert generation 4, mark generation 3 <code>REPLACED</code>, set the campaign\'s generation to 4. <em>Until then the database still believes it is generation 3</em>.',
+    0, () => code('BEGIN\n  INSERT campaign_generation(7, 4, \'ACTIVE\', 5)\n  UPDATE campaign_generation SET status = \'REPLACED\' WHERE … generation <> 4\n  UPDATE limited_campaign SET generation = 4, publish_state = \'ACTIVE\'\nCOMMIT', 182),
+    800, () => { row('gen', 4, { g: 4, s: 'ACTIVE', r: 5 }); cell('gen', 3, 's', 'REPLACED'); },
+    1400, () => cell('camp', 7, 'gen', '4')),
+  step('Step 6: set the Redis state back to <code>ACTIVE</code> and unblock the entry. If this Redis write fails, the DB is set to PAUSED and 503 is returned, so the entry <em>never opens on a half-finished state</em>.',
+    0, () => { rv('act', 'ACTIVE · gen 4'); },
+    600, () => { guard(true, 'recovered'); admin('recover → 200', 'ok'); },
+    1100, () => bal(5, 5, 'Rebuild done: both sides agree', 'var(--green)', 400)),
+  step('What <code>carried</code> is for: 5003 was born in generation 3 and carried into generation 4. When it later closes, release Lua sees reservation generation 3 ≠ current 4, but <code>carried[5003] = 4</code>, so it tops up as usual. <em>Old-generation orders not in carried</em> are always a no-op.',
+    0, () => { clearMid(); gate('release Lua · order 5003 (gen 3)', [['Reservation gen = current gen 4?', ''], ['carried[5003] = 4?', ''], ['requests[88] = 5003?', '']], 182); },
+    600, () => check(0, 'no', '3 ≠ 4'), 1100, () => check(1, 'ok', 'carried → go on'), 1600, () => check(2, 'ok', 'top up'),
+    2100, () => note('Generation = fencing token', `Each rebuild issues a new value and everything issued under old values is void:<br>admission Lua (mismatch → 5), register (stale → STALE / REVIEW), fulfill (refuses), release Lua (no-op unless carried).<br>The old generation is <b>not voided wholesale</b>: what the DB confirmed is carried over.`, 330)),
+  step('What <code>PREPARING</code> is for: if the process crashes after step 4 and before step 5, Redis is "PREPARING + generation 4" while the DB is still at 3. Lua returns 3 for anything not ACTIVE, so <em>the entry is effectively closed</em>; recover sees the generation mismatch and simply rebuilds again.',
+    0, () => { clearMid(); note('Crashing at different points', `<ul><li><b>Between steps 4 and 5</b>: Redis PREPARING·gen 4, DB gen 3 → mismatch → rebuild again (gen 4 once more, overwrite)</li><li><b>Between steps 5 and 6</b>: DB gen 4, Redis PREPARING·gen 4 → recovery <b>case 2</b>: set ACTIVE and unblock</li><li>After restart the startup check re-decides entryGuard: Redis state differs from the DB → closed</li></ul>`, 182); }),
+]);
+
+scene('⑦ Stream trimming', [
+  step('One last background job: every 60 s it tries to trim the Stream. If there is any pending entry, unknown or positive lag, a PROCESSING reservation or an unfinished hand-off, it does not trim. When it does, <em>a Lua script re-checks every consumer group inside Redis\'s single thread</em> and trims only up to what every group has confirmed.',
+    0, () => { clearMid(); code('trimIfSafe():\n  blockers = [pending > 0, lag unknown, lag > 0,\n              PROCESSING/REVIEW, unfinished hand-off, no watermark]\n  if blockers not empty: return\n  campaign-stream-trim.lua:\n    XINFO GROUPS → all pending = 0 and lag = 0\n    XTRIM MINID <min last-delivered of all groups>', 182); },
+    900, () => note('Why check again inside the script', `Between the read-side check and the actual trim, a new group may appear or new messages may be delivered. Doing "check, then trim" atomically in Lua never deletes a message some group has not read yet.`, 360)),
+]);
+
+scene('Recap & questions', [
+  step('Recap: Redis is only an entry replica. The direction invariant tells in-flight gaps from incidents; reconciliation only detects; recovery unblocks or rebuilds depending on the case; a rebuild waits for in-flight work to drain, switches to a new generation, and uses PREPARING plus the guard to keep the entry closed if anything fails midway.',
+    0, () => ov(`<div class="kp">Episode recap</div><h1 style="font-size:32px">Key points of rebuild & reconciliation</h1><ol style="margin-top:14px">
+      <li>Direction invariant: normally <b>Redis ≤ MySQL</b>; Redis higher is always an incident</li>
+      <li>Reconcile: <b>initial = remaining + committed</b>; −gap ≤ <b>processing + review + unfinished events</b> is in flight; alert only</li>
+      <li>Two doors: Redis <b>activity.state</b> and the in-JVM <b>entryGuard</b></li>
+      <li>Publish <b>DB first, then Redis</b>; pause <b>Redis first, then DB</b>; recovery has three cases</li>
+      <li>Rebuild: close entry → <b>409 preconditions</b> → PREPARING → <b>new-generation</b> rebuild (with carried) → switch in DB → ACTIVE + unblock</li></ol>`)),
+  step('Pause and think, question 1: MySQL 97, Redis 95, with 1 PROCESSING reservation and 1 unfinished release event. Can the gap of 2 be explained? What about Redis 99, MySQL 97?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">MySQL has 97 left and Redis 95, with 1 PROCESSING reservation and 1 unfinished <code>CAMPAIGN_STOCK_RELEASED</code>. Can the gap of 2 be explained? Why do both make Redis lower? What if Redis is 99 and MySQL 97?</div>`)),
+  step('Answer: yes. PROCESSING means Redis deducted and MySQL not yet; an unfinished release means MySQL returned and Redis not yet — both make Redis lower, and 2 ≤ 1 + 1. Redis 99 is the opposite direction that nothing in flight can explain: UNEXPLAINED, alert only, and a manual recover / rebuild.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>PROCESSING: Redis deducted, MySQL not yet → Redis 1 lower</li>
+      <li>Unfinished release event: MySQL returned, Redis not yet → Redis 1 lower</li>
+      <li>−(95 − 97) = 2 ≤ 1 + 0 + 1 → <code>IN_FLIGHT</code>: not exact, but explained</li>
+      <li>Redis 99 &gt; 97: wrong direction → <code>UNEXPLAINED</code>; reconciliation only logs and emits metrics, <b>never changes stock</b>; a manual recover / rebuild fixes it, and a restart's startup check would also close the entry</li></ul></div>`)),
+  step('Pause and think, question 2: why must a rebuild wait for in-flight work to drain? Why switch to a new generation instead of keeping the old one and just fixing the number?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">Why must a rebuild wait until PROCESSING / REVIEW, the Stream and campaign events are all clear? Why must it switch to a new generation instead of keeping the old one and only fixing the stock number?</div>`)),
+  step('Answer: a rebuild overwrites Redis with a database snapshot; in-flight work would change the database after the overwrite and make Redis too high again or lose a slot. A new generation voids every old message and top-up issued before the rebuild; only orders carried over stay valid.',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li>In-flight PROCESSING: the rebuild writes stock = remaining with that user missing from buyers; then it is fulfilled → DB minus 1 → <b>Redis 1 too high</b>, and the user can buy again</li>
+      <li>Unfinished release event: the top-up runs after the rebuild → stock added twice</li>
+      <li>New generation = fencing token: admission, register, fulfill and release all check it, so <b>old-generation messages and events are voided automatically</b></li>
+      <li>carried: orders the DB confirmed in the old generation are carried over and still top up on close</li></ul></div>`)),
+  step('Pause and think, question 3: why does publish write the DB first and Redis second, while pause does the opposite? What problem does the PREPARING state solve?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">Why does publish write the database first and Redis second, while pause writes Redis first and the database second? What problem does the <code>PREPARING</code> state solve during a rebuild?</div>`)),
+  step('Answer: both orders keep the entry closed when something fails. Before opening, the facts must be in the database; when closing, the gate must take effect immediately. PREPARING makes Lua return 3 if a rebuild crashes midway, so the entry stays effectively closed, and recover can tell that only the last step is missing.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li>Publish: Redis write fails → transaction rolls back, DB is still DRAFT, <b>the entry never opened</b></li>
+      <li>Pause: <code>activity.state = PAUSED</code> first, admissions return 3 at once; if the DB update fails it just stays closed a little longer, never half-open</li>
+      <li>PREPARING: Lua returns 3 during a rebuild, so the entry is closed; after a crash recover can tell "rebuild unfinished → redo" from "only ACTIVE missing → just unblock"</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

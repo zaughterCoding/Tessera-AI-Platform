@@ -38,7 +38,10 @@
   <img alt="Node.js" src="https://img.shields.io/badge/Node.js-24-5FA04E?style=flat-square&logo=nodedotjs&logoColor=white" />
 </p>
 
+<p><a href="https://zaughtercoding.github.io/Tessera-AI-Platform/flow-animations/?lang=zh"><b>▶ 观看核心链路交互动画</b></a> · 中文 &amp; English</p>
+
 [项目简介](#项目简介) ·
+[链路动画](#链路动画) ·
 [核心亮点](#核心亮点) ·
 [系统架构](#系统架构) ·
 [评测数据](#评测数据) ·
@@ -50,6 +53,25 @@
 </div>
 
 ---
+
+## 链路动画
+
+> 🎬 **第一次看这个项目？建议从这里开始。** [**打开动画目录 →**](https://zaughtercoding.github.io/Tessera-AI-Platform/flow-animations/?lang=zh)
+
+8 集分步讲解的交互动画，用“单步调试”的方式拆开核心链路：数据库里的行如何出现和变化、行锁何时加上和释放、outbox 消息如何在组件之间流动，每个判断点逐条检查条件。每集结尾有三道暂停思考题。
+
+| 集数 | 讲什么 |
+| --- | --- |
+| E0 · 全景总览 | 一张地图串起所有链路；MySQL、Redis、RocketMQ 各自负责什么 |
+| E1 · 可靠消息 outbox | 同事务写入、`SKIP LOCKED` 认领与租约、五步幂等消费、`SENT ≠ DONE` |
+| E2 · 普通购买 | 请求键与唯一键、订单快照、结果未知、支付与到期关单竞争 |
+| E3 · 限量秒杀 | Lua 原子受理、Stream `register` / `fulfill`、`XCLAIM` 接管、关单释放与死锁修复 |
+| E4 · 重建与对账 | 库存方向不变量、对账公式、入口守卫、换代重建 |
+| E5 · 权益与账务 | 两跳发放、余额恒等式、迟到补发、冻结 / 消费 / 退回 / 到期 |
+| E6 · 生成调度 | `NOWAIT` 选包、公平挑选、AIMD、上游五种结果、唯一结算 |
+| E7 · 目录缓存 | 五层读取、单飞与互斥锁、版本号失效、Redis 故障降级 |
+
+每一页都可以切换语言，并停留在当前这一步。页面是纯 HTML，不需要构建：本地直接打开 [`flow-animations/index.html`](flow-animations/index.html) 即可，网址后加 `?step=12` 可以跳到指定步骤。
 
 ## 项目简介
 
@@ -282,6 +304,7 @@ npm run dev
 ├── web/              # Next.js 16 + React 19 BFF 前端
 ├── deploy/           # 独立交付：Compose、Nginx、监控、备份恢复
 ├── dev/              # 隔离的 dev / test / load 环境
+├── flow-animations/  # 核心链路的中英双语交互动画（纯静态 HTML）
 └── config/           # Checkstyle 规则
 ```
 

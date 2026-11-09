@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E6 Generation Task Scheduling</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.tn{font-size:11.5px}
+.bd.tx{display:none}
+.fair{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px}
+.fair table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+.fair th{color:var(--muted);font-weight:400;text-align:left;padding:2px 4px}
+.fair td{padding:3px 4px;border-top:1px solid #26304d}
+.fair tr.win td{background:rgba(62,207,142,.22);color:#fff}
+.fair .h{color:var(--purple);font-weight:700;margin-bottom:4px}
+.aimd{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.aimd .h{color:var(--purple);font-weight:700;font-size:13px;margin-bottom:2px}
+</style>
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E6-生成任务调度.html', home: '../index.html?lang=en', title: 'E6 · Generation Task Scheduling', docTitle: 'E6 Generation Task Scheduling', example: 'Example: users 42 / 77 / 88 · channel max 4',
+  cols: [[16, 214], [238, 376], [622, 642]],
+  lanes: [['Users · workers', ''], ['App service', 'submit · dispatch · write-back · settle'], ['Dispatch tables', '| tasks and accounting']] });
+
+/* ============ Script ============ */
+const TY = { ch: 88, ho: 150, at: 312, rs: 414, tk: 88, qt: 250, gr: 352, st: 434 };
+const LX = 632, RX = 948;
+const toL = t => [660, TY[t] + 4], toR = t => [975, TY[t] + 4];
+const MID = [520, 240];
+const UY = { 42: 88, 77: 134, 88: 180 };
+function user(u, text, st = 'run') { card('U' + u, 26, UY[u], 194, '', st, text, 'User ' + u); }
+function bg(text, st = 'run') { card('BG', 26, 236, 194, '', st, text, 'Sched'); }
+function clearMid() { ['code', 'gate', 'note', 'note2', 'fair', 'aimd'].forEach(gone); }
+function tk(id, u, s, a = 'FROZEN') { row('tk', id, { id, u, s, a }); }
+function ho(id, task, s, g, o = '', n = '') { row('ho', id, { id, task, s, g, o, n }); }
+// Fair-picking table: user, in-flight, weight, share
+function fair(rows, win, title = 'Fair picking: smallest in-flight / weight first') {
+  put('fair', 'fair', `<div class="h">${title}</div><table><tr><th>user</th><th>in-flight</th><th>weight</th><th>share</th><th>oldest</th></tr>` +
+    rows.map(r => `<tr class="${r[0] === win ? 'win' : ''}"><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[1]}/${r[2]}</td><td>h${r[3]}</td></tr>`).join('') + '</table>', M.x, 182, M.w);
+}
+// AIMD curve: effective concurrency over time
+function aimd(points, note, y = 330) {
+  const W = 330, H = 110, x0 = 26, y0 = 92, sx = (W - x0 - 6) / 10, sy = 18;
+  let d = '', px = 0, py = 0;
+  points.forEach(([t, v], i) => { const X = x0 + t * sx, Y = y0 - v * sy; d += i === 0 ? `M${X},${Y}` : `L${X},${py}L${X},${Y}`; px = X; py = Y; });
+  d += `L${W - 6},${py}`;
+  put('aimd', 'aimd', `<div class="h">AIMD: effective_in_flight</div>
+    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+      <line x1="${x0}" y1="${y0}" x2="${W - 6}" y2="${y0}" stroke="#56607e"/><line x1="${x0}" y1="${y0 - 4 * sy}" x2="${W - 6}" y2="${y0 - 4 * sy}" stroke="#ff8f8f" stroke-dasharray="4 3"/>
+      <text x="4" y="${y0 - 4 * sy + 4}" fill="#ff8f8f" font-size="11">max 4</text>
+      ${[1, 2, 3].map(v => `<text x="10" y="${y0 - v * sy + 4}" fill="#8d99b8" font-size="11">${v}</text>`).join('')}
+      <path d="${d}" fill="none" stroke="#3ecf8e" stroke-width="2.5"/>
+      <text x="${x0}" y="${H - 2}" fill="#8d99b8" font-size="11">${note}</text>
+    </svg>`, M.x, y, M.w);
+}
+
+scene('Intro', [
+  step('The last flow is <em>generation task scheduling</em>: a user submits an AI image task, and the system freezes a credit, dispatches tasks to the upstream fairly, advances state based on every kind of upstream reply, and finally saves the result and settles. <em>No Redis anywhere</em> — only database conditional updates and leases.',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 6</div><h1>Generation Task Scheduling</h1><h2>One txn accepts and freezes; short txns claim fairly; network calls stay outside txns; terminal state written once, settled once</h2>
+      <ol><li>Submit: request key, grant pick with <b>FOR UPDATE NOWAIT</b>, quotas, freeze, hand-off row</li><li>Dispatch: wake-up + 2 s scan, <b>fair picking</b>, claimOne</li><li>Five upstream outcomes — <b>a timeout is never a failure</b>; AIMD concurrency</li><li>Callback vs polling race for the terminal state: <b>owner + generation</b> conditions</li><li>Saving results, <b>a single settlement entry</b>, compensation scans</li></ol>`)),
+  step('On the right, the left half holds the dispatch tables: channel (in-flight count, effective concurrency), hand-off rows, upstream attempts, result files; the right half holds tasks, user quotas, credit packs and settlements. Channel max is 4 and effective concurrency (eff) is 3.',
+    0, () => ovOff(),
+    300, () => {
+      clock('11-08 14:00:00.000');
+      table('ch', LX, TY.ch, 306, 'provider_channel', 'channel', [['in', 'in_flight', 68], ['eff', 'eff', 44], ['max', 'max', 36], ['q', 'queued', 52], ['p', 'paused', 86]]);
+      row('ch', 1, { in: 0, eff: 3, max: 4, q: 0, p: '' });
+      table('ho', LX, TY.ho, 306, 'generation_task_handoff', 'hand-off', [['id', 'id', 38], ['task', 'task', 36], ['s', 'state', 66], ['g', 'gen', 30], ['o', 'owner', 54], ['n', 'note', 70]]);
+      table('at', LX, TY.at, 306, 'provider_attempt', 'upstream attempt', [['id', 'id', 36], ['task', 'task', 36], ['k', 'key', 50], ['s', 'state', 104], ['o', 'owner', 44], ['g', 'gen', 30]]);
+      table('rs', LX, TY.rs, 306, 'generation_result', 'result files', [['task', 'task', 40], ['i', 'idx', 30], ['s', 'state', 70], ['o', 'lease owner', 90]]);
+    },
+    900, () => {
+      table('tk', RX, TY.tk, 306, 'generation_task', '', [['id', 'id', 36], ['u', 'user', 36], ['s', 'state', 120], ['a', 'accounting', 80]]);
+      table('qt', RX, TY.qt, 306, 'generation_user_quota', 'user quota', [['u', 'user', 40], ['act', 'active', 50], ['lim', 'limit', 46], ['w', 'weight', 54]]);
+      row('qt', 42, { u: 42, act: 0, lim: 5, w: 1 }); row('qt', 77, { u: 77, act: 0, lim: 5, w: 1 }); row('qt', 88, { u: 88, act: 0, lim: 5, w: 2 });
+      table('gr', RX, TY.gr, 306, 'entitlement_grant', '', [['id', 'id', 28], ['u', 'user', 38], ['a', 'avail', 50], ['f', 'frozen', 50], ['c', 'consumed', 66]]);
+      row('gr', 21, { id: 21, u: 42, a: 50, f: 0, c: 0 }); row('gr', 22, { id: 22, u: 77, a: 10, f: 0, c: 0 });
+      table('st', RX, TY.st, 306, 'generation_settlement', 'UNIQUE task_id', [['task', 'task', 40], ['k', 'kind', 70], ['t', 'target', 80], ['l', 'ledger', 60]]);
+    }),
+]);
+
+scene('① Submit: one txn', [
+  step('User 42 submits a task. As with a standard purchase, the request key first races an insert on <code>generation_request</code>, is read under a lock and its digest compared; if a task is already bound, the original task is returned. <em>A retry of a submitted task is unaffected by balance, expiry or delisting</em>.',
+    0, () => { user(42, 'submits task'); fly('POST /generation/tasks {requestKey, prompt, …}', [100, 100], [260, 100], 'blue'); },
+    900, () => tx('SUB', 0, 'submit() · @Transactional', 'run'),
+    1300, () => code('INSERT generation_request … ON DUPLICATE KEY UPDATE …\nSELECT … FOR UPDATE   -- different digest → 409; task_id set → return it\nlock the referenced media (mutually exclusive with deleting them)', 182)),
+  step('Picking a credit pack: first find up to 8 matching candidate packs <em>without locks</em>, then try each with <code>FOR UPDATE NOWAIT</code> — a contended lock fails at once and is retried briefly instead of queuing; once locked, it is <em>re-checked</em> against the DB clock. If none can be locked → "busy"; if there truly is none → "insufficient credits".',
+    0, () => code('ids = usable packs matching app/version/model/size/count (≤ 8, no locks)\nfor id in ids:\n  try  SELECT … WHERE id = ? FOR UPDATE NOWAIT\n       re-check: ACTIVE, in validity, available ≥ 1  → pick it\n  catch lock conflict → short pause and retry, finally SUBMISSION_BUSY', 182),
+    1000, () => { lock('gr', 21, 'X', 'SUB'); hl('gr', 21); }),
+  step('Take quotas with two conditional updates: channel queue + 1 ("queue full" when full) and the user\'s active tasks + 1 ("too many active tasks" above 5). Then insert the task (QUEUED / FROZEN), freeze 1 credit and write a FREEZE entry.',
+    0, () => { gone('code'); hl('gr', 21, null); cell('ch', 1, 'q', '1'); cell('qt', 42, 'act', '1'); },
+    700, () => tk(301, 42, 'QUEUED'),
+    1200, () => { cell('gr', 21, 'a', '49'); cell('gr', 21, 'f', '1'); }),
+  step('Finally write a hand-off row (PENDING) and a <code>GENERATION_DISPATCH</code> outbox event, and bind the task id to the request row. The event <em>only wakes the scheduler</em>; whether and when a task is dispatched is decided by the hand-off row, capacity and switches in the database. Any failure rolls everything back.',
+    0, () => { ho(101, 301, 'PENDING', 0); },
+    700, () => { tagAt('evt', 'outbox: GENERATION_DISPATCH (wake only)', 248, 330, 'ok'); },
+    1300, () => { unlock('SUB'); txs('SUB', 'ok'); user(42, '301 queued', 'ok'); }),
+  step('Soon user 42 also submits 302 and 303, user 77 submits 304, and user 88 (weight 2) submits 305 and 306. Six tasks are now queued.',
+    0, () => { gone('evt'); gone('tx_SUB'); },
+    300, () => { tk(302, 42, 'QUEUED'); tk(303, 42, 'QUEUED'); ho(102, 302, 'PENDING', 0); ho(103, 303, 'PENDING', 0); cell('qt', 42, 'act', '3'); cell('gr', 21, 'a', '47'); cell('gr', 21, 'f', '3'); },
+    900, () => { tk(304, 77, 'QUEUED'); ho(104, 304, 'PENDING', 0); cell('qt', 77, 'act', '1'); cell('gr', 22, 'a', '9'); cell('gr', 22, 'f', '1'); user(77, '304 queued', 'ok'); },
+    1500, () => { tk(305, 88, 'QUEUED'); tk(306, 88, 'QUEUED'); ho(105, 305, 'PENDING', 0); ho(106, 306, 'PENDING', 0); cell('qt', 88, 'act', '2'); user(88, '2 queued', 'ok'); },
+    2000, () => cell('ch', 1, 'q', '6')),
+]);
+
+scene('② Dispatch: short claim txn', [
+  step('Dispatch has two triggers: an event wake-up (only after commit) and a 2-second fallback scan. Within one instance, <code>AtomicBoolean running</code> prevents two rounds at once. A round is <em>one short transaction</em> with <em>no network calls inside</em>.',
+    0, () => { clearMid(); bg('round starts'); code('if (!running.compareAndSet(false, true)) return;\n@Transactional claimDueHandoffs():\n  channel ENABLED and submittable?\n  cleanHandoffs()          // expired claims, cancelled, queue timeouts\n  if (paused) return [];   // 429 pause\n  slots = min(batch 20, limit - in_flight)\n  claimFair(slots)', 182); }),
+  step('Cleanup first, independent of free slots: hand-offs with an expired claim lease are recovered; those whose task was cancelled are completed; tasks queued over 30 minutes <em>time out</em> — return the queue and user quota and release the freeze. Nothing to clean this round. Then the slots: <code>min(20, 3 − 0) = 3</code>.',
+    0, () => note('Queue timeouts', `Completing the hand-off row is the single "queue responsibility gate": only one of cancel or timeout can succeed, and only the winner <b>returns the queue slot and user quota and releases the freeze as QUEUE_TIMEOUT</b>.`, 330),
+    800, () => hl('ch', 1),
+    1800, () => hl('ch', 1, null)),
+  step('Fair picking: group by user, compute each user\'s <em>current in-flight ÷ weight</em>, smallest first, oldest queued on ties. Comparison uses <em>cross-multiplication</em> (a in-flight × b weight vs b in-flight × a weight) to avoid division and fractions. Slot 1: all three are 0, so the oldest, user 42\'s h101, wins.',
+    0, () => { clearMid(); fair([[42, 0, 1, 101], [77, 0, 1, 104], [88, 0, 2, 105]], 42); },
+    700, () => { hl('ho', 101, 'hlg'); }),
+  step('<code>claimOne</code>: the hand-off becomes CLAIMED with <code>generation + 1</code> and an owner; channel in-flight + 1 (a conditional update as a backstop); the task is moved QUEUED → DISPATCHING (if the user just cancelled, this fails and the claim is void); a new upstream attempt is created, and <em>its attemptKey is stable</em> for every later retry.',
+    0, () => { lock('ho', 101, 'X', 'D'); cell('ho', 101, 's', 'CLAIMED'); cell('ho', 101, 'g', '1'); cell('ho', 101, 'o', 'd·7a1'); },
+    600, () => cell('ch', 1, 'in', '1'),
+    1100, () => cell('tk', 301, 's', 'DISPATCHING'),
+    1600, () => row('at', 9001, { id: 9001, task: 301, k: 'k-3f0e', s: 'SUBMITTING', o: 'd·7a1', g: 0 })),
+  step('Slot 2 is recomputed: 42\'s share is now 1/1, while 77 and 88 are 0. Cross-multiplied, 77 and 88 tie, so the older 77 wins. Slot 3: 42 and 77 are both 1/1 and 88 is 0/2, so 88 wins.',
+    0, () => { hl('ho', 101, null); fair([[42, 1, 1, 102], [77, 0, 1, 104], [88, 0, 2, 105]], 77); },
+    600, () => { cell('ho', 104, 's', 'CLAIMED'); cell('ho', 104, 'g', '1'); cell('ho', 104, 'o', 'd·7a1'); cell('ch', 1, 'in', '2'); cell('tk', 304, 's', 'DISPATCHING'); row('at', 9002, { id: 9002, task: 304, k: 'k-91c2', s: 'SUBMITTING', o: 'd·7a1', g: 0 }); },
+    1700, () => fair([[42, 1, 1, 102], [77, 1, 1, '—'], [88, 0, 2, 105]], 88),
+    2300, () => { cell('ho', 105, 's', 'CLAIMED'); cell('ho', 105, 'g', '1'); cell('ho', 105, 'o', 'd·7a1'); cell('ch', 1, 'in', '3'); cell('tk', 305, 's', 'DISPATCHING'); row('at', 9003, { id: 9003, task: 305, k: 'k-5d77', s: 'SUBMITTING', o: 'd·7a1', g: 0 }); }),
+  step('Who would get a 4th slot? 42 and 77 are both 1/1 and 88 is 1/2, so <em>user 88 with weight 2 gets another one</em>. With first-come-first-served, all three slots would have gone to 42 while 77 and 88 waited.',
+    0, () => fair([[42, 1, 1, 102], [77, 1, 1, '—'], [88, 1, 2, 106]], 88, 'If there were a 4th slot'),
+    800, () => note('Contrast: first come, first served', `FIFO would send h101, h102, h103 all to user 42.<br>Fair scheduling rotates by "in-flight ÷ weight": <b>a heavy user cannot fill the channel</b>, and higher weights get a bigger share.`, 330)),
+  step('After claiming, the "additive increase" check of AIMD: every slot was used and queued 6 &gt; claimed 3, so the channel really is saturated; a 5-second window has passed since the last change, so <code>effective + 1</code> → 4 (capped at max 4). Then the claim transaction commits.',
+    0, () => { clearMid(); unlock('D'); },
+    300, () => { cell('ch', 1, 'eff', '4'); aimd([[0, 3], [3, 4]], 'saturated with a queue: +1 per window', 182); },
+    1000, () => { bg('claim txn committed'); }),
+]);
+
+scene('③ Upstream: five outcomes', [
+  step('After the claim commits, the three attempts go to a submit thread pool and call upstream <em>outside any transaction</em>. The pool size equals the channel\'s max in-flight, so nothing queues. Every upstream reply lands in one of five outcomes.',
+    0, () => { clearMid(); bg('submit threads × 3', 'run'); },
+    400, () => gate('Five outcomes of submitClaim', [['Accepted async (task id)', '→ ACCEPTED, wait'], ['Sync result', '→ terminal at once'], ['429 throttled', '→ halve, pause, requeue'], ['Explicitly rejected', '→ FAILED, release'], ['Timeout / 5xx / unknown', '→ RECONCILING']], 182)),
+  step('304 is accepted asynchronously: with the upstream task id, the attempt becomes ACCEPTED, the task ACCEPTED and the hand-off DONE. Every write-back is conditional on <code>owner = this claimer AND generation = value at claim time</code>, so it cannot land once someone else has taken over.',
+    0, () => { fly('submit(k-91c2) → 202 accepted', [520, 270], [660, TY.at + 30], 'blue'); },
+    800, () => { cell('at', 9002, 's', 'ACCEPTED'); cell('at', 9002, 'o', ''); cell('tk', 304, 's', 'ACCEPTED'); cell('ho', 104, 's', 'DONE'); check(0, 'go'); }),
+  step('301\'s call <em>times out</em>: we do not know whether upstream received it. Treating it as a failure and refunding would be a giveaway if upstream actually finished, so it always goes to <code>RECONCILING</code>: the freeze and the in-flight slot are kept, and polling finds out.',
+    0, () => { fly('submit(k-3f0e) … timeout', [520, 250], [660, TY.at + 10], 'red', { lost: true }); },
+    900, () => { cell('at', 9001, 's', 'RECONCILING'); cell('at', 9001, 'o', ''); cell('tk', 301, 's', 'RECONCILING'); cell('ho', 101, 's', 'DONE'); check(4, 'go'); }),
+  step('305 receives a <em>429</em>: AIMD\'s "multiplicative decrease" halves effective concurrency 4 → 2 and pauses sending for 5 s. Another 429 during the pause <em>does not halve again</em> (the condition requires the pause to be over). 305 is requeued: in-flight − 1, attempt SUBMIT_PENDING, <em>freeze and user quota kept</em>, and the queue deadline still counts from the original enqueue.',
+    0, () => { fly('submit(k-5d77) → 429', [520, 290], [660, TY.at + 50], 'red'); },
+    800, () => { cell('ch', 1, 'eff', '2'); cell('ch', 1, 'p', '14:00:07.2'); aimd([[0, 3], [3, 4], [6, 2]], '429: halve and pause 5 s', 352); check(2, 'go'); },
+    1500, () => { cell('at', 9003, 's', 'SUBMIT_PENDING'); cell('at', 9003, 'o', ''); cell('tk', 305, 's', 'QUEUED'); cell('ch', 1, 'in', '2'); cell('ho', 105, 's', 'RETRY'); cell('ho', 105, 'n', 'throttled 5s'); }),
+  step('The next round: during the pause nothing is claimed. After the pause, slots = <code>min(20, 2 − 2) = 0</code>, still nothing. <em>When upstream signals pain, the system backs off by itself</em>, then probes back up by +1 per saturated window.',
+    0, () => { clearMid(); bg('this round: paused', 'wait'); aimd([[0, 3], [3, 4], [6, 2]], 'in-flight 2 = effective 2 → 0 slots', 182); },
+    900, () => note('AIMD reacts only to 429', `Timeouts and 5xx do not adjust it: they do not necessarily mean "upstream is too busy".<br>All state (effective value, window, pause deadline) lives on the <b>channel row</b> and changes via conditional updates, so it survives restarts.`, 330)),
+]);
+
+scene('④ Terminal: callback & polling', [
+  step('304 finishes upstream and a <em>callback</em> hits the backend directly: verify the HMAC signature and timestamp; insert into the callback inbox by (channel, event key). Same key and same content → duplicate, return; same key but different content → record in the conflict table, do not apply.',
+    0, () => { clearMid(); clock('11-08 14:00:20.000', true); bg('callback arrives', 'run'); fly('POST /provider/callback SUCCEEDED (k-91c2)', [100, 250], [260, 100], 'green'); },
+    800, () => gate('Callback handling', [['HMAC signature + timestamp', ''], ['Callback inbox: INSERT IGNORE (channel, key)', ''], ['Same key, different content?', '→ conflict table'], ['Lock attempt; only non-terminal → terminal', '']], 182),
+    1300, () => check(0, 'ok'), 1700, () => check(1, 'ok', 'first time'), 2100, () => check(2, 'ok', 'same')),
+  step('Lock the attempt row and update conditionally: <em>only a non-terminal state may become terminal</em>, here RESULT_PENDING (upstream succeeded, result not yet saved). On success the terminal actions run: channel in-flight − 1, user active − 1, and result rows are seeded per image. Note: <em>no settlement yet</em> — the credit stays frozen.',
+    0, () => check(3, 'go', '1 row'),
+    500, () => { cell('at', 9002, 's', 'RESULT_PENDING'); cell('tk', 304, 's', 'RESULT_PENDING'); },
+    1100, () => { cell('ch', 1, 'in', '1'); cell('qt', 77, 'act', '0'); },
+    1600, () => row('rs', 'r304', { task: 304, i: 0, s: 'PENDING', o: '' })),
+  step('301 is RECONCILING and owned by <em>polling</em>: every 2 s a short transaction leases the attempt (new owner, <code>generation + 1</code>), and after commit <code>query</code> runs outside the transaction. Upstream answers: this task failed.',
+    0, () => { clearMid(); bg('poller', 'run'); cell('at', 9001, 'o', 'p·c41'); cell('at', 9001, 'g', '1'); },
+    800, () => fly('query(k-3f0e) → FAILED', [520, 250], [660, TY.at + 10], 'red'),
+    1500, () => note('Other polling branches', `<ul><li>ACCEPTED / RUNNING: update state, query again later</li><li>NOT_FOUND: if the channel supports idempotent submit, resubmit with <b>the same attemptKey</b> — upstream never ends up with two tasks; otherwise REVIEW</li><li>Query failures reaching the limit (8): REVIEW, freeze kept</li></ul>`, 330)),
+  step('Polling writes the failed terminal state conditioned on <code>owner = p·c41 AND generation = 1</code> and a non-terminal current state. With 1 row affected, in the same transaction: in-flight − 1, user quota − 1, <em>and the single release entry</em> — the task becomes FAILED / RELEASED, the frozen credit returns to available, and a RELEASE settlement is written.',
+    0, () => { cell('at', 9001, 's', 'FAILED'); cell('at', 9001, 'o', ''); },
+    600, () => { cell('ch', 1, 'in', '0'); cell('qt', 42, 'act', '2'); },
+    1200, () => { cell('tk', 301, 's', 'FAILED'); cell('tk', 301, 'a', 'RELEASED'); cell('gr', 21, 'a', '48'); cell('gr', 21, 'f', '2'); },
+    1700, () => row('st', 301, { task: 301, k: 'RELEASE', t: 'AVAILABLE', l: 'L-501' })),
+  step('The race: almost simultaneously, a "failed" callback for 301 arrives. The callback also updates conditionally "only non-terminal → terminal", but the state is already FAILED: <em>0 rows affected</em>, marked IGNORED, <em>no second round of terminal actions</em>, and the credit is never released twice.',
+    0, () => { fly('callback FAILED (k-3f0e)', [100, 250], [260, 100], 'grey'); },
+    800, () => gate('Callback · 301 FAILED', [['Inbox: first time', ''], ['UPDATE … WHERE state is non-terminal', '']], 182),
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'no', '0 rows → IGNORED'),
+    2000, () => note2('Write-back conditions of the two paths', `<b>Callback</b>: only "non-terminal → terminal", no owner check (it holds no lease)<br><b>Polling / submit</b>: <code>owner + generation</code> must both match, so an expired claimer cannot overwrite newer facts`, 300)),
+]);
+
+scene('⑤ Save & settle', [
+  step('Result rows are handled by the download job: lease the result row, download the upstream image, <em>verify its digest</em>, save it to the media store and <code>markSaved</code>. If at save time the lease is no longer ours (taken over), <em>the downloaded file is discarded</em> and not registered.',
+    0, () => { clearMid(); bg('result downloader', 'run'); cell('rs', 'r304', 'o', 'r·19b'); cell('rs', 'r304', 's', 'SAVING'); },
+    800, () => code('claimDue(): lease the result row (owner = r·19b)\ndownload → verify digest → write to media store\nmarkSaved(… WHERE owner = r·19b)   // 0 rows → delete the file just written\ndownload fails: retry, REVIEW at the limit, freeze kept (no refund)', 182),
+    1500, () => { cell('rs', 'r304', 's', 'SAVED'); cell('rs', 'r304', 'o', ''); }),
+  step('Once all results are SAVED, settlement goes through <em>the single entry</em> <code>tasks.finish</code>: conditioned on <code>accounting_state = FROZEN</code> and an allowed state; only the winner settles. 304 becomes SUCCEEDED / CONSUMED, the frozen credit becomes consumed, and a CONSUME settlement is written.',
+    0, () => { clearMid(); code('UPDATE generation_task\nSET state = \'SUCCEEDED\', accounting_state = \'CONSUMED\', settled_at = NOW(3)\nWHERE id = 304 AND accounting_state = \'FROZEN\'\n  AND state IN (\'RESULT_PENDING\', \'REVIEW\')\n-- 1 row → consumeForTask(…) → settlement row', 182); },
+    900, () => { cell('tk', 304, 's', 'SUCCEEDED'); cell('tk', 304, 'a', 'CONSUMED'); cell('gr', 22, 'f', '0'); cell('gr', 22, 'c', '1'); },
+    1500, () => { row('st', 304, { task: 304, k: 'CONSUME', t: '', l: 'L-502' }); cell('rs', 'r304', 's', 'DELIVERED'); user(77, '304 done', 'ok'); }),
+  step('Why "single"? Both consume and release must first <em>win</em> the task row with a conditional update on <code>accounting_state = FROZEN</code>; whoever affects 1 row settles, and the settlement table adds <code>UNIQUE(task_id)</code> as a backstop. So a task is <em>either consumed or released, exactly once</em>.',
+    0, () => { hl('st', 301); hl('st', 304); note('Three guarantees of settlement', `<ul><li><b>Conditional finish</b>: FROZEN → CONSUMED / RELEASED, a single winner</li><li><b>Before settling</b>, a FREEZE entry for the task must exist</li><li><b>generation_settlement</b>: <code>UNIQUE(task_id)</code>, <code>UNIQUE(ledger_id)</code></li></ul>`, 330); },
+    2500, () => { hl('st', 301, null); hl('st', 304, null); }),
+  step('Finally, compensation: every 5 s a settlement scan fills gaps <em>only from trusted facts</em> — all results saved → consume; upstream confirmed failed, cancelled or queue timeout → release; incomplete results → keep the freeze, <em>never guess a failure and refund</em>. Every 10 minutes orphan files that were never registered are cleaned up.',
+    0, () => { clearMid(); bg('compensation', 'ok'); note('Background jobs at a glance', `<ul><li>Dispatch scan 2 s, polling scan 2 s, result download 2 s</li><li>Settlement scan 5 s: <code>recover()</code> consumes / releases only from facts</li><li>Orphan file cleanup every 10 minutes</li></ul>`, 182); }),
+]);
+
+scene('Recap & questions', [
+  step('Recap: one submit transaction freezes and hands off; short dispatch transactions claim fairly without touching the network; each of the five upstream replies has its path, and a timeout is reconciled, never refunded; the terminal state is written once; settlement has one entry.',
+    0, () => ov(`<div class="kp">Episode recap</div><h1 style="font-size:32px">Key points of generation scheduling</h1><ol style="margin-top:14px">
+      <li>Submit: request key → lock media → candidate packs <b>FOR UPDATE NOWAIT</b> + re-check → two quotas → QUEUED/FROZEN → freeze → hand-off + wake event</li>
+      <li>Dispatch: wake-up + 2 s scan, <b>AtomicBoolean</b>; cleanup → pause check → <b>min(batch, limit − in-flight)</b> → fair pick → claimOne</li>
+      <li>Fairness: smallest <b>in-flight ÷ weight</b>, cross-multiplied; AIMD: +1 when saturated, <b>429 halves and pauses</b></li>
+      <li>Five outcomes: accepted / sync result / 429 requeue / reject → release / <b>timeout → RECONCILING</b></li>
+      <li>Terminal: only non-terminal → terminal; polling checks <b>owner + generation</b>; settlement <b>finish race + UNIQUE(task_id)</b></li></ol>`)),
+  step('Pause and think, question 1: the upstream call timed out. Why not mark the task failed right away and return the frozen credit to the user?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">Submitting upstream timed out. Why not mark the task failed and release the frozen credit right away? What does the system do instead?</div>`)),
+  step('Answer: a timeout only means the outcome is unknown; upstream may have accepted or even finished. Refunding on a guess becomes a giveaway when upstream succeeds, and creates a "refunded but has a result" contradiction. So it goes to RECONCILING, keeping the freeze and the in-flight slot, and polling finds the truth, resubmitting safely with the same attemptKey if needed.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>Timeout = <b>outcome unknown</b>, not failure; upstream may have accepted or finished</li>
+      <li>Attempt → <code>RECONCILING</code>, task follows; <b>freeze and in-flight slot are kept</b></li>
+      <li>Polling leases it and calls <code>query</code>: success → RESULT_PENDING; failure → the single release entry</li>
+      <li>Not found and the channel supports idempotent submit: resubmit with <b>the same attemptKey</b>, upstream has one task; otherwise REVIEW</li></ul></div>`)),
+  step('Pause and think, question 2: a callback and polling get the same task\'s terminal state at the same time — how are the terminal actions done only once? Why does the callback skip the owner check while polling needs it?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">A callback and polling receive the same task's failure almost simultaneously. How is "release in-flight, release quota, return the freeze" done only once? Why does the callback not check the owner while polling must check owner + generation?</div>`)),
+  step('Answer: both use a conditional update "only non-terminal → terminal"; only the side that affects 1 row runs the terminal actions, and the other stops at 0 rows. Polling holds a lease that may have expired and been taken over, hence owner + generation; the callback comes from upstream and holds no lease — its trust comes from the signature and inbox de-dup.',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li>Terminal write-back: <code>WHERE state IN (non-terminal…)</code>; <b>0 rows → confirmedTerminal never runs</b></li>
+      <li>Polling / submit write-backs carry <code>owner AND generation</code>: after a takeover, every write of the old executor misses</li>
+      <li>Callbacks hold no lease: they rely on the <b>HMAC signature</b> + callback inbox (channel, event key) + conflict table</li>
+      <li>Settlement backstop: the finish race on <code>accounting_state = FROZEN</code> + <code>UNIQUE(task_id)</code></li></ul></div>`)),
+  step('Pause and think, question 3: user 42 submitted 3 tasks, users 77 and 88 each have tasks queued, and the channel has 3 slots. How does fair scheduling split them? How does the system react to a 429?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">The channel has only 3 slots: user 42 queued 3 tasks, 77 queued 1, and 88 (weight 2) queued 2. How does fair scheduling allocate them? If one gets a 429, how is concurrency adjusted, and what happens to that task's credit and quota?</div>`)),
+  step('Answer: each slot re-picks the smallest "in-flight ÷ weight", so 42, 77 and 88 get one each, and a 4th slot would go to 88. On a 429 effective concurrency halves with a pause, never halving twice during the pause; the throttled task is requeued with its freeze and user quota kept and its queue deadline unchanged.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li>Slot 1: all 0 → the oldest, 42; slot 2: 77 and 88 tie → 77; slot 3: 88 (0/2)</li>
+      <li>Shares compared by cross-multiplication; a 4th slot goes to 88 (1/2 &lt; 1/1)</li>
+      <li>429: <code>effective = max(1, effective / 2)</code> + <code>dispatch_paused_until</code>; no further halving while paused</li>
+      <li>Task: attempt → SUBMIT_PENDING, task → QUEUED, in-flight − 1, hand-off RETRY; <b>freeze and user quota kept</b>, <code>enqueued_at</code> unchanged</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>链路动画 · Flow Animations</title>
+<style>
+:root{--bg:#0f1422;--panel:#151c2e;--line:#2b3656;--text:#e6ebf5;--muted:#8d99b8;--accent:#5aa9ff}
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif}
+main{max-width:960px;margin:0 auto;padding:40px 16px 60px}
+.top{display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap}
+.top .grow{flex:1;min-width:240px}
+h1{margin:0 0 6px;font-size:30px}
+p.sub{margin:0 0 28px;color:var(--muted);line-height:1.6}
+.lang{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden;flex:none}
+.lang button{background:var(--panel);color:var(--muted);border:0;padding:8px 18px;font-size:14px;cursor:pointer;font-family:inherit}
+.lang button.on{background:#2a5ca8;color:#fff}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+a.ep{display:block;text-decoration:none;color:inherit;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;transition:border-color .2s,transform .2s}
+a.ep:hover{border-color:var(--accent);transform:translateY(-2px)}
+a.ep .n{font-size:13px;color:var(--accent);font-weight:700;letter-spacing:1px}
+a.ep .t{font-size:19px;font-weight:700;margin:4px 0 6px}
+a.ep .d{font-size:13.5px;color:var(--muted);line-height:1.6}
+.tips{margin-top:28px;font-size:14px;color:var(--muted);line-height:1.8}
+.tips code{color:#9fd0ff}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div class="grow"><h1 id="h"></h1><p class="sub" id="sub"></p></div>
+    <div class="lang" role="group" aria-label="Language">
+      <button id="zh" type="button">中文</button><button id="en" type="button">English</button>
+    </div>
+  </div>
+  <div class="grid" id="grid"></div>
+  <div class="tips" id="tips"></div>
+</main>
+<script>
+// 两种语言的集目录；每集中文页在根目录，英文页在 en/ 下
+const EPISODES = [
+  ['E0', 'E0-全景总览.html', '全景总览', '一张地图串起所有链路；存储角色；三条不要混',
+         'en/E0-overview.html', 'Big-Picture Overview', 'One map connecting every flow; storage roles; three things not to mix up'],
+  ['E1', 'E1-可靠消息outbox.html', '可靠消息 outbox', '同事务写入、唤醒与轮询、SKIP LOCKED 认领、五步消费、租约接管、SENT ≠ DONE',
+         'en/E1-reliable-outbox.html', 'Reliable Messaging: Outbox', 'Same-transaction writes, wake-up and polling, SKIP LOCKED claims, five-step consumption, lease takeover, SENT ≠ DONE'],
+  ['E2', 'E2-普通购买.html', '普通购买、支付与关单', '请求键与唯一键、订单快照、结果未知、支付与关单竞争',
+         'en/E2-standard-purchase.html', 'Standard Purchase, Payment & Closing', 'Request keys and unique keys, order snapshots, unknown outcomes, the payment-vs-close race'],
+  ['E3', 'E3-限量活动秒杀.html', '限量活动秒杀', 'Lua 原子受理、register / fulfill、PEL + XCLAIM、关单释放与死锁',
+         'en/E3-limited-campaign.html', 'Limited Campaign Flash Sale', 'Atomic Lua admission, register / fulfill, PEL + XCLAIM, release on close and the deadlock fix'],
+  ['E4', 'E4-活动重建对账.html', '活动重建与对账', '方向不变量、对账公式、入口守卫、发布暂停顺序、换代重建',
+         'en/E4-rebuild-reconciliation.html', 'Campaign Rebuild & Reconciliation', 'Direction invariant, reconciliation formula, entry guard, publish / pause ordering, generation rebuild'],
+  ['E5', 'E5-权益发放账务.html', '权益发放与账务', '两跳 outbox、只信快照、恒等式、迟到补发、冻结消费退回、到期',
+         'en/E5-entitlements-ledger.html', 'Entitlements & Ledger', 'Two-hop outbox, trust only the snapshot, balance identity, late grants, freeze / consume / release, expiry'],
+  ['E6', 'E6-生成任务调度.html', '生成任务调度', 'NOWAIT 选包、公平挑选、AIMD、五种上游结果、终态竞争、唯一结算',
+         'en/E6-generation-scheduling.html', 'Generation Task Scheduling', 'NOWAIT grant selection, fair picking, AIMD, five upstream outcomes, terminal races, single settlement'],
+  ['E7', 'E7-目录缓存.html', '目录缓存', '五层读取、单飞与互斥锁、版本号失效、Redis 故障降级、Canal',
+         'en/E7-catalog-cache.html', 'Catalog Cache', 'Five-layer reads, single-flight and mutex, version-based invalidation, Redis outage fallback, Canal'],
+];
+const TEXT = {
+  zh: { title: '链路动画', sub: 'AI 创作平台核心链路讲解 · 建议先看 E0 总览和 E1 outbox，再按顺序看 E2～E7',
+    tips: '播放器操作：空格 播放 / 暂停，← → 上一步 / 下一步，底部可选章节和速度；右下角按钮可切换到同一集的英文版。<br>网址加 <code>?step=12</code> 直接打开第 12 步；加 <code>?autoplay</code> 自动播放。' },
+  en: { title: 'Flow Animations', sub: 'Core flows of the AI Creation Platform · start with E0 (overview) and E1 (outbox), then watch E2–E7 in order',
+    tips: 'Player: Space to play / pause, ← → for previous / next step, chapter and speed at the bottom; the button at the bottom right switches the same episode to Chinese.<br>Add <code>?step=12</code> to open step 12 directly; add <code>?autoplay</code> to start playing.' },
+};
+function readLang() {
+  const q = new URLSearchParams(location.search).get('lang');
+  if (q === 'en' || q === 'zh') return q;
+  try { return localStorage.getItem('flow-lang') || 'zh'; } catch (e) { return 'zh'; }
+}
+function render(lang) {
+  document.documentElement.lang = lang === 'en' ? 'en' : 'zh-CN';
+  document.getElementById('h').textContent = TEXT[lang].title;
+  document.getElementById('sub').textContent = TEXT[lang].sub;
+  document.getElementById('tips').innerHTML = TEXT[lang].tips;
+  document.getElementById('grid').innerHTML = EPISODES.map(([n, zhHref, zhT, zhD, enHref, enT, enD]) => {
+    const [href, t, d] = lang === 'en' ? [enHref, enT, enD] : [zhHref, zhT, zhD];
+    return `<a class="ep" href="${href}"><div class="n">${n}</div><div class="t">${t}</div><div class="d">${d}</div></a>`;
+  }).join('');
+  document.getElementById('zh').classList.toggle('on', lang === 'zh');
+  document.getElementById('en').classList.toggle('on', lang === 'en');
+  try { localStorage.setItem('flow-lang', lang); } catch (e) { /* 存储不可用时只影响记忆 */ }
+}
+document.getElementById('zh').onclick = () => render('zh');
+document.getElementById('en').onclick = () => render('en');
+render(readLang());
+</script>
+</body>
+</html>

@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E5 权益发放与账务</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.bd.tx{display:none}
+.wal{font-size:13px}
+.wal .row{display:flex;justify-content:space-between;margin:3px 0}
+.wal .row b{font-family:var(--mono);font-size:15px}
+.wal .a b{color:var(--green)}.wal .f b{color:var(--yellow)}.wal .c b{color:#9fd0ff}.wal .e b{color:#ff8f8f}
+.wal .eq{margin-top:6px;font-family:var(--mono);font-size:11.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E5-entitlements-ledger.html', home: 'index.html', title: 'E5 · 权益发放与账务', docTitle: 'E5 权益发放与账务', example: '例子：订单 1001 · 100 积分 · 有效 30 天',
+  lanes: [['用户 42', '订单与积分'], ['应用服务', '两跳 outbox · 发放事务'], ['MySQL', '订单事实 · 权益包 · 流水']] });
+
+/* ============ 剧本 ============ */
+const TY = { ord: 88, pay: 170, ob: 232, gr: 334, lg: 416 };
+const toDB = t => [770, TY[t] + 4];
+const MID = [600, 230];
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+// 左栏：用户看到的积分
+function wallet(a, f, c, e, extra = '') {
+  const t = a + f + c + e;
+  put('wal', 'fe st wal', `<div class="lb">权益包 #11（订单 1001）</div>
+    <div class="row a"><span>可用 available</span><b>${a}</b></div>
+    <div class="row f"><span>冻结 frozen</span><b>${f}</b></div>
+    <div class="row c"><span>已用 consumed</span><b>${c}</b></div>
+    <div class="row e"><span>过期 expired</span><b>${e}</b></div>
+    <div class="eq">total ${t} = ${a} + ${f} + ${c} + ${e}</div>${extra}`, 26, 200, 248, null);
+}
+function orderCard(text, tone = '') { put('oc', 'fe st ' + tone, text, 26, 88, 248, null); }
+function lg(id, key, type, d, after, tx) { row('lg', id, { key, type, d, after }, tx); }
+
+scene('片头', [
+  step('这一集讲<em>权益发放与账务</em>：用户付了钱，积分怎么到账；积分被冻结、消费、退回、过期时，账怎么记才不会错。',
+    0, () => ov(`<div class="kp">链路动画 · 第 5 集</div><h1>权益发放与账务</h1><h2>支付只记事实，权益走两跳 outbox；余额有恒等式，每次变化都有流水</h2>
+      <ol><li>支付事务<b>不加额度</b>；第一跳登记任务，第二跳发放</li><li>发放只信<b>订单快照 + 支付事实</b>，不读商品当前状态</li><li>两个唯一键 + 恒等式 CHECK，重复投递只发一次</li><li>迟到补发<b>立即过期</b>，不延长有效期</li><li>冻结 / 消费 / 退回 / 过期的流水，以及对账与补登</li></ol>`)),
+  step('E2 里用户 42 买的订单 1001 已经支付：订单是 PAID，有一条 MOCK 支付事实，outbox 里有一条 <code>ORDER_PAID</code>。这时用户的积分还是 0。',
+    0, () => ovOff(),
+    300, () => {
+      clock('11-08 10:03:20.503');
+      orderCard('订单 <b>1001</b> · 已支付 ¥9.90<br>标准积分包：100 积分 · 30 天<br><span style="color:var(--muted)">积分：暂未到账</span>');
+      table('ord', 722, TY.ord, 532, 'purchase_order', '订单快照', [['id', 'id', 44], ['status', 'status', 50], ['funding', 'funding', 58], ['paid_at', 'paid_at', 134], ['credits', 'credits', 54], ['days', 'days', 44]]);
+      row('ord', 1001, { id: 1001, status: 'PAID', funding: 'MOCK', paid_at: '11-08 10:03:20.503', credits: 100, days: 30 });
+    },
+    700, () => { table('pay', 722, TY.pay, 532, 'purchase_payment', '支付事实', [['o', 'order_id', 62], ['ch', 'channel', 60], ['amt', 'amount', 58], ['sim', 'simulated', 70], ['at', 'paid_at', 134]]); row('pay', 1001, { o: 1001, ch: 'MOCK', amt: 990, sim: 1, at: '11-08 10:03:20.503' }); },
+    1000, () => { table('ob', 722, TY.ob, 532, 'business_outbox', '', [['id', 'id', 40], ['kind', 'kind', 130], ['state', 'state', 66], ['key', 'idempotency_key', 210]]); row('ob', 9004, { id: 9004, kind: 'ORDER_PAID', state: 'PENDING', key: 'NULL' }); },
+    1300, () => table('gr', 722, TY.gr, 532, 'entitlement_grant', '唯一键 (order_id, item_key)', [['id', 'id', 26], ['o', 'order', 46], ['t', 'total', 46], ['a', 'avail', 46], ['f', 'frozen', 50], ['c', 'cons', 40], ['e', 'expired', 58], ['exp', 'expires_at', 90], ['st', 'status', 62]]),
+    1600, () => table('lg', 722, TY.lg, 532, 'entitlement_ledger', '唯一键 operation_key', [['key', 'operation_key', 170], ['type', 'type', 64], ['d', 'Δ 可用/冻结/已用/过期', 140], ['after', '之后余额', 110]])),
+]);
+
+scene('① 支付不加额度', [
+  step('先强调起点：支付事务<em>只写三样东西</em>：订单改成 PAID、一条支付事实、一条 <code>ORDER_PAID</code>。它不碰权益表，不加一分积分。',
+    0, () => note('支付事务里有什么、没有什么', `<ul><li>✔ <code>purchase_order</code>：UNPAID → PAID，<code>paid_at = NOW(3)</code></li><li>✔ <code>purchase_payment</code>：唯一键 <code>order_id</code></li><li>✔ <code>business_outbox</code>：<code>ORDER_PAID</code></li><li>✘ 不写 <code>entitlement_grant</code>，不加额度</li></ul>`, 182)),
+  step('这样分工的好处：支付只负责记下“买到了”这个事实，发权益是另一件可以重试、可以补发、可以人工复核的事。<em>发权益出问题，不会让已经成功的支付回滚</em>。接下来积分要走两跳 outbox 才到账。',
+    0, () => note2('两跳', `<b>第一跳</b> ORDER_PAID（消费组 <code>order-events</code>）：写订单历史，登记发放任务<br><b>第二跳</b> ENTITLEMENT_GRANT（消费组 <code>entitlement-grants</code>）：真正建权益包、记流水`, 360)),
+]);
+
+scene('② 第一跳：登记任务', [
+  step('中继投递 9004，<code>order-events</code> 消费组按 E1 的五步处理。投影 <code>projectOrder</code> 先核对订单确实是 PAID + MOCK，再 <code>INSERT IGNORE</code> 写订单历史。',
+    0, () => { clearMid(); tx('OE', 0, '消费 9004 · order-events', 'run'); lock('ob', 9004, 'X', 'OE'); },
+    700, () => gate('projectOrder(ORDER_PAID)', [['订单状态 = PAID？', ''], ['资金来源 = MOCK？', ''], ['写订单历史（按 event_id 幂等）', ''], ['登记发放任务', '']], 182),
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'ok'), 2000, () => check(2, 'ok', 'INSERT IGNORE')),
+  step('然后调用 <code>registerForOrder</code>（MANDATORY，必须在这个消费事务里）：再确认 PAID、有 paid_at、资金来源是 FREE 或 MOCK，用 <code>INSERT IGNORE</code> 插入第二跳任务，幂等键是 <code>entitlement-grant:1001:CREDITS</code>。',
+    0, () => { check(3, 'go', 'INSERT IGNORE'); fly('INSERT IGNORE', MID, toDB('ob'), 'blue'); },
+    800, () => row('ob', 9005, { id: 9005, kind: 'ENTITLEMENT_GRANT', state: 'PENDING', key: 'entitlement-grant:1001:CREDITS' }, 'OE'),
+    1500, () => { cell('ob', 9004, 'state', 'DONE', 'OE'); },
+    2000, () => { commit('OE'); txs('OE', 'ok'); }),
+  step('如果 9004 被重复投递，锁行看到 DONE 就丢弃；即使走到了投影，<code>idempotency_key</code> 的唯一键也会让 <code>INSERT IGNORE</code> 影响 0 行，<em>不会登记第二个发放任务</em>。',
+    0, () => { fly('📨 9004（重复）', [140, 120], [330, 140], 'grey'); },
+    900, () => { gate('重复的 9004', [['锁行：state = DONE？', ''], ['即使走到投影：INSERT IGNORE', '']], 182); },
+    1300, () => check(0, 'go', '重复 → 丢弃'), 1700, () => check(1, 'ok', '唯一键 → 影响 0 行')),
+  step('为什么要拆成两行 outbox，而不是在第一跳里直接发权益？因为两件事<em>各自 DONE、各自重试、各自进 REVIEW</em>：发放校验失败时，只有 9005 在重试，订单历史那一跳早已完成，不会被拖着一起回滚、一起重来。',
+    0, () => { clearMid(); gone('tx_OE'); note('拆两跳是为了失败隔离', `<ul><li>两条事件属于<b>不同消费组</b>，状态互不影响</li><li>发放失败 5 次 → 只有 <code>ENTITLEMENT_GRANT</code> 进 REVIEW，管理员可单独 <code>retryReview</code></li><li>注意：这不是为了“让用户少等”，两跳都是异步的</li></ul>`, 182); }),
+]);
+
+scene('③ 第二跳：发放事务', [
+  step('中继投递 9005，<code>entitlement-grants</code> 消费组处理，调用 <code>grantForTask</code>。第一件事：<code>FOR UPDATE</code> 锁订单行，核对任务里的用户和订单一致。',
+    0, () => { clearMid(); clock('11-08 10:03:21.100', true); tx('EG', 0, '消费 9005 · entitlement-grants', 'run'); lock('ob', 9005, 'X', 'EG'); },
+    700, () => { lock('ord', 1001, 'X', 'EG'); hl('ord', 1001); code('PurchaseOrder order = orders.selectOrderForUpdate(1001);\nif (!task.userId.equals(order.userId)) throw ORDER_IDENTITY;\nTrustedEntitlement source = verifier.verify(order);', 182); }),
+  step('<code>verify</code> 是发放的依据，它<em>只信两样东西</em>：订单快照和支付事实。逐项核对后，有效期按 <code>paid_at + valid_days</code> 算出来。注意它<em>不读商品当前状态</em>：商品后来改价、下架，都不影响已经买到的权益。',
+    0, () => { gone('code'); gate('EntitlementSourceVerifier.verify', [['订单 PAID，资金来源 FREE / MOCK', ''], ['有 paid_at，积分 / 天数 / 规格 &gt; 0', ''], ['支付事实存在，用户、渠道一致', ''], ['金额、simulated、paid_at 与订单一致', ''], ['expires_at = paid_at + 30 天', '']], 182); },
+    600, () => check(0, 'ok'), 1000, () => check(1, 'ok'), 1400, () => { check(2, 'ok'); hl('pay', 1001); },
+    1800, () => check(3, 'ok', '990 · 1 · 时间相同'), 2300, () => check(4, 'go', '12-08 10:03:20.503')),
+  step('查一下这个订单是否已经有权益包：没有。于是插入权益包 #11：<code>total = available = 100</code>，<code>effective_from = paid_at</code>，到期时间 12-08，状态 ACTIVE。',
+    0, () => { clearMid(); hl('pay', 1001, null); code('existing = selectBySource(1001, "CREDITS");   // null\nINSERT entitlement_grant(total = 100, available = 100,\n  effective_from = paid_at, expires_at = paid_at + 30d, status = ACTIVE)', 182); },
+    900, () => fly('INSERT 权益包', MID, toDB('gr'), 'blue'),
+    1700, () => row('gr', 11, { id: 11, o: 1001, t: 100, a: 100, f: 0, c: 0, e: 0, exp: '12-08 10:03', st: 'ACTIVE' }, 'EG')),
+  step('同事务写一条 <code>GRANT</code> 流水：操作键 <code>GRANT:1001:CREDITS</code>，记下各分量的变化 +100/0/0/0，以及变化后的余额。<em>余额能从流水完整重建</em>。',
+    0, () => fly('INSERT 流水', MID, toDB('lg'), 'blue'),
+    800, () => lg('g11', 'GRANT:1001:CREDITS', 'GRANT', '+100 / 0 / 0 / 0', '100/0/0/0', 'EG')),
+  step('发放和消费的五步在同一个事务里：权益包、流水、inbox、9005 的 DONE 一起提交。用户刷新页面，<em>积分到账 100</em>。',
+    0, () => { cell('ob', 9005, 'state', 'DONE', 'EG'); },
+    600, () => { commit('EG'); txs('EG', 'ok'); hl('ord', 1001, null); },
+    1100, () => { orderCard('订单 <b>1001</b> · 已支付 ¥9.90<br>标准积分包：100 积分 · 30 天<br><span style="color:var(--green)">积分已到账</span>', 'ok'); wallet(100, 0, 0, 0); }),
+]);
+
+scene('④ 幂等与恒等式', [
+  step('假设 9005 被管理员 <code>retryReview</code> 重置，又投递了一次，inbox 也没挡住，真的走进了 <code>grantForTask</code>。这时 <code>selectBySource</code> 找到了 #11，就<em>逐字段核对</em>：积分、天数、支付时间、到期时间、商品、应用、规格……共 16 项，全部一致才原样返回，不写新流水。',
+    0, () => { clearMid(); tx('EG', 0, '再次消费 9005', 'run'); },
+    600, () => gate('已有权益包 #11：verifyExisting', [['用户、积分、天数、资金来源', ''], ['paid_at、effective_from、expires_at、total', ''], ['商品、应用、版本、模型、尺寸、张数', ''], ['全部一致？', '']], 182),
+    1100, () => check(0, 'ok'), 1500, () => check(1, 'ok'), 1900, () => check(2, 'ok'),
+    2300, () => { check(3, 'go', '原样返回，不写流水'); txs('EG', 'ret', '幂等返回'); }),
+  step('如果不一致（比如订单快照被人改过），就抛 <code>GRANT_MISMATCH</code>，消费失败，重试 5 次后 9005 进 REVIEW。<em>同一个来源订单，不能悄悄沿用一个内容不同的权益包</em>。',
+    0, () => note('不一致时', `<code>GRANT_MISMATCH</code> → 消费失败 → <code>consume_attempts + 1</code> → 5 次后 <code>REVIEW</code> + <code>message_failure</code>，等待人工处理。`, 350)),
+  step('数据库层再兜底三道约束：权益包唯一键 <code>(order_id, item_key)</code>、流水唯一键 <code>operation_key</code>、以及两张表上的 <code>CHECK</code> 恒等式：<em>total = 可用 + 冻结 + 已用 + 过期</em>，流水里四个分量的增量之和也必须等于总量的增量。',
+    0, () => { clearMid(); gone('tx_EG'); code('-- entitlement_grant\nUNIQUE (order_id, item_key)\nCHECK (total_credits = available_credits + frozen_credits\n                      + consumed_credits + expired_credits)\n-- entitlement_ledger\nUNIQUE (operation_key)\nCHECK (delta_total = delta_available + delta_frozen\n                   + delta_consumed + delta_expired)\nCHECK (total_after = available_after + frozen_after + …)', 182); },
+    900, () => { hl('gr', 11); hl('lg', 'g11'); },
+    2400, () => { hl('gr', 11, null); hl('lg', 'g11', null); }),
+]);
+
+scene('⑤ 迟到补发', [
+  step('再看一个特殊情况：订单 1002 是 40 天前（10-01）付的款，有效期 30 天。它的发放任务当时卡在 REVIEW，今天才修好重放。按规则它在 10-31 就该过期了。',
+    0, () => { clearMid(); row('ord', 1002, { id: 1002, status: 'PAID', funding: 'MOCK', paid_at: '10-01 09:00:00.000', credits: 50, days: 30 }); },
+    600, () => row('ob', 9010, { id: 9010, kind: 'ENTITLEMENT_GRANT', state: 'SENDING', key: 'entitlement-grant:1002:CREDITS' }),
+    1100, () => tx('EG2', 0, '消费 9010 · 迟到的发放', 'run')),
+  step('照常校验、建包，到期时间按 <code>paid_at + 30 天</code> 算出 10-31，已经早于数据库当前时间。代码<em>不延长有效期</em>，而是立刻 <code>expireImmediately</code>：可用 50 全部转入过期，状态 EXPIRED，并写一条 EXPIRE 流水。',
+    0, () => { row('gr', 12, { id: 12, o: 1002, t: 50, a: 50, f: 0, c: 0, e: 0, exp: '10-31 09:00', st: 'ACTIVE' }, 'EG2'); lg('g12', 'GRANT:1002:CREDITS', 'GRANT', '+50 / 0 / 0 / 0', '50/0/0/0', 'EG2'); },
+    1000, () => { cell('gr', 12, 'a', '0', 'EG2'); cell('gr', 12, 'e', '50', 'EG2'); cell('gr', 12, 'st', 'EXPIRED', 'EG2'); },
+    1500, () => lg('x12', 'EXPIRE:12:1793437200000', 'EXPIRE', '0 / 0 / 0 / +50', '50/0/0/50', 'EG2'),
+    2100, () => { cell('ob', 9010, 'state', 'DONE', 'EG2'); commit('EG2'); txs('EG2', 'ok'); }),
+  step('为什么这样做：权益的承诺是“付款后 30 天内可用”，补发只是把<em>当时就该有的东西</em>如实记上，不能因为系统晚处理就送用户额外的天数。账上清清楚楚：发了 50，过期 50。',
+    0, () => note('迟到补发的原则', `<ul><li>有效期<b>只从 paid_at 算</b>，不从发放时间算</li><li>先 GRANT 再 EXPIRE，两条流水都留着，账可追溯</li><li>历史订单连支付事实都证明不了时，补登会记入 <code>entitlement_anomaly</code>，<b>不猜时间、不静默发放</b></li></ul>`, 182)),
+]);
+
+scene('⑥ 冻结 · 消费 · 退回', [
+  step('权益包建好后，余额的变化都来自生成任务（下一集详讲）。提交任务 301 时<em>冻结</em> 1 次：条件更新要求包是 ACTIVE、在有效期内、可用 ≥ 1，可用 → 冻结，并写 <code>FREEZE:task:301</code> 流水。',
+    0, () => { clearMid(); gone('tx_EG2'); rmRow('lg', 'g12'); rmRow('lg', 'x12'); dim('gr', 12); dim('ord', 1002); clock('11-08 11:00:00.000', true); },
+    700, () => code('UPDATE entitlement_grant\nSET available_credits = available_credits - 1,\n    frozen_credits = frozen_credits + 1\nWHERE id = 11 AND status = \'ACTIVE\'\n  AND effective_from <= NOW(3) AND expires_at > NOW(3)\n  AND available_credits >= 1', 182),
+    1400, () => { cell('gr', 11, 'a', '99'); cell('gr', 11, 'f', '1'); lg('f301', 'FREEZE:task:301:CREDITS', 'FREEZE', '−1 / +1 / 0 / 0', '99/1/0/0'); wallet(99, 1, 0, 0); }),
+  step('任务 301 的图片成功落盘，结算走<em>消费</em>：冻结 → 已用。结算前先确认存在这个任务的 FREEZE 流水，没有冻结就不能结算。',
+    0, () => code('UPDATE entitlement_grant\nSET frozen_credits = frozen_credits - 1,\n    consumed_credits = consumed_credits + 1\nWHERE id = 11 AND frozen_credits >= 1\n-- 前提：存在 FREEZE:task:301 流水', 182),
+    800, () => { cell('gr', 11, 'f', '0'); cell('gr', 11, 'c', '1'); lg('c301', 'CONSUME:task:301:CREDITS', 'CONSUME', '0 / −1 / +1 / 0', '99/0/1/0'); wallet(99, 0, 1, 0); }),
+  step('任务 302 也冻结了 1 次，但上游明确拒绝，结算走<em>退回</em>。退回时在持有权益包行锁的情况下<em>按数据库时间判断</em>：包还有效，就退回可用；已经过期，就记入过期。这里还有效，退回可用。',
+    0, () => { lg('f302', 'FREEZE:task:302:CREDITS', 'FREEZE', '−1 / +1 / 0 / 0', '98/1/1/0'); cell('gr', 11, 'a', '98'); cell('gr', 11, 'f', '1'); wallet(98, 1, 1, 0); },
+    900, () => { gone('code'); gate('releaseForTask(302)', [['包 ACTIVE 且 expires_at &gt; NOW(3)？', ''], ['有效 → 冻结退回可用', ''], ['已过期 → 冻结记入过期', '']], 182); },
+    1400, () => check(0, 'ok', '有效'), 1800, () => check(1, 'go'),
+    2300, () => { cell('gr', 11, 'a', '99'); cell('gr', 11, 'f', '0'); lg('r302', 'RELEASE:task:302:CREDITS', 'RELEASE', '+1 / −1 / 0 / 0', '99/0/1/0'); wallet(99, 0, 1, 0); }),
+  step('一个任务只能有一种最终去向：要么 CONSUME、要么 RELEASE。流水的操作键带着任务号，同一种操作不会写两次；“消费和退回不能都发生”则由 <code>generation_settlement</code> 按任务的唯一键兜底，下一集再展开。',
+    0, () => { clearMid(); note('流水的五种类型', `<ul><li><b>GRANT</b>：+total / +可用</li><li><b>FREEZE</b>：可用 → 冻结</li><li><b>CONSUME</b>：冻结 → 已用</li><li><b>RELEASE</b>：冻结 → 可用，或冻结 → 过期</li><li><b>EXPIRE</b>：可用 → 过期</li></ul>每条都写“增量 + 之后余额”，两组都受 CHECK 约束。`, 182); }),
+]);
+
+scene('⑦ 到期', [
+  step('30 天后。到期任务每 60 秒扫一次：先无锁选出到期的包，再<em>逐个</em>开短事务：锁包、用数据库时间确认真的到期了，把剩余的 99 次可用全部转入过期，状态改 EXPIRED。',
+    0, () => { clearMid(); clock('12-08 10:03:21.000', true); tx('EX', 0, 'expireDueGrants · 每 60 秒', 'run'); },
+    700, () => { lock('gr', 11, 'X', 'EX'); code('SELECT … FOR UPDATE;  NOW(3) >= expires_at ✓\nUPDATE entitlement_grant\nSET available_credits = available_credits - 99,\n    expired_credits = expired_credits + 99, status = \'EXPIRED\'\nWHERE id = 11 AND available_credits = 99 AND expires_at <= NOW(3)', 182); },
+    1500, () => { cell('gr', 11, 'a', '0', 'EX'); cell('gr', 11, 'e', '99', 'EX'); cell('gr', 11, 'st', 'EXPIRED', 'EX'); },
+    2000, () => lg('x11', 'EXPIRE:11:1796724200503', 'EXPIRE', '−99 / 0 / 0 / +99', '0/0/1/99', 'EX'),
+    2500, () => { commit('EX'); txs('EX', 'ok'); wallet(0, 0, 1, 99); }),
+  step('两个细节。第一，EXPIRE 的操作键是“包号 + 到期时间”，<em>重复扫描只会有一条流水</em>。第二，到期只动“可用”，<em>不动冻结</em>：正在跑的任务冻结的那 1 次，等任务结束时由 RELEASE 按数据库时间判断，记入过期。',
+    0, () => note('到期与冻结', `<ul><li>到期：只把 <b>available</b> 转为 expired</li><li>冻结中的次数仍归属那个任务，结束时：成功 → CONSUME；失败 → RELEASE 到 <b>expired</b>（包已过期）</li><li>两者都要锁同一个权益包行，按数据库时间串行判断</li></ul>`, 330)),
+]);
+
+scene('⑧ 对账与补登', [
+  step('管理端有一个权益对账：统计应发未登记、DONE 却没有权益包、待处理、REVIEW、失败消息、重复包、余额违反恒等式、流水对不上、未处理的异常。<em>全部为 0 才算 exact</em>，否则提示人工复核。',
+    0, () => { clearMid(); gone('tx_EX'); gate('EntitlementAdmin.reconcile', [['应发放却没有任务 missingTasks', '0'], ['任务 DONE 却没有包 doneWithoutGrant', '0'], ['待处理 / REVIEW / 失败消息', '0'], ['重复包 / 余额违反恒等式 / 流水不符', '0'], ['未解决的异常 openAnomalies', '0']], 182); },
+    800, () => { [0, 1, 2, 3, 4].forEach(i => check(i, 'ok')); }),
+  step('<em>补登</em> backfill 按订单号游标扫描已支付订单：已有包就跳过并解决异常；已有任务就跳过；校验通过就 <code>INSERT IGNORE</code> 登记任务；校验不通过（比如缺支付事实）就记一条 <code>entitlement_anomaly</code>，<em>不猜测、不静默发放</em>。',
+    0, () => { clearMid(); code('for order in paidOrdersAfter(cursor, limit):\n  if grant exists      → skip, resolve anomaly\n  if task exists       → skip\n  try verify(order)    → INSERT IGNORE ENTITLEMENT_GRANT\n  catch SourceException → upsert entitlement_anomaly(type, detail)', 182); },
+    900, () => note('异常表的唯一键', `<code>(order_id, item_key, anomaly_type)</code>：同一订单同一类问题只有一行，修好后再跑补登会把它标为 RESOLVED。`, 330)),
+]);
+
+scene('总结与思考', [
+  step('回顾：支付只记事实；ORDER_PAID 登记任务，ENTITLEMENT_GRANT 发放；发放只信订单快照和支付事实；唯一键、恒等式和流水让每一分积分都有来处和去处。',
+    0, () => ov(`<div class="kp">本集回顾</div><h1 style="font-size:32px">权益与账务的关键点</h1><ol style="margin-top:14px">
+      <li>支付事务只写 <b>PAID + 支付事实 + ORDER_PAID</b>，不加额度</li>
+      <li>第一跳 <b>INSERT IGNORE</b> 登记任务（幂等键 entitlement-grant:1001:CREDITS），两跳<b>失败隔离</b></li>
+      <li>第二跳：锁订单 → <b>verify 只信快照与支付事实</b> → 已有包逐字段核对 → 建包 + GRANT 流水</li>
+      <li>约束：<b>(order_id, item_key)</b>、<b>operation_key</b>、<b>total = 可用 + 冻结 + 已用 + 过期</b></li>
+      <li>迟到补发<b>立即过期</b>；到期只动可用；冻结结束时按数据库时间 RELEASE</li></ol>`)),
+  step('暂停思考第 1 题：为什么支付事务里不直接给用户加积分？两跳为什么拆成两行 outbox？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">为什么支付事务里不直接给用户加积分？ORDER_PAID 之后为什么还要再登记一条 ENTITLEMENT_GRANT，而不是在第一跳里直接发放？</div>`)),
+  step('参考答案：支付只负责记录购买事实，发放是可重试、可补发、可复核的独立动作，出错不能让支付回滚。拆成两行是为了失败隔离：两个消费组各自 DONE、各自重试、各自 REVIEW。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>支付事务越短越好，只写 <b>PAID、支付事实、ORDER_PAID</b>；发放出错不会让已成功的支付回滚</li>
+      <li>发放是独立任务：能重试、能补登（backfill）、能人工 retryReview</li>
+      <li>两行 outbox 属于不同消费组：订单历史早已 DONE，发放失败时<b>只有发放那一行</b>在重试或进 REVIEW</li>
+      <li>不是为了“让用户少等”：两跳都是异步的</li></ul></div>`)),
+  step('暂停思考第 2 题：同一个订单的发放任务被重复投递，系统有几道防线保证只发一次？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">订单 1001 的发放被重复触发（ORDER_PAID 重投、ENTITLEMENT_GRANT 重投、管理员重放）。系统靠哪几道防线保证只发一个权益包、只记一条 GRANT 流水？</div>`)),
+  step('参考答案：消费端 DONE 和 inbox；登记任务的 idempotency_key 唯一键；发放时锁订单后查已有包并逐字段核对；数据库的 (order_id, item_key) 和 operation_key 两个唯一键兜底。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li>消息层：outbox 行 <code>DONE</code> + <code>message_inbox</code> 主键</li>
+      <li>登记层：<code>INSERT IGNORE</code> + <code>idempotency_key</code> 唯一键，只有一个发放任务</li>
+      <li>业务层：锁订单行 → <code>selectBySource</code> 已有包就<b>逐字段核对后原样返回</b>，不一致抛 GRANT_MISMATCH</li>
+      <li>数据库层：<code>UNIQUE(order_id, item_key)</code> 与 <code>UNIQUE(operation_key)</code></li></ul></div>`)),
+  step('暂停思考第 3 题：订单 40 天后才补发会怎样？权益包到期时，正在被任务冻结的那部分次数去哪？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">一笔 40 天前付款、有效期 30 天的订单今天才补发，结果是什么？权益包到期时，正被某个生成任务冻结的 1 次，最后会算到哪里？</div>`)),
+  step('参考答案：有效期只从 paid_at 算，补发时建包后立刻 expireImmediately，GRANT 和 EXPIRE 两条流水都记上。到期扫描只动可用；冻结的次数等任务结束，成功就 CONSUME，失败就按数据库时间判断包已过期，RELEASE 进 expired。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li>迟到补发：<code>expires_at = paid_at + 30d</code> 早于 NOW → 建包后<b>立即过期</b>，不延长；流水 GRANT + EXPIRE</li>
+      <li>到期扫描：<code>expireAvailable</code> 只移动 <b>available</b>，冻结、已用不动</li>
+      <li>冻结的 1 次：任务成功 → <b>CONSUME</b>（冻结 → 已用）；失败 → <b>RELEASE</b>，持有包行锁按数据库时间判断已过期 → 冻结 → <b>expired</b></li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

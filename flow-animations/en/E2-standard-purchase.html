@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E2 Standard Purchase</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E2-普通购买.html', home: '../index.html?lang=en', title: 'E2 · Standard Purchase, Payment & Closing', docTitle: 'E2 Standard Purchase', example: 'Example: user 42 · product 7 (credit pack ¥9.90)',
+  lanes: [['Browser', 'user 42'], ['App service', 'transactions · checks'], ['MySQL', 'tables and row locks']] });
+/* ============ Script ============ */
+const KEY = '3f9a7c…d21e', DIG = '9b1e4d…';
+const TY = { product: 88, request: 150, order: 252, payment: 356, outbox: 446 };
+const FE = [250, 210], APP = [330, 120], APPR = [600, 240];
+const toDB = tid => [760, TY[tid] + 4];
+
+scene('Intro', [
+  step('This episode follows user 42 buying a <em>standard credit pack</em>: from clicking "Buy now" to a successful payment, or to the order being closed on timeout. The whole flow touches only MySQL — <em>no Redis and no distributed lock</em>.',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 2</div><h1>Standard Purchase, Payment & Closing</h1><h2>One purchase intent creates exactly one order; between payment and closing, only one can win</h2>
+      <ol><li>Request key + unique key: how duplicates <b>create only one order</b></li><li>Order snapshot + outbox: writing "what to do next" in <b>the same transaction</b></li><li>Three client outcomes: when the request key <b>must be kept</b></li><li>Payment vs closing: <b>one row lock + complementary conditions</b></li></ol>`)),
+  step('Three lanes: the browser on the left, the running transactions and checks of the app service in the middle, and five MySQL tables on the right. <em>Rows with dashed hatching are not committed yet</em> and invisible to other transactions.',
+    0, () => { ovOff(); },
+    300, () => {
+      feInit(); clock('10:00:00.120');
+      table('product', 722, TY.product, 532, 'usage_product', 'product', [['id', 'id', 40], ['title', 'title', 110], ['status', 'status', 60], ['sale_mode', 'sale_mode', 80], ['price', 'price (fen)', 80]]);
+      row('product', 7, { id: 7, title: 'Credit pack', status: 1, sale_mode: 0, price: 990 });
+    },
+    700, () => table('request', 722, TY.request, 532, 'purchase_request', 'idempotency ledger · UNIQUE (user_id, request_key)', [['id', 'id', 44], ['user_id', 'user_id', 62], ['request_key', 'request_key', 110], ['request_digest', 'digest', 80], ['order_id', 'order_id', 76]]),
+    1000, () => table('order', 722, TY.order, 532, 'purchase_order', 'order snapshot', [['id', 'id', 46], ['user_id', 'user', 42], ['status', 'status', 82], ['amount', 'amount', 56], ['expire_at', 'expire_at', 96], ['paid_at', 'paid / closed', 96]]),
+    1300, () => table('payment', 722, TY.payment, 532, 'purchase_payment', 'payment fact · UNIQUE order_id', [['order_id', 'order_id', 70], ['channel', 'channel', 70], ['amount', 'amount', 60], ['paid_at', 'paid_at', 96]]),
+    1600, () => table('outbox', 722, TY.outbox, 532, 'business_outbox', 'reliable events · written in the business txn', [['id', 'id', 44], ['kind', 'kind', 120], ['aggregate_id', 'aggregate', 70], ['state', 'state', 74], ['deliver_at', 'deliver_at', 96]]),
+    2000, () => note('Legend', `<ul><li><span class="bd X">🔒X T1</span> exclusive lock: others wait to read or write</li><li><span class="bd S">🔒S T1</span> shared lock: others may read, not modify</li><li><span class="bd wait">⏳T2 waiting</span> queued for a lock</li><li><span class="bd tx">uncommitted·T1</span> row still inside transaction T1</li></ul>`, 300)),
+]);
+
+scene('① Request key', [
+  step('Before the purchase request, the client takes a request key from <code>sessionStorage</code>: if none exists it generates 32 random hex chars, otherwise it reuses the existing one. It stands for <em>"this one purchase intent"</em> and does not change on retry.',
+    0, () => { gone('note'); press(); },
+    500, () => feKey(KEY),
+    900, () => note('Why sessionStorage?', `<ul><li>It survives a page refresh, so a retry is still "the same purchase"</li><li>It is cleared when the tab closes, so it never leaks into the next purchase</li><li>Scoped per product: <code>purchase:7</code>; another product uses another key</li></ul>`, 300)),
+  step('The request carries the product id and request key into the backend <code>create()</code>. The whole method is one <code>@Transactional</code> transaction: every write that follows <em>either commits together or disappears together</em>.',
+    0, () => { fly('POST /trade/orders { productId: 7, requestKey }', FE, APP); feBtn('Submitting…', 'off'); gone('note'); },
+    1000, () => tx('T1', 0, 'create() · first click', 'run')),
+]);
+
+scene('② Read product', [
+  step('Step one reads the product with a <code>FOR SHARE</code> lock. Shared locks do not conflict, so many buyers can read in parallel; but an admin who wants to delist or reprice needs an exclusive lock and <em>must wait for these purchase transactions to commit</em>.',
+    0, () => code('SELECT p.*, a.status FROM usage_product p\nJOIN ai_application a ON a.id = p.application_id\nWHERE p.id = 7\nFOR SHARE'),
+    700, () => { fly('read product', APPR, toDB('product'), 'blue'); },
+    1500, () => { lock('product', 7, 'S', 'T1'); hl('product', 7); }),
+  step('With the lock held, check whether it can be sold: product listed, application published, and <code>sale_mode</code> must be 0. <code>sale_mode=1</code> means a limited campaign and goes through the flash-sale entry. Any failure returns 404 — <em>no row has been written yet</em>.',
+    0, () => gate('Can this be bought the standard way?', [['Product listed, status = 1', ''], ['Its application is published', ''], ['sale_mode = 0 (standard sale)', '']]),
+    800, () => check(0, 'ok', 'yes'), 1400, () => check(1, 'ok', 'yes'), 2000, () => check(2, 'ok', 'yes → go on'),
+    2400, () => hl('product', 7, null)),
+  step('It also computes a request <code>digest</code>, a fingerprint of "what is being bought". If the same request key is later reused to buy a different product, the digest catches it.',
+    0, () => note('Request digest', `<code>sha256("purchase-v1|product=7")</code> → <code>${DIG}</code><br>The key answers "is this the same operation?", the digest answers "was the content swapped?". Only when both match is the old result returned as-is.`)),
+]);
+
+scene('③ Request-row race', [
+  step('In reality the same request can arrive twice: a double click, or the client retrying after a gateway timeout. Let <em>a second request, T2, arrive at the same time</em> and see how only one order gets created.',
+    0, () => { gone('note'); gone('gate'); },
+    200, () => fly('POST (same requestKey)', FE, [330, 166], 'blue'),
+    1100, () => { tx('T2', 1, 'create() · duplicate', 'run'); lock('product', 7, 'S', 'T2'); }),
+  step('T1 inserts the request row directly and lets the unique key <code>(user_id, request_key)</code> decide. Why not select first, then insert? Two requests selecting at the same time both see "nothing" and both insert. <em>Let the unique key arbitrate the race</em>; the database guarantees a single row.',
+    0, () => code('INSERT INTO purchase_request(user_id, request_key, request_digest)\nVALUES (42, \'3f9a7c…\', \'9b1e4d…\')\nON DUPLICATE KEY UPDATE user_id = user_id'),
+    800, () => fly('INSERT', APPR, toDB('request'), 'blue'),
+    1600, () => { row('request', 501, { id: 501, user_id: 42, request_key: KEY, request_digest: DIG, order_id: 'NULL' }, 'T1'); lock('request', 501, 'X', 'T1'); }),
+  step('T2 runs the same INSERT and hits the same unique key. T1 has not committed, so T2 cannot know whether the row will exist; it <em>has to wait for T1\'s lock</em>. <code>ON DUPLICATE KEY</code> ensures it ends up as "already exists" rather than an error.',
+    0, () => fly('INSERT (same key)', [600, 290], toDB('request'), 'grey'),
+    900, () => { waitLock('request', 501, 'T2'); txs('T2', 'wait'); }),
+  step('T1 then reads the row with <code>FOR UPDATE</code>. An INSERT without an error does not mean this transaction inserted the row, so it must <em>lock the row and read its real state</em> before deciding what to do.',
+    0, () => code('SELECT * FROM purchase_request\nWHERE user_id = 42 AND request_key = \'3f9a7c…\'\nFOR UPDATE'),
+    800, () => hl('request', 501)),
+]);
+
+scene('④ De-dup', [
+  step('Two checks: a different digest means the same key was reused to buy something else → 409; an <code>order_id</code> already set means an order was created before → return that order. Note <em>de-dup looks at the request row\'s order_id</em>; it never scans the order table.',
+    0, () => gate('What state is this row in?', [['digest matches this request?', 'no → 409 CONFLICT'], ['order_id already set?', 'yes → return it'], ['neither: first time', '']]),
+    900, () => check(0, 'ok', 'matches'),
+    1600, () => check(1, 'ok', 'NULL, none'),
+    2300, () => check(2, 'go', 'create order'),
+    2600, () => hl('request', 501, null)),
+]);
+
+scene('⑤ Order snapshot', [
+  step('Write the order snapshot: title, credits, price and validity are copied into the order, so later price changes or delisting never affect it. Status is <code>UNPAID</code>, and the deadline is <em>the database\'s NOW(3) + 15 minutes</em>, not the app server\'s clock.',
+    0, () => { gone('gate'); code('INSERT INTO purchase_order(..., status, expire_at)\nVALUES (..., \'UNPAID\',\n  DATE_ADD(NOW(3), INTERVAL 15 MINUTE))\n-- id from auto-increment: 1001'); },
+    900, () => fly('INSERT order', APPR, toDB('order'), 'blue'),
+    1700, () => row('order', 1001, { id: 1001, user_id: 42, status: 'UNPAID', amount: 990, expire_at: '10:15:00.120', paid_at: '' }, 'T1')),
+  step('If the product is free, the same INSERT writes <code>PAID</code> directly and adds a <code>FREE</code> payment record. There is no deadline, so nothing to close; the outbox gets <code>ORDER_CLAIMED</code>.',
+    0, () => note('Branch: free product', `<ul><li><code>status = PAID</code>, <code>funding = FREE</code>, <code>paid_at = NOW(3)</code></li><li>Same txn inserts <code>purchase_payment(channel = FREE, amount = 0)</code></li><li>outbox: <code>ORDER_CREATED</code> + <code>ORDER_CLAIMED</code></li></ul>This example is a paid product, so we continue on the UNPAID branch.`)),
+]);
+
+scene('⑥ Outbox in the same txn', [
+  step('Two outbox rows go into the same transaction: <code>ORDER_CREATED</code> records order history; <code>ORDER_EXPIRE</code> is a <em>scheduled task</em> whose <code>deliver_at</code> equals the deadline — it is delivered only then, to trigger closing.',
+    0, () => { gone('note'); code('INSERT INTO business_outbox(kind, aggregate_id, state, ...)\nVALUES (\'ORDER_CREATED\', 1001, \'PENDING\', ...)\n\nINSERT INTO business_outbox(kind, ..., deliver_at)\nVALUES (\'ORDER_EXPIRE\', 1001, ..., \'10:15:00.120\')'); },
+    900, () => fly('INSERT ×2', APPR, toDB('outbox'), 'blue'),
+    1700, () => row('outbox', 9001, { id: 9001, kind: 'ORDER_CREATED', aggregate_id: 1001, state: 'PENDING', deliver_at: '' }, 'T1'),
+    2200, () => row('outbox', 9002, { id: 9002, kind: 'ORDER_EXPIRE', aggregate_id: 1001, state: 'PENDING', deliver_at: '10:15:00.120' }, 'T1')),
+  step('The outbox append method is <code>@Transactional(propagation = MANDATORY)</code>: it must be called inside a transaction or it throws. So it is <em>impossible for the order to roll back while the message goes out</em>, or the other way round.',
+    0, () => note('Why not publish to MQ right here?', `<ul><li>Publish then commit: if the commit fails, the message cannot be taken back</li><li>Commit then publish: a crash in between loses the message forever</li><li>outbox: <b>the message is a row in a business table</b>, committed or discarded with the order; a relay delivers it and retries on failure (see E1)</li></ul>`)),
+]);
+
+scene('⑦ Back-fill order id', [
+  step('Finally the order id is written back to the request row. It must come last because the order id is generated by auto-increment in <code>insertOrder</code>. The condition <code>order_id IS NULL</code> is one more safeguard: if it does not affect exactly 1 row, <em>the whole transaction rolls back</em>.',
+    0, () => { gone('note'); code('UPDATE purchase_request SET order_id = 1001\nWHERE id = 501 AND order_id IS NULL\n-- must affect exactly 1 row, else 409 and rollback'); },
+    900, () => fly('UPDATE', APPR, toDB('request'), 'blue'),
+    1700, () => cell('request', 501, 'order_id', '1001', 'T1')),
+]);
+
+scene('⑧ Commit & duplicate', [
+  step('T1 commits: the request row, the order and both outbox rows <em>become visible together</em>, and all locks are released. Only after the commit is the outbox relay woken up; had the transaction rolled back, that wake-up would never happen.',
+    0, () => { commit('T1'); txs('T1', 'ok'); gone('code'); },
+    600, () => { ping(980, TY.outbox + 50); tagAt('wake', 'afterCommit → wake outbox relay', 960, 416, 'ok'); },
+    1200, () => { fly('200 · order 1001', [330, 100], [60, 380], 'green'); },
+    2100, () => { feSt('✅ Order placed: <b>1001</b><br>¥9.90 due within 15 minutes<br>request key cleared', 'ok'); feBtn('Pay now', 'ok'); feKey('(empty)'); }),
+  step('T2 finally gets the lock. Its INSERT wrote nothing, and <code>FOR UPDATE</code> reads a request row that already has <code>order_id = 1001</code>, so it returns the same order. <em>Two requests, one order</em> — no Redis, no distributed lock.',
+    0, () => { gone('wake'); lock('request', 501, 'X', 'T2'); txs('T2', 'run'); hl('request', 501); },
+    700, () => gate('T2: what state is this row in?', [['digest matches?', ''], ['order_id already set?', '']]),
+    1300, () => check(0, 'ok', 'matches'),
+    1900, () => check(1, 'go', '1001 → return it'),
+    2600, () => { unlock('T2'); txs('T2', 'ret', 'returns 1001'); hl('request', 501, null); }),
+]);
+
+scene('⑨ Rollback contrast', [
+  step('Now a failing example: transaction T3 (user 42 buying product 8) has written its request row, order and two outbox rows, and then throws while back-filling the order id.',
+    0, () => { clearApp(); gone('gate'); },
+    500, () => tx('T3', 0, 'create() · another product (fails)', 'run'),
+    900, () => row('request', 502, { id: 502, user_id: 42, request_key: 'a81c0f…77b2', request_digest: 'e03a5c…', order_id: 'NULL' }, 'T3'),
+    1300, () => row('order', 1002, { id: 1002, user_id: 42, status: 'UNPAID', amount: 1990, expire_at: '10:16:10.400', paid_at: '' }, 'T3'),
+    1700, () => row('outbox', 9003, { id: 9003, kind: 'ORDER_CREATED', aggregate_id: 1002, state: 'PENDING', deliver_at: '' }, 'T3'),
+    2000, () => row('outbox', 9004, { id: 9004, kind: 'ORDER_EXPIRE', aggregate_id: 1002, state: 'PENDING', deliver_at: '10:16:10.400' }, 'T3'),
+    2500, () => code('UPDATE purchase_request SET order_id = 1002\nWHERE id = 502 AND order_id IS NULL\n-- ✗ exception thrown')),
+  step('The transaction rolls back and <em>all four rows vanish together</em>: no orphan order, no message pointing at a missing order, and no afterCommit wake-up. Consumed auto-increment ids are not reused, so gaps in ids are normal.',
+    0, () => { rollback('T3'); txs('T3', 'rb'); },
+    1400, () => note('The txn boundary is the consistency boundary', `The order and "what to do next" (the outbox) share one transaction:<br><b>either both exist or neither does.</b><br>That is exactly what lets the outbox guarantee "business succeeded ⇔ the event will be delivered".`, 300)),
+]);
+
+scene('⑩ Three client outcomes', [
+  step('The client handles the response in three ways. Success: clear the request key and go to the order page. A definite failure such as 4xx: clear it too, so the next purchase uses a new key. The dangerous third case is <em>an unknown outcome</em>.',
+    0, () => { clearApp(); gone('fe_st'); feBtn('Buy now'); },
+    400, () => feSt(`<div class="br"><i>✅</i><div><b>Success</b>: clear key → order page</div></div><div class="br"><i>⛔</i><div><b>4xx</b> (404 / 409): clear key + show reason</div></div><div class="br"><i>❓</i><div><b>Unknown</b> (504 / offline): <b style="color:var(--yellow)">keep key</b> + "Recover order"</div></div>`)),
+  step('Go back to T1\'s request and suppose it <em>had already committed</em> on the backend, but the response was lost to a gateway timeout. The client only sees 504 and does not know whether an order exists.',
+    0, () => { feKey(KEY); tx('T1', 0, 'create() · committed', 'ok'); },
+    500, () => fly('200 · order 1001', [330, 100], [60, 380], 'green', { lost: true }),
+    1400, () => { feSt('❓ <b>Outcome unknown</b><br>Gateway 504: the order may exist<br>Request key kept: <code>3f9a7c…</code>', 'warn'); feBtn('Recover order', 'warn'); }),
+  step('Clicking "Recover order" resends with the same key. The backend finds <code>order_id = 1001</code> on the request row and returns it unchanged. Had the key been cleared, the retry would use a new key and <em>create a second order</em>.',
+    0, () => { press(); fly('POST (same requestKey)', FE, APP, 'blue'); },
+    1000, () => { tx('T4', 1, 'create() · recover order', 'run'); hl('request', 501); },
+    1700, () => { gate('T4: request row state', [['digest matches', '✓'], ['order_id = 1001', 'return it']]); check(0, 'ok'); check(1, 'go'); },
+    2400, () => { txs('T4', 'ret', 'returns 1001'); hl('request', 501, null); fly('200 · order 1001', [330, 150], [60, 380], 'green'); },
+    3300, () => { feSt('✅ Recovered: order <b>1001</b>, request key cleared', 'ok'); feKey('(empty)'); feBtn('Pay now', 'ok'); }),
+]);
+
+scene('⑪ Payment', [
+  step('Three minutes later the user pays; the request carries the amount shown on the page, 990. The payment transaction first locks the order row with <code>FOR UPDATE</code> — <em>this lock is the key to the race with closing later</em>.',
+    0, () => { clearApp(); clock('10:03:20.500', true); feUrl('/orders/1001'); },
+    500, () => { press(); fly('POST /trade/orders/1001/pay { expectedAmount: 990 }', FE, APP, 'blue'); },
+    1400, () => { tx('T5', 0, 'pay() · order 1001', 'run'); code('SELECT * FROM purchase_order WHERE id = 1001\nFOR UPDATE'); },
+    2100, () => { lock('order', 1001, 'X', 'T5'); hl('order', 1001); }),
+  step('Under the lock, check each condition: the order must belong to the user; the amount must match the page, so nobody pays a stale price; if already <code>PAID</code>, return it — <em>clicking pay twice is idempotent</em>; only <code>UNPAID</code> may continue.',
+    0, () => gate('Can this order be paid?', [['Belongs to user 42?', 'no → 404'], ['990 = expectedAmount?', 'no → 409'], ['Already PAID?', 'yes → return as-is'], ['Status is UNPAID?', 'no → 409']]),
+    700, () => check(0, 'ok', 'yes'), 1300, () => check(1, 'ok', 'matches'), 1900, () => check(2, 'ok', 'no'), 2500, () => check(3, 'go', 'yes → go on')),
+  step('The conditional update repeats every precondition in <code>WHERE</code>: owner, unpaid, matching amount, and <code>expire_at &gt; NOW(3)</code>. The deadline uses the database clock; if it does not affect exactly 1 row, return 409.',
+    0, () => { gone('gate'); code('UPDATE purchase_order\nSET status = \'PAID\', funding = \'MOCK\', paid_at = NOW(3)\nWHERE id = 1001 AND user_id = 42 AND status = \'UNPAID\'\n  AND amount = 990 AND expire_at > NOW(3)'); },
+    900, () => fly('UPDATE', APPR, toDB('order'), 'blue'),
+    1700, () => { cell('order', 1001, 'status', 'PAID', 'T5'); cell('order', 1001, 'paid_at', '10:03:20.503', 'T5'); }),
+  step('Write the payment fact (<code>order_id</code> is unique, so an order is paid at most once) and then <code>ORDER_PAID</code>. Note that <em>the payment transaction adds no credits</em>: credits are granted asynchronously from <code>ORDER_PAID</code> via the outbox, covered in the entitlements episode.',
+    0, () => { fly('INSERT ×2', APPR, toDB('payment'), 'blue'); },
+    800, () => row('payment', 1001, { order_id: 1001, channel: 'MOCK', amount: 990, paid_at: '10:03:20.503' }, 'T5'),
+    1200, () => row('outbox', 9005, { id: 9005, kind: 'ORDER_PAID', aggregate_id: 1001, state: 'PENDING', deliver_at: '' }, 'T5'),
+    2200, () => { commit('T5'); txs('T5', 'ok'); hl('order', 1001, 'hlg'); gone('code'); },
+    2700, () => { feSt('✅ Paid: order <b>1001</b><br>credits arrive shortly (async grant)', 'ok'); feBtn('Paid', 'off'); }),
+]);
+
+scene('⑫ Three ways to close', [
+  step('Now an unpaid order. User 42 placed another order, <b>1003</b>, and never paid. There are three ways to close it, and all of them <em>lock the order row first and then check its state</em>.',
+    0, () => { clearApp(); hl('order', 1001, null); dim('order', 1001); dim('payment', 1001); dim('request', 501); clock('10:05:00.000', true); },
+    300, () => { cell('outbox', 9001, 'state', 'DONE'); cell('outbox', 9005, 'state', 'DONE'); },
+    1000, () => { rmRow('outbox', 9001); rmRow('outbox', 9005); },
+    1500, () => { row('order', 1003, { id: 1003, user_id: 42, status: 'UNPAID', amount: 990, expire_at: '10:20:00.000', paid_at: '' }); },
+    1900, () => row('outbox', 9007, { id: 9007, kind: 'ORDER_EXPIRE', aggregate_id: 1003, state: 'PENDING', deliver_at: '10:20:00.000' }),
+    2300, () => note('Three entry points for closing', `<ul><li><b>① Delayed event</b>: the outbox <code>ORDER_EXPIRE</code> is delivered at <code>deliver_at</code> → <code>closeExpired</code></li><li><b>② Fallback scan</b>: every 5 s, <code>status='UNPAID' AND expire_at &lt;= NOW(3)</code> → <code>closeExpired</code></li><li><b>③ User cancel</b>: <code>cancelUnpaid</code>, ignores the deadline</li></ul>`, 182)),
+  step('At 10:15, order 1001\'s <code>ORDER_EXPIRE</code> is delivered anyway — the event does not know the order was paid. The closing logic locks the order row, sees <code>PAID</code> and returns. <em>An event is only a reminder to check; the real decision is always made under the lock</em>.',
+    0, () => { gone('note'); clock('10:15:00.120', true); hl('outbox', 9002); cell('outbox', 9002, 'state', 'SENDING'); },
+    800, () => fly('ORDER_EXPIRE · 1001', [800, TY.outbox + 50], [330, 100], 'grey'),
+    1700, () => { tx('T6', 0, 'closeExpired(1001) · delayed event', 'run'); lock('order', 1001, 'X', 'T6'); dim('order', 1001, false); hl('order', 1001); },
+    2300, () => gate('Check under the lock', [['status = UNPAID?', '']]),
+    2700, () => check(0, 'no', 'PAID → return false'),
+    3300, () => { unlock('T6'); txs('T6', 'ret'); hl('order', 1001, null); dim('order', 1001); cell('outbox', 9002, 'state', 'DONE'); hl('outbox', 9002, null); }),
+  step('At 10:20 order 1003 expires. The delayed event T7 arrives first and locks the row; at the same moment the fallback scan also finds 1003, and its T8 has to queue for the lock.',
+    0, () => { clearApp(); clock('10:20:00.000', true); hl('outbox', 9007); cell('outbox', 9007, 'state', 'SENDING'); },
+    800, () => fly('ORDER_EXPIRE · 1003', [800, TY.outbox + 50], [330, 100], 'grey'),
+    1600, () => { tx('T7', 0, 'closeExpired(1003) · delayed event', 'run'); lock('order', 1003, 'X', 'T7'); hl('order', 1003); },
+    2300, () => { tx('T8', 1, 'closeExpired(1003) · 5 s scan', 'wait'); waitLock('order', 1003, 'T8'); }),
+  step('Under the lock T7 confirms it is still <code>UNPAID</code>, then closes it with a conditional update on <code>expire_at &lt;= NOW(3)</code>: <code>CANCELLED</code>, plus <code>ORDER_CLOSED</code> in the same transaction, and commits.',
+    0, () => code('UPDATE purchase_order\nSET status = \'CANCELLED\', closed_at = NOW(3)\nWHERE id = 1003 AND status = \'UNPAID\'\n  AND expire_at <= NOW(3)'),
+    900, () => { cell('order', 1003, 'status', 'CANCELLED', 'T7'); cell('order', 1003, 'paid_at', '10:20:00.004', 'T7'); },
+    1500, () => row('outbox', 9008, { id: 9008, kind: 'ORDER_CLOSED', aggregate_id: 1003, state: 'PENDING', deliver_at: '' }, 'T7'),
+    2400, () => { commit('T7'); txs('T7', 'ok'); cell('outbox', 9007, 'state', 'DONE'); hl('outbox', 9007, null); }),
+  step('T8 gets the lock, sees <code>CANCELLED</code> and returns false. Repeated triggers are safe: <em>every path locks the row first, then checks the state</em>.',
+    0, () => { lock('order', 1003, 'X', 'T8'); txs('T8', 'run'); },
+    700, () => gate('T8 check under the lock', [['status = UNPAID?', '']]),
+    1200, () => check(0, 'no', 'CANCELLED → return false'),
+    1900, () => { unlock('T8'); txs('T8', 'ret'); hl('order', 1003, null); }),
+  step('Two more details. If the event arrives early, the conditional update affects 0 rows and the code <em>registers a new ORDER_EXPIRE</em>, so closing responsibility stays in the outbox. Cancelling an already closed order is idempotent; cancelling a paid one returns 409, because there is no refund here.',
+    0, () => { clearApp(); },
+    300, () => note('When closeExpired affects 0 rows', `Still <code>UNPAID</code> under the lock but <code>expire_at &gt; NOW(3)</code>, i.e. not due yet:<br>→ <code>appendEventAt(ORDER_EXPIRE, deliver_at = expire_at)</code><br>Responsibility is never dropped; it comes back on time.`, 88),
+    900, () => note2('State rules of cancelUnpaid', `<ul><li>Already <code>CANCELLED</code> → return (idempotent, no extra event)</li><li>Already <code>PAID</code> → 409, <b>cancel is not a refund</b></li><li><code>UNPAID</code> → conditional update to <code>CANCELLED</code> + <code>ORDER_CLOSED</code></li></ul>`, 250)),
+]);
+
+scene('⑬ Pay vs close race', [
+  step('Finally, the sharpest race: order <b>1005</b> expires at <code>10:30:00.000</code>. Within a few milliseconds of the deadline, <em>a payment request and a closing task arrive together</em>.',
+    0, () => { gone('note'); gone('note2'); dim('order', 1003); rmRow('outbox', 9002); rmRow('outbox', 9007); rmRow('outbox', 9008); clock('10:29:59.990', true); },
+    900, () => row('order', 1005, { id: 1005, user_id: 42, status: 'UNPAID', amount: 990, expire_at: '10:30:00.000', paid_at: '' }),
+    1400, () => note('The two SQL conditions', `Pay: <code>... AND expire_at &gt; NOW(3)</code><br>Close: <code>... AND expire_at &lt;= NOW(3)</code><br>And both sides lock the same row with <code>FOR UPDATE</code> first. Let us look at both arrival orders.`, 300)),
+  step('<b>Case A: payment gets the lock first.</b> At 10:29:59.998 payment locks 1005; <code>expire_at &gt; NOW(3)</code> holds, so it becomes <code>PAID</code>. Closing arrives 2 ms later and has to wait.',
+    0, () => { gone('note'); clock('10:29:59.998', true); fly('pay(1005)', FE, APP, 'blue'); },
+    900, () => { tx('P', 0, 'pay(1005)', 'run'); lock('order', 1005, 'X', 'P'); hl('order', 1005); },
+    1500, () => { cell('order', 1005, 'status', 'PAID', 'P'); cell('order', 1005, 'paid_at', '10:29:59.998', 'P'); },
+    2100, () => { clock('10:30:00.000', true); tx('C', 1, 'closeExpired(1005)', 'wait'); waitLock('order', 1005, 'C'); }),
+  step('Payment writes the payment fact and <code>ORDER_PAID</code>, then commits. Closing gets the lock, sees <code>PAID</code> and returns. <em>The user paid, and the order was not closed</em>.',
+    0, () => row('payment', 1005, { order_id: 1005, channel: 'MOCK', amount: 990, paid_at: '10:29:59.998' }, 'P'),
+    400, () => row('outbox', 9010, { id: 9010, kind: 'ORDER_PAID', aggregate_id: 1005, state: 'PENDING', deliver_at: '' }, 'P'),
+    1100, () => { commit('P'); txs('P', 'ok'); },
+    1600, () => { lock('order', 1005, 'X', 'C'); txs('C', 'run'); },
+    2100, () => gate('Close: check under the lock', [['status = UNPAID?', '']]),
+    2500, () => check(0, 'no', 'PAID → return false'),
+    3000, () => { unlock('C'); txs('C', 'ret'); hl('order', 1005, 'hlg'); feUrl('/orders/1005'); feSt('✅ Paid: order <b>1005</b>', 'ok'); }),
+  step('<b>Rewind — case B: closing gets the lock first.</b> At 10:30:00.001 closing locks 1005; <code>expire_at &lt;= NOW(3)</code> holds, so it becomes <code>CANCELLED</code>. Payment arrives 1 ms later and has to wait.',
+    0, () => { clearApp(); rmRow('payment', 1005); rmRow('outbox', 9010); cell('order', 1005, 'status', 'UNPAID'); cell('order', 1005, 'paid_at', ''); hl('order', 1005, null); clock('10:30:00.001', true); },
+    900, () => { tx('C', 0, 'closeExpired(1005)', 'run'); lock('order', 1005, 'X', 'C'); hl('order', 1005); gone('fe_st'); },
+    1500, () => { cell('order', 1005, 'status', 'CANCELLED', 'C'); cell('order', 1005, 'paid_at', '10:30:00.001', 'C'); },
+    2000, () => row('outbox', 9010, { id: 9010, kind: 'ORDER_CLOSED', aggregate_id: 1005, state: 'PENDING', deliver_at: '' }, 'C'),
+    2400, () => { clock('10:30:00.002', true); fly('pay(1005)', FE, [330, 166], 'blue'); },
+    3300, () => { tx('P', 1, 'pay(1005)', 'wait'); waitLock('order', 1005, 'P'); }),
+  step('Closing commits. Payment gets the lock, sees <code>CANCELLED</code> rather than <code>UNPAID</code>, returns 409, and the client says the order is closed. <em>"Money taken but order closed" can never happen</em>.',
+    0, () => { commit('C'); txs('C', 'ok'); },
+    600, () => { lock('order', 1005, 'X', 'P'); txs('P', 'run'); },
+    1100, () => gate('Pay: check under the lock', [['Already PAID?', ''], ['Status is UNPAID?', '']]),
+    1500, () => check(0, 'ok', 'no'), 2000, () => check(1, 'no', 'CANCELLED → 409'),
+    2600, () => { unlock('P'); txs('P', 'rb', '409 rolled back'); hl('order', 1005, 'hlr'); fly('409 order closed', [330, 150], [60, 380], 'red'); },
+    3400, () => feSt('⛔ Payment failed: order 1005 expired and was closed', 'bad')),
+  step('Why only one side can win: <em>one row lock serializes both sides</em>, so whoever comes second always sees the first one\'s result; and the two conditions are complementary — at any instant exactly one holds, and <em>the millisecond exactly at the deadline belongs to closing</em>.',
+    0, () => { clearApp(); },
+    300, () => put('tl', 'note', `<div class="nt">Complementary conditions on the timeline</div>
+      <svg width="356" height="96" viewBox="0 0 356 96">
+        <line x1="10" y1="50" x2="346" y2="50" stroke="#8d99b8" stroke-width="2"/>
+        <rect x="10" y="38" width="168" height="24" rx="4" fill="rgba(62,207,142,.25)"/>
+        <rect x="178" y="38" width="168" height="24" rx="4" fill="rgba(255,107,107,.25)"/>
+        <line x1="178" y1="22" x2="178" y2="78" stroke="#ffc857" stroke-width="2" stroke-dasharray="4 3"/>
+        <circle cx="178" cy="50" r="5" fill="#ff6b6b"/>
+        <text x="178" y="16" fill="#ffc857" font-size="12" text-anchor="middle">expire_at = 10:30:00.000</text>
+        <text x="94" y="55" fill="#7ff0bc" font-size="12" text-anchor="middle">pay: expire_at &gt; NOW</text>
+        <text x="262" y="55" fill="#ffb1b1" font-size="12" text-anchor="middle">close: expire_at ≤ NOW</text>
+        <text x="178" y="94" fill="#e4dcff" font-size="12" text-anchor="middle">the boundary point (solid) belongs to closing</text>
+      </svg>`, 306, 182, 384),
+    900, () => note('Two layers of guarantee', `<ul><li><b>Row lock</b>: <code>FOR UPDATE</code> serializes pay, close and cancel on the same order</li><li><b>Conditional update</b>: <code>status='UNPAID'</code> + complementary time conditions; even if a check were wrong, WHERE lets only one side affect 1 row</li></ul>`, 340)),
+]);
+
+scene('Recap & questions', [
+  step('Recap: request keys plus a unique key make duplicates create one order; the order, outbox rows and back-fill share one transaction; keep the key when the outcome is unknown; payment and closing share one row lock and complementary conditions, so only one wins.',
+    0, () => ov(`<div class="kp">Episode recap</div><h1 style="font-size:32px">Six key points of the standard purchase</h1><ol style="margin-top:14px">
+      <li>A <b>request key</b> stands for one purchase intent, kept in sessionStorage and reused on retry</li>
+      <li><b>ON DUPLICATE KEY</b> lets the unique key arbitrate, then <b>FOR UPDATE</b> reads the real state</li>
+      <li>De-dup looks at <b>the request row's order_id</b>; a different digest returns 409</li>
+      <li>Order snapshot, outbox and back-fill in <b>one transaction</b>; on failure they vanish together</li>
+      <li>On an unknown outcome <b>keep the request key</b> and use "Recover order"</li>
+      <li>Pay vs close: <b>one row lock + expire_at &gt; / ≤ NOW(3)</b>; the payment txn adds no credits</li></ol>`)),
+  step('Pause and think, question 1: why insert the request row with <code>ON DUPLICATE KEY</code> instead of SELECT first and INSERT if missing? Think before you continue.',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">Why insert the request row with <code>INSERT … ON DUPLICATE KEY</code> rather than SELECT first and INSERT if it is missing? And why read it again with <code>FOR UPDATE</code> after inserting?</div>`)),
+  step('Answer: select-then-insert has a race window where both requests may see "nothing". The unique key hands the race to the database; an INSERT without an error does not mean you inserted the row, so read the real state under a lock.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>Select-then-insert: T1 and T2 both SELECT "nothing" and both INSERT — one hits a unique-key error, or without a unique key two orders appear</li>
+      <li>The unique key <code>(user_id, request_key)</code> guarantees a single row; <code>ON DUPLICATE KEY UPDATE user_id = user_id</code> makes the later one wait for the first to commit instead of failing</li>
+      <li>A successful INSERT does not prove the row is yours; lock it with <code>FOR UPDATE</code> and read the committed <code>digest</code> and <code>order_id</code> before deciding</li></ul></div>`)),
+  step('Pause and think, question 2: when the order request times out and the client gets 504, why must it not clear the request key?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">The order request times out and the client receives 504. Why must it <b>not</b> clear the request key now? And if it received 409, why <b>should</b> it clear it?</div>`)),
+  step('Answer: 504 means the outcome is unknown and the backend may have committed. Retrying with the same key finds the original order on the request row; retrying with a new key is a new purchase and creates a second order.',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li>504 / offline = <b>outcome unknown</b>: the transaction may have committed and only the response was lost</li>
+      <li>Retry with the same key → same request row → <code>order_id</code> is set → order 1001 returned as-is</li>
+      <li>Retry with a new key → a new request row → a second order, and the user may pay twice</li>
+      <li>409 / 404 are <b>definite failures</b>: no order was created for this intent, and an old key would keep hitting the same result, so clear it</li></ul></div>`)),
+  step('Pause and think, question 3: payment and closing arrive together — what guarantees only one succeeds? Who wins the millisecond exactly at the deadline?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">A payment and an expiry close hit the same order together. What guarantees only one succeeds? Exactly when <code>NOW(3) = expire_at</code>, who wins? Are credits added in the payment transaction?</div>`)),
+  step('Answer: both sides lock the same order row with FOR UPDATE first and then do complementary conditional updates; the boundary instant belongs to closing. The payment transaction writes only PAID, the payment fact and ORDER_PAID; credits come later via the outbox.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li><b>One row lock</b>: <code>pay</code>, <code>closeExpired</code> and <code>cancelUnpaid</code> all start with <code>SELECT … FOR UPDATE</code>; the later one always sees the earlier one's committed state</li>
+      <li><b>Complementary conditions</b>: <code>markPaid … expire_at &gt; NOW(3)</code>, <code>closeExpired … expire_at &lt;= NOW(3)</code>, both on the DB clock; at equality only closing holds</li>
+      <li>The payment txn <b>adds no credits</b>: it writes only <code>PAID</code>, <code>purchase_payment</code> and <code>ORDER_PAID</code>; credits arrive via the two-hop outbox (entitlements episode)</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E3 Limited Campaign Flash Sale</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.tn{font-size:11.5px}
+.bd.tx{display:none}
+</style>
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E3-限量活动秒杀.html', home: '../index.html?lang=en', title: 'E3 · Limited Campaign Flash Sale', docTitle: 'E3 Limited Campaign Flash Sale', example: 'Example: campaign 7 · 2 units · generation 3',
+  cols: [[16, 214], [238, 376], [622, 642]],
+  lanes: [['Users', 'buy requests'], ['App service', 'admission · Stream consumer'], ['Redis entry replica', '| MySQL truth']] });
+
+/* ============ Script ============ */
+const TY = { rk: 88, st: 272, camp: 88, res: 150, ord: 252, ob: 334, dl: 436 };
+const RX = 632, MX = 948;
+const toR = t => [660, TY[t] + 4], toM = t => [975, TY[t] + 4];
+const MID = [520, 240];
+const UY = { 42: 88, 77: 134, 88: 180 };
+const fromU = u => [60, UY[u] + 10];
+const toApp = (slot = 0) => [260, 96 + slot * 46];
+
+function user(u, label, st = 'run') { card('U' + u, 26, UY[u], 194, '', st, label, 'User ' + u); }
+function panel(html, tone = '') { put('upanel', 'fe st ' + tone, html, 26, 232, 194, null); }
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+function rk(id, k, t, v) { row('rk', id, { k, t, v }); }
+
+scene('Intro', [
+  step('This episode covers the limited-campaign flash sale. The big difference from a standard purchase: <em>synchronous admission touches only Redis, and the order is written to the database asynchronously</em>. Redis is an entry replica; MySQL is the truth.',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 3</div><h1>Limited Campaign Flash Sale</h1><h2>Atomic Redis admission absorbs the burst, a Stream creates orders asynchronously, the database keeps it consistent</h2>
+      <ol><li>Sync admission: pre-checks, user lock, order id first, <b>one Lua script decides and writes</b></li><li>Two async transactions: <b>register</b> the reservation → <b>fulfill</b> deducts stock and creates the order → only then <b>XACK</b></li><li>Crashes and redelivery: <b>PEL + XCLAIM</b>, reservation state blocks duplicates, dead letters and REVIEW</li><li>Release on close: fixed lock order, generated column <b>active_user</b>, Redis top-up</li></ol>`)),
+  step('To keep it readable, campaign 7 has only <em>2 units</em> and its current generation is 3. On the right, the left half shows Redis keys and the Stream; the right half shows MySQL: campaign, reservations, orders, outbox and dead letters. Order ids are shortened for the demo.',
+    0, () => ovOff(),
+    300, () => {
+      clock('10:00:00.200');
+      table('rk', RX, TY.rk, 306, 'Redis keys', 'campaign:*', [['k', 'key', 88], ['t', 'type', 52], ['v', 'value', 156]]);
+      rk('stock', 'stock:7', 'string', '2');
+      rk('act', 'activity:7', 'hash', 'ACTIVE · gen 3');
+      rk('buyers', 'buyers:7', 'set', '{ }');
+      rk('reqs', 'requests:7', 'hash', '{ }');
+    },
+    700, () => table('st', RX, TY.st, 306, 'stream:orders', 'group fulfillment', [['id', 'entry', 44], ['f', 'fields', 120], ['pel', 'PEL', 110]]),
+    1000, () => {
+      table('camp', MX, TY.camp, 306, 'limited_campaign', 'campaign', [['id', 'id', 24], ['rem', 'remaining', 70], ['init', 'initial', 58], ['gen', 'generation', 80]]);
+      row('camp', 7, { id: 7, rem: 2, init: 2, gen: 3 });
+    },
+    1300, () => table('res', MX, TY.res, 306, 'campaign_reservation', 'reservation', [['o', 'order', 42], ['u', 'uid', 28], ['g', 'gen', 26], ['s', 'state', 74], ['r', 'rel', 28], ['a', 'active', 50]]),
+    1600, () => table('ord', MX, TY.ord, 306, 'purchase_order', 'order', [['id', 'id', 42], ['u', 'uid', 34], ['c', 'campaign', 62], ['s', 'status', 80]]),
+    1900, () => table('ob', MX, TY.ob, 306, 'business_outbox', '', [['id', 'id', 40], ['k', 'kind', 160], ['s', 'state', 64]]),
+    2200, () => table('dl', MX, TY.dl, 306, 'campaign_dead_letter', 'dead letters', [['m', 'message_id', 70], ['o', 'order', 42], ['r', 'reason', 150]])),
+]);
+
+scene('① Pre-checks', [
+  step('The sale opens at 10:00:00. User 42 clicks buy and calls <code>admit()</code> with the campaign id and a request key. Note this method has <em>no @Transactional</em>: it only reads the database to decide; all writes happen in Redis.',
+    0, () => { clock('10:00:00.200', true); user(42, 'clicks buy', 'run'); },
+    500, () => fly('POST /campaigns/admit {campaignId: 7, requestKey}', fromU(42), toApp(0), 'blue'),
+    1400, () => tx('A42', 0, 'admit() · user 42', 'run'),
+    1800, () => gate('Pre-checks (DB reads, no txn)', [['Campaign exists and is published', ''], ['entryGuard is open', ''], ['Product sellable · sale_mode = 1', ''], ['ACTIVE and inside the window', '']], 182),
+    2300, () => check(0, 'ok'), 2700, () => check(1, 'ok', 'in-JVM switch'), 3100, () => check(2, 'ok'), 3500, () => check(3, 'ok')),
+  step('Next, a per-user lock: <code>SET NX EX 5</code> on <code>campaign:admit:7:42</code> serializes the same user\'s concurrent attempts. Inside the lock it <em>re-reads the campaign</em>: a recovery may have just advanced the generation, and using the old one against Redis would be misread as "Redis is corrupted".',
+    0, () => { gone('gate'); code('SET campaign:admit:7:42 <owner> NX EX 5\n-- lock not acquired → 503, try again later\n\nLimitedCampaign current = campaigns.selectById(7);  // re-read inside the lock\nrequireJoinable(current);', 182); },
+    900, () => fly('SET NX EX 5', MID, toR('rk'), 'blue'),
+    1600, () => rk('lock', 'admit:7:42', 'string', 'lock · 5 s')),
+  step('Then it <em>generates the order id first</em>, before running Lua. Order id = seconds since 2022-01-01 shifted left 32 bits, OR a daily Redis counter. This id is written into Redis and the Stream message, and registering, fulfilling and redelivery all use <em>the same id</em> — that is what lets the order primary key block duplicates.',
+    0, () => code('long seq = INCR icr:campaign-order:2026:11:08;\nlong orderId = (seconds - EPOCH) << 32 | seq;\n-- shortened to 5001 in this demo', 182),
+    900, () => tagAt('oid', 'order id 5001 (short demo id)', 260, 290, 'ok')),
+]);
+
+scene('② Atomic Lua admission', [
+  step('<code>campaign-admit.lua</code> does every check and every write <em>in one go</em> inside Redis; no other command can interleave. The check order matters: it goes top to bottom and returns the matching code at the first failure.',
+    0, () => { clearMid(); gone('oid'); },
+    300, () => gate('campaign-admit.lua check order', [['Key type conflict?', '→ 4'], ['Request key already seen?', '→ 6 duplicate'], ['activity.state = ACTIVE?', 'no → 3'], ['Generation matches DB, stock in [0, 2]?', 'no → 5'], ['Inside the time window?', 'no → 3'], ['User already in buyers?', 'yes → 2'], ['Stock &gt; 0?', 'no → 1 sold out'], ['All passed', '→ 0 admitted']], 182),
+    900, () => check(0, 'ok', 'none'), 1300, () => check(1, 'ok', 'first time'), 1700, () => check(2, 'ok'), 2100, () => check(3, 'ok', 'gen 3 · stock 2'),
+    2500, () => check(4, 'ok'), 2900, () => check(5, 'ok', 'no'), 3300, () => check(6, 'ok', '2 left'), 3700, () => check(7, 'go', 'admit')),
+  step('On success the same script writes six things: decrement stock, add the user to buyers, record "user → order", write the order hash (state <code>PROCESSING</code>), write the request-key mapping, and finally <code>XADD</code> a message to the Stream. <em>All or nothing</em>.',
+    0, () => { fly('EVALSHA admit', MID, toR('rk'), 'blue'); },
+    700, () => cell('rk', 'stock', 'v', '1'),
+    1100, () => cell('rk', 'buyers', 'v', '{ 42 }'),
+    1500, () => cell('rk', 'reqs', 'v', '{42→5001}'),
+    1900, () => rk('req', 'request:5001', 'hash', 'PROCESSING · gen 3'),
+    2300, () => rk('rkey', 'request-key:7:42:…', 'string', '5001'),
+    2800, () => row('st', 'e1', { id: '1-0', f: '5001 · u42 · g3', pel: '' })),
+  step('The script returns 0; the endpoint releases the user lock and returns <code>PROCESSING</code> with order id 5001. <em>Nothing has been written to the database</em>. The client polls by request key and shows "accepted, the order is being created".',
+    0, () => { rmRow('rk', 'lock'); txs('A42', 'ok', 'PROCESSING'); },
+    500, () => fly('200 · PROCESSING · order 5001', toApp(0), fromU(42), 'green'),
+    1300, () => { user(42, 'admitted 5001', 'ok'); panel('User 42 sees:<br>"Pre-order accepted, the order is being created; acceptance does not mean the order exists or is paid"', 'ok'); }),
+  step('At the same moment user 77 goes through the same flow and gets the last unit: stock 1 → 0, and a second message lands in the Stream.',
+    0, () => { clearMid(); gone('tx_A42'); user(77, 'clicks buy', 'run'); },
+    500, () => fly('admit', fromU(77), toApp(1), 'blue'),
+    1200, () => { cell('rk', 'stock', 'v', '0'); cell('rk', 'buyers', 'v', '{ 42, 77 }'); cell('rk', 'reqs', 'v', '{42→5001, 77→5002}'); },
+    1700, () => row('st', 'e2', { id: '2-0', f: '5002 · u77 · g3', pel: '' }),
+    2200, () => user(77, 'admitted 5002', 'ok')),
+  step('User 88 is too late: the earlier checks pass and they are not in buyers, but stock is 0, so the script returns 1 (sold out) and the endpoint answers 409. <em>Redis stopped the request; the database was never touched</em>.',
+    0, () => { user(88, 'clicks buy', 'run'); fly('admit', fromU(88), toApp(0), 'blue'); },
+    900, () => gate('Lua · user 88', [['type / key / state / generation / window', ''], ['Already in buyers?', ''], ['Stock &gt; 0?', '']], 182),
+    1300, () => check(0, 'ok'), 1700, () => check(1, 'ok', 'no'), 2100, () => check(2, 'no', '0 → returns 1'),
+    2600, () => { user(88, '409 sold out', 'rb'); }),
+  step('User 42 clicks again with a new request key. "Request key already seen" does not catch it (the key is new), but "already in buyers" does: it returns 2 and the endpoint hands back <em>the original order 5001</em>. Note that 2 comes before sold-out 1: someone who already won keeps their slot even after a sell-out.',
+    0, () => { user(42, 'new key, again', 'run'); fly('admit (new requestKey)', fromU(42), toApp(0), 'blue'); },
+    900, () => gate('Lua · user 42 again', [['Request key already seen?', ''], ['Already in buyers?', ''], ['Stock &gt; 0?', '']], 182),
+    1300, () => check(0, 'ok', 'new key'), 1800, () => check(1, 'no', 'yes → returns 2'),
+    2300, () => { user(42, 'order 5001', 'ok'); note('Two duplicate checks — keep them apart', `<ul><li><b>6 request key</b>: a retry of the same request (resend, double click) returns the original result</li><li><b>2 buyers set</b>: one order per person, whether or not the key is new</li><li>The database has a third line: the reservation unique key <code>(campaign_id, active_user)</code></li></ul>`, 300); }),
+]);
+
+scene('③ Async register', [
+  step('A dedicated consumer thread loops over two things: <em>first reclaim messages others got stuck on, then read new ones</em>. New messages are read with <code>XREADGROUP … COUNT 10 BLOCK 1000 &gt;</code>. Once 5001 is read, it enters the group\'s pending list, the PEL.',
+    0, () => { clearMid(); panel('', ''); gone('upanel'); },
+    300, () => tx('C', 0, 'consumer campaign-stream-consumer', 'run', 'looping'),
+    800, () => code('while (running) {\n  reclaim();   // PEL entries idle ≥ 5 s → XCLAIM\n  readNew();   // XREADGROUP GROUP fulfillment … COUNT 10 BLOCK 1000 >\n}', 182),
+    1600, () => fly('XREADGROUP', MID, toR('st'), 'blue'),
+    2300, () => { cell('st', 'e1', 'pel', 'c1 · delivery 1'); hl('st', 'e1'); }),
+  step('Transaction ① <code>register</code>: lock the reservation row with <code>FOR UPDATE</code>. There is no row yet, so it must verify the admission facts in Redis: the order hash, user → order, the request-key mapping and buyers — <em>all four keys must match</em> before a <code>PROCESSING</code> reservation is inserted. A message cannot vouch for itself.',
+    0, () => code('reservation = selectReservationForUpdate(5001);   // none\nadmitted(message):\n  request:5001 state/order/user/campaign/gen/requestKey match\n  requests:7[42] == 5001\n  request-key:7:42:… == 5001\n  SISMEMBER buyers:7 42', 182),
+    900, () => fly('verify 4 keys', MID, toR('rk'), 'blue'),
+    1500, () => { hl('rk', 'req'); hl('rk', 'reqs'); hl('rk', 'rkey'); hl('rk', 'buyers'); },
+    2300, () => { ['req', 'reqs', 'rkey', 'buyers'].forEach(k => hl('rk', k, null)); fly('INSERT IGNORE reservation', MID, toM('res'), 'blue'); },
+    3000, () => { row('res', 5001, { o: 5001, u: 42, g: 3, s: 'PROCESSING', r: 0, a: 42 }, 'R1'); lock('res', 5001, 'X', 'R1'); }),
+  step('If the reservation already exists (e.g. on redelivery) it works the other way: <em>skip Redis and compare four fields of the message with the database row</em> (campaign, user, generation, request key). Then by state: SUCCESS / FAILED / REVIEW each return; if the message generation differs from the campaign\'s current one, mark REVIEW and return STALE.',
+    0, () => note('Two paths of register', `<ul><li><b>No row</b> → verify four Redis keys → insert PROCESSING</li><li><b>Row exists</b> → compare four fields; mismatch → INVALID (dead letter)</li><li>By state: SUCCESS → ACK; REVIEW / stale generation → dead letter + ACK; PROCESSING → go on to fulfill</li></ul>`, 300)),
+  step('5001 is PROCESSING with a matching generation, so transaction ① commits. <em>It does not ACK yet</em>: in the default stream mode the same thread calls <code>fulfill</code> next. The two transactions are linked by <em>the PROCESSING reservation plus the unacknowledged Stream message</em>, so either side can resume after a crash.',
+    0, () => { gone('note'); commit('R1'); },
+    600, () => note('Another hand-off: outbox mode', `With <code>fulfillment-mode=outbox</code>, register inserts <code>CAMPAIGN_FULFILL</code> in the same transaction (<code>INSERT IGNORE</code>, key <code>campaign-fulfill:5001</code>) and <b>ACKs right after commit</b>. Responsibility for the order moves from the Stream to the outbox table and the relay from E1.`, 300)),
+]);
+
+scene('④ Fulfill', [
+  step('Transaction ② <code>fulfill</code>: lock the reservation again and confirm it is still PROCESSING; its generation equals the campaign\'s; <em>re-check sellability against live state</em> inside the transaction rather than trusting admission time; order 5001 does not exist yet.',
+    0, () => { clearMid(); lock('res', 5001, 'X', 'F1'); hl('res', 5001); },
+    500, () => gate('fulfill pre-checks', [['Reservation is PROCESSING?', 'SUCCESS → return'], ['Generation = campaign generation?', 'no → throw'], ['Product and app still sellable?', 'no → throw'], ['Order 5001 already exists?', 'yes → verify, markSuccess']], 182),
+    1000, () => check(0, 'ok'), 1500, () => check(1, 'ok', '3 = 3'), 2000, () => check(2, 'ok'), 2500, () => check(3, 'ok', 'no → create')),
+  step('Now the real database deduction: <code>remaining_stock - 1 WHERE remaining_stock &gt; 0</code>, taking an X lock on the campaign row; the order is <em>inserted explicitly with the same id 5001</em> (no auto-increment); <code>ORDER_CREATED</code> and <code>ORDER_EXPIRE</code> go into the same transaction; finally the reservation becomes <code>SUCCESS</code>.',
+    0, () => { gone('gate'); hl('res', 5001, null); code('UPDATE limited_campaign SET remaining_stock = remaining_stock - 1\nWHERE id = 7 AND remaining_stock > 0;\nINSERT INTO purchase_order(id, ...) VALUES (5001, ...);  -- explicit id\noutbox: ORDER_CREATED, ORDER_EXPIRE\nUPDATE campaign_reservation SET state = \'SUCCESS\'\nWHERE order_id = 5001 AND state = \'PROCESSING\';', 182); },
+    900, () => { fly('deduct stock', MID, toM('camp'), 'blue'); },
+    1500, () => { lock('camp', 7, 'X', 'F1'); cell('camp', 7, 'rem', '1', 'F1'); },
+    2100, () => row('ord', 5001, { id: 5001, u: 42, c: 7, s: 'UNPAID' }, 'F1'),
+    2500, () => { row('ob', 7101, { id: 7101, k: 'ORDER_CREATED', s: 'PENDING' }, 'F1'); row('ob', 7102, { id: 7102, k: 'ORDER_EXPIRE', s: 'PENDING' }, 'F1'); },
+    3000, () => cell('res', 5001, 's', 'SUCCESS', 'F1')),
+  step('After transaction ② commits, <code>afterCommit</code> sets the Redis order hash to <code>BOOKED</code>, which is only for display; <em>XACK comes last</em> and the message leaves the PEL. Remember the order: <code>markSuccess</code> inside the transaction, BOOKED after commit, ACK at the very end.',
+    0, () => { commit('F1'); },
+    700, () => { cell('rk', 'req', 'v', 'BOOKED · gen 3'); },
+    1300, () => fly('XACK', MID, toR('st'), 'green'),
+    2000, () => { cell('st', 'e1', 'pel', 'acked'); dim('st', 'e1'); hl('st', 'e1', null); user(42, 'order 5001 due', 'ok'); }),
+]);
+
+scene('⑤ Crashes & redelivery', [
+  step('Now 5002 goes wrong. The consumer reads 5002; transaction ① registers it as PROCESSING and commits; while transaction ② is creating the order, <em>the process crashes</em>. The order transaction rolls back, no order exists, and the message stays unacknowledged in the PEL.',
+    0, () => { clearMid(); clock('10:00:00.900', true); cell('st', 'e2', 'pel', 'c1 · delivery 1'); hl('st', 'e2'); },
+    700, () => row('res', 5002, { o: 5002, u: 77, g: 3, s: 'PROCESSING', r: 0, a: 77 }),
+    1300, () => { lock('res', 5002, 'X', 'F2'); lock('camp', 7, 'X', 'F2'); cell('camp', 7, 'rem', '0', 'F2'); row('ord', 5002, { id: 5002, u: 77, c: 7, s: 'UNPAID' }, 'F2'); },
+    2100, () => { txs('C', 'rb', '💥 crashed'); rollback('F2'); },
+    2800, () => note('State right now', `Redis stock 0, MySQL remaining 1: the missing unit is 5002 <b>in flight</b>.<br>PROCESSING reservation + unacknowledged message = the order is still owed. <b>No under-selling and no over-selling</b>.`, 300)),
+  step('After restart, the first thing the loop does is <code>reclaim()</code>: it inspects the PEL and uses <code>XCLAIM</code> to take over entries idle for 5 s with fewer than 5 deliveries. <em>This is how a Redis Stream hands work over</em> — different from outbox lease expiry.',
+    0, () => { gone('note'); clock('10:00:07.000', true); tx('C', 0, 'consumer (restarted)', 'run', 'reclaim'); },
+    600, () => code('XPENDING stream:orders fulfillment - + 10\n-- 5002: idle 6.1 s, delivered once\nXCLAIM stream:orders fulfillment c1 5000 2-0 JUSTID', 182),
+    1400, () => fly('XCLAIM', MID, toR('st'), 'blue'),
+    2000, () => cell('st', 'e2', 'pel', 'c1 · delivery 2')),
+  step('Reprocessing: register finds the reservation, the four fields match and the state is PROCESSING, so it continues into fulfill, which succeeds this time: stock deducted, order created, SUCCESS. BOOKED is written after commit… and right <em>before XACK the process crashes again</em>.',
+    0, () => { lock('res', 5002, 'X', 'F3'); },
+    500, () => { lock('camp', 7, 'X', 'F3'); cell('camp', 7, 'rem', '0', 'F3'); row('ord', 5002, { id: 5002, u: 77, c: 7, s: 'UNPAID' }, 'F3'); cell('res', 5002, 's', 'SUCCESS', 'F3'); },
+    1400, () => { commit('F3'); rk('req2', 'request:5002', 'hash', 'BOOKED · gen 3'); },
+    2100, () => txs('C', 'rb', '💥 before XACK')),
+  step('Another restart, another XCLAIM. This time register locks the reservation, sees <code>SUCCESS</code> and returns SUCCESS, so the consumer <em>only ACKs</em> and never reaches the stock deduction. Redelivery therefore never deducts stock twice or creates a second order.',
+    0, () => { clock('10:00:14.000', true); tx('C', 0, 'consumer (restarted again)', 'run', 'reclaim'); cell('st', 'e2', 'pel', 'c1 · delivery 3'); },
+    700, () => { gone('code'); lock('res', 5002, 'X', 'R3'); gate('register · 5002, 3rd time', [['Exists, four fields match?', ''], ['State?', '']], 182); },
+    1200, () => check(0, 'ok'), 1700, () => check(1, 'go', 'SUCCESS → just ACK'),
+    2300, () => { unlock('R3'); fly('XACK', MID, toR('st'), 'green'); },
+    3000, () => { cell('st', 'e2', 'pel', 'acked'); dim('st', 'e2'); hl('st', 'e2', null); txs('C', 'run', 'looping'); user(77, 'order 5002 due', 'ok'); }),
+  step('What if we relied only on the order primary key? On redelivery it deducts stock, then the insert hits the primary key and the whole transaction rolls back — the data stays correct, but an order that <em>already succeeded</em> is treated as a failure, wastes a hot-row lock on the campaign, piles up failure counts and may end in the dead letters. Hence <em>check the reservation state before touching stock</em>.',
+    0, () => { clearMid(); note('Retry limits', `<ul><li>Fulfill fails: <code>recordFailure</code> bumps the reservation's <code>attempts</code>, <b>no ACK</b>, wait for XCLAIM; after 5 → reservation REVIEW + dead letter + ACK</li><li>5 deliveries reached: reclaim writes a dead letter and ACKs</li><li>Dead-letter write fails: <b>do not ACK</b> — better redeliver than lose it</li></ul>`, 182); },
+    700, () => row('dl', 'demo', { m: '(example) 9-0', o: '…', r: 'fulfill retries exhausted' })),
+]);
+
+scene('⑥ Release on close', [
+  step('User 42 never pays, and order 5001 is closed at 10:15 (the <code>closeExpired</code> from E2). A campaign order adds one step: <em>return the stock to the database inside the same closing transaction</em>. The lock order is fixed: order X → reservation X → campaign X → release flag.',
+    0, () => { clearMid(); rmRow('dl', 'demo'); rmRow('ob', 7101); rmRow('ob', 7102); dim('st', 'e1'); clock('10:15:00.300', true); tx('CL', 1, 'closeExpired(5001)', 'run'); },
+    500, () => { lock('ord', 5001, 'X', 'CL'); cell('ord', 5001, 's', 'CANCELLED', 'CL'); },
+    1100, () => { lock('res', 5001, 'X', 'CL'); hl('res', 5001); },
+    1700, () => { lock('camp', 7, 'X', 'CL'); cell('camp', 7, 'rem', '1', 'CL'); },
+    2300, () => code('1 order row FOR UPDATE → CANCELLED\n2 reservation FOR UPDATE: SUCCESS and stock_released = 0\n3 returnStock: remaining + 1 WHERE remaining < initial   ← campaign X first\n4 markStockReleased: stock_released = 1\n5 outbox: CAMPAIGN_STOCK_RELEASED + ORDER_CLOSED', 182)),
+  step('Write the release flag <code>stock_released = 1</code>, which guarantees stock is returned only once; the generated column <code>active_user</code> becomes NULL. The unique key <code>(campaign_id, active_user)</code> allows many NULLs, so <em>user 42 may buy again as far as the database is concerned</em>. It is the reservation row that goes NULL, not the order row.',
+    0, () => { cell('res', 5001, 'r', '1', 'CL'); },
+    500, () => cell('res', 5001, 'a', 'NULL', 'CL'),
+    1100, () => { row('ob', 7201, { id: 7201, k: 'CAMPAIGN_STOCK_RELEASED', s: 'PENDING' }, 'CL'); row('ob', 7202, { id: 7202, k: 'ORDER_CLOSED', s: 'PENDING' }, 'CL'); },
+    1800, () => { commit('CL'); txs('CL', 'ok'); hl('res', 5001, null); }),
+  step('Why return stock before writing the flag? Writing the flag changes <code>active_user</code>, and that unique index is the one the foreign key relies on, so InnoDB\'s FK check takes an <em>S lock on the parent campaign row</em>. Taking S first and X later makes two closing transactions wait on each other\'s S → X upgrade: deadlock. Taking X first makes the S redundant.',
+    0, () => note('Before vs after the fix (two orders of one campaign close together)', `<b>Before</b>: A writes flag → campaign S; B writes flag → campaign S; A wants X, waits for B; B wants X, waits for A → <b style="color:#ff8f8f">deadlock</b><br><b>After</b>: A returnStock takes X; B queues for X (holding no campaign lock); A writes the flag, its own X covers the S → commit → B continues`, 300)),
+  step('The Redis half is done asynchronously via the outbox: <code>CAMPAIGN_STOCK_RELEASED</code> is delivered and runs <code>campaign-release.lua</code>. It checks the generation (current, or listed in carried), then that <code>requests[42]</code> is still 5001 and stock is below the initial amount, and only then tops up.',
+    0, () => { clearMid(); fly('CAMPAIGN_STOCK_RELEASED', toM('ob'), MID, ''); },
+    900, () => gate('campaign-release.lua', [['Generation = 3, or order in carried?', 'no → 0 no-op'], ['requests[42] = 5001?', 'no → 0 no-op'], ['Stock &lt; initial 2?', 'no → -3'], ['All passed', '→ 1 top-up']], 182),
+    1400, () => check(0, 'ok'), 1800, () => check(1, 'ok'), 2200, () => check(2, 'ok', '0 &lt; 2'), 2600, () => check(3, 'go'),
+    3100, () => { cell('rk', 'stock', 'v', '1'); cell('rk', 'buyers', 'v', '{ 77 }'); cell('rk', 'reqs', 'v', '{77→5002}'); cell('rk', 'req', 'v', 'RELEASED'); rmRow('rk', 'rkey'); },
+    3600, () => cell('ob', 7201, 's', 'DONE')),
+  step('If the same release event is delivered twice, <code>requests[42]</code> is already gone on the second run, so it is not 5001 and the script returns 0 — a safe no-op that never adds stock twice. Also note the direction: <em>MySQL returns first, Redis later</em>, so in between Redis is lower than MySQL. That is normal in-flight state, covered by reconciliation in the next episode.',
+    0, () => { fly('CAMPAIGN_STOCK_RELEASED (duplicate)', toM('ob'), MID, 'grey'); },
+    800, () => gate('campaign-release.lua · second run', [['Generation check', ''], ['requests[42] = 5001?', '']], 182),
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'no', 'deleted → returns 0'),
+    2200, () => note('Direction of stock', `Deduct: <b>Redis first</b> (Lua) → MySQL later (fulfill)<br>Return: <b>MySQL first</b> (closing txn) → Redis later (release Lua)<br>So normal in-flight work only makes <b>Redis ≤ MySQL</b>; Redis higher is always an incident.`, 300)),
+]);
+
+scene('Recap & questions', [
+  step('Recap: admission decides and writes in Redis in one shot; order creation is split into register and fulfill, with the ACK last; redelivery is stopped by the reservation state; on close, the database returns stock first and Redis later.',
+    0, () => ov(`<div class="kp">Episode recap</div><h1 style="font-size:32px">Key points of the flash sale</h1><ol style="margin-top:14px">
+      <li>admit() has <b>no txn</b>: pre-checks → user lock <b>SET NX EX 5</b> → re-read in the lock → <b>order id first</b></li>
+      <li>Lua check order <b>4 → 6 → 3 → 5 → 3 → 2 → 1 → 0</b>; six writes incl. XADD on success; <b>no DB write</b></li>
+      <li>register: no row → verify four Redis keys; row → compare four fields → PROCESSING; stream mode <b>does not ACK</b></li>
+      <li>fulfill: lock again → real deduction → <b>same order id</b> → outbox → SUCCESS → BOOKED after commit → <b>XACK</b></li>
+      <li>Crash: message stays in PEL, idle 5 s → <b>XCLAIM</b>; redelivery checks the reservation first; 5 tries → dead letter / REVIEW</li>
+      <li>Close: order X → reservation X → <b>campaign X → release flag</b>; active_user becomes NULL; Redis topped up by an event</li></ol>`)),
+  step('Pause and think, question 1: the process crashes after Lua returns 0 but before the order is created. Is that unit lost? Who moves it forward?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">Lua has returned 0: Redis stock is deducted and the Stream has a message. The app crashes before creating the order. What state is that unit in? Can it be under-sold or over-sold? What moves it forward after restart?</div>`)),
+  step('Answer: Redis is one unit below MySQL — that is in flight. The message is unacknowledged and stays in the Stream: unread ones are picked up by reading new messages, read ones sit in the PEL and are XCLAIMed after 5 s idle. On redelivery both register and fulfill lock the reservation and check its state first, so only one order is created.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>Redis deducted, MySQL not yet: the gap is in flight, and the proof of responsibility is <b>the unacknowledged Stream message</b></li>
+      <li>No over-selling: de-dup, stock check and deduction are one atomic Lua script; no under-selling: an unacknowledged message never disappears</li>
+      <li>After restart: unread → <code>XREADGROUP &gt;</code>; read but unacked → PEL, <code>XCLAIM</code> after ≥ 5 s idle</li>
+      <li>Safe redelivery: register / fulfill first <code>FOR UPDATE</code> the reservation; SUCCESS → just ACK; an existing order is only verified</li></ul></div>`)),
+  step('Pause and think, question 2: why must the ACK come after fulfill? What goes wrong if you ACK as soon as the message is read?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">Why must XACK come after fulfill commits? If you ACK as soon as the message is read and then create the order, what happens on a crash? And why may outbox mode ACK right after register?</div>`)),
+  step('Answer: ACK means "I am done with this". ACK first and then crash, and the message leaves the PEL — nobody will ever take it over, so an admitted user never gets an order. In outbox mode, register wrote CAMPAIGN_FULFILL in the same transaction, so responsibility already moved to the outbox table and an early ACK is safe.',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li>ACK = the message leaves the PEL and <b>can never be XCLAIMed again</b></li>
+      <li>ACK then crash: the reservation stays PROCESSING with nothing to push it; Redis stock is gone and the user was told "accepted", yet no order is created</li>
+      <li>Stream mode: the PROCESSING state and the unacked message carry the responsibility together; ACK only after fulfill commits</li>
+      <li>Outbox mode: register inserts <code>CAMPAIGN_FULFILL</code> in the same txn (<code>INSERT IGNORE</code> idempotency key); <b>responsibility is persisted</b>, so ACK loses nothing</li></ul></div>`)),
+  step('Pause and think, question 3: when closing returns stock, why must returnStock come before the release flag? Why can the user buy again after the release?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">In the closing transaction, why must <code>returnStock</code> come before <code>markStockReleased</code>? After the release, why can the same user buy again (answer for the database and for Redis)?</div>`)),
+  step('Answer: writing the release flag changes the unique index the foreign key relies on, the FK check takes an S lock on the campaign row, and asking for X afterwards deadlocks with another close; taking X first covers the S. In the database active_user becomes NULL and the unique key allows many NULLs; in Redis the release Lua removes the user from buyers and deletes the requests mapping.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li>Writing <code>stock_released</code> → generated <code>active_user</code> changes → the FK-backing unique index deletes and re-inserts → the FK check takes <b>S on the parent campaign row</b></li>
+      <li>S then X: two closes both hold S and wait to upgrade → deadlock. <code>returnStock</code> first takes X; the later S is covered and other txns queue at step one</li>
+      <li>Database: <code>active_user = NULL</code>; in the unique key <code>(campaign_id, active_user)</code> NULLs are not duplicates</li>
+      <li>Redis: release Lua runs <code>SREM buyers</code>, <code>HDEL requests</code>, <code>INCR stock</code> and deletes the request-key mapping</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

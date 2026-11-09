@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E1 可靠消息 outbox</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.trg .row{display:flex;justify-content:space-between;align-items:center;margin:2px 0}
+.trg b.v{font-family:var(--mono);color:var(--yellow)}
+.trg .lb{font-size:11px;color:var(--muted)}
+#tb_outbox .td{padding:0 4px;font-size:11px}
+.sm text{font-family:"Microsoft YaHei",sans-serif}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E1-reliable-outbox.html', home: 'index.html', title: 'E1 · 可靠消息 outbox', docTitle: 'E1 可靠消息 outbox', example: '例子：订单 1001 支付成功 → 事件 9004 ORDER_PAID',
+  lanes: [['生产方 · 中继', '业务事务 / 实例 A、B'], ['传输 · 消费者', '投递 · 五步消费'], ['MySQL', 'outbox 与去重表']] });
+
+/* ============ 剧本 ============ */
+const TY = { outbox: 88, event: 254, inbox: 340, failure: 426 };
+const toDB = t => [770, TY[t] + 4];
+const MID = [600, 230];
+const RA = [120, 250], RB = [120, 296], CG = [330, 140];
+const ENV = id => `📨 ${id}`;
+
+// 中栏清理：保留状态卡
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+// 左栏：唤醒器与轮询
+function trg(sched, line2) {
+  put('trg', 'fe st trg', `<div class="lb">OutboxRelayTrigger（提交后唤醒）</div>
+    <div class="row"><span>scheduled</span><b class="v">${sched}</b></div>
+    <div class="lb" style="margin-top:4px">OutboxRelayScheduler（兜底轮询）</div>
+    <div class="row"><span>${line2 || '每 1 秒：投递到期批次 + 重驱动'}</span></div>`, 26, 134, 248, null);
+}
+function relay(id, label, st, stText) { card(id, 26, id === 'A' ? 244 : 290, 248, label, st, stText, '实例 ' + id); }
+function ob(id, kind, agg, state, next, extra = {}) {
+  return Object.assign({ id, kind, aggregate_id: agg, state, att: '0/0', next_at: next, owner: '', lease: '', sent: '' }, extra);
+}
+// 一次可视化的状态变更
+function obSet(id, kv) { for (const k in kv) cell('outbox', id, k, kv[k]); }
+
+scene('片头', [
+  step('这一集讲<em>可靠消息 outbox</em>。它是整个项目的公共管道：下单、支付、关单、发权益、活动建单、缓存失效，都靠它把“接下来要做的事”可靠地交出去。',
+    0, () => ov(`<div class="kp">链路动画 · 第 1 集</div><h1>可靠消息 outbox</h1><h2>业务提交了，事件就一定会被处理；重复投递，效果也只生效一次</h2>
+      <ol><li>双写问题：为什么不能直接发 MQ</li><li>同事务写入 + 提交后唤醒 + 每秒轮询</li><li>认领：<b>READ COMMITTED + FOR UPDATE SKIP LOCKED + 租约</b></li><li>消费五步：<b>锁库里的行逐字段核对</b>、inbox 去重、同事务提交</li><li>失败退避、REVIEW 隔离、租约接管、<b>SENT ≠ DONE</b></li></ol>`)),
+  step('画面三栏：左边是写事件的业务事务和两个中继实例 A、B；中间是传输和消费者；右边是四张表：<code>business_outbox</code>、投影结果、去重用的 <code>message_inbox</code> 和失败记录 <code>message_failure</code>。',
+    0, () => ovOff(),
+    300, () => {
+      clock('10:03:20.400');
+      table('outbox', 722, TY.outbox, 532, 'business_outbox', '事件就是一行数据', [['id', 'id', 36], ['kind', 'kind', 128], ['state', 'state', 60], ['att', '发/消', 34], ['next_at', 'next_at', 54], ['owner', 'owner', 50], ['lease', 'lease', 54], ['sent', 'sent_at', 54]]);
+      row('outbox', 9001, ob(9001, 'PRODUCT_INVALIDATE', 7, 'PENDING', '03:20.2'));
+      row('outbox', 9002, ob(9002, 'ORDER_CREATED', 1003, 'PENDING', '03:20.4'));
+      row('outbox', 9003, ob(9003, 'ORDER_EXPIRE', 1003, 'PENDING', '18:20.4'));
+    },
+    800, () => table('event', 722, TY.event, 532, 'purchase_order_event', '投影结果 · 主键 event_id', [['event_id', 'event_id', 70], ['order_id', 'order_id', 70], ['event_type', 'event_type', 110]]),
+    1100, () => table('inbox', 722, TY.inbox, 532, 'message_inbox', '消费去重 · 主键 (consumer_group, event_id)', [['group', 'consumer_group', 150], ['event_id', 'event_id', 80]]),
+    1400, () => table('failure', 722, TY.failure, 532, 'message_failure', '失败记录 · 主键 (consumer_group, event_key)', [['group', 'consumer_group', 104], ['key', 'event_key', 134], ['event_id', 'event_id', 64], ['reason', 'reason', 150]]),
+    1900, () => note('读表提示', `<ul><li><b>发/消</b>：<code>attempts</code> / <code>consume_attempts</code>，发送失败次数和消费失败次数</li><li><b>next_at</b>：最早什么时候可以被认领</li><li><b>owner + lease</b>（lease_until）：谁认领了它、租约到什么时候</li><li>时间只显示“分:秒”，完整时间看右上角数据库时钟</li></ul>`, 182)),
+]);
+
+scene('① 双写问题', [
+  step('先看为什么需要 outbox。支付事务改完订单、提交成功，接着要发 MQ 通知“订单已支付”。就在这两步之间，<em>进程崩溃了</em>：订单是 PAID，消息却永远没发出去，积分不会到账。',
+    0, () => gone('note'),
+    300, () => card('BIZ', 26, 88, 248, 'pay() · 订单 1001', 'run', '进行中', '业务'),
+    1000, () => txs('BIZ', 'ok', '已提交'),
+    1700, () => { fly('ORDER_PAID → MQ', [140, 110], [330, 100], 'red', { lost: true }); },
+    2400, () => txs('BIZ', 'rb', '💥 进程崩溃'),
+    2600, () => note('顺序一：先提交，再发 MQ', `提交成功 → <b>崩溃</b> → 消息没发<br>结果：业务成功了，下游永远不知道。<b>丢消息</b>。`, 182)),
+  step('反过来，先发 MQ 再提交呢？消息已经发出去，提交却因为锁超时失败回滚了。下游收到一条“订单已支付”，可<em>数据库里这单根本没付</em>。两种顺序都不对，因为数据库和 MQ 没法放进同一个事务。',
+    0, () => { card('BIZ', 26, 88, 248, 'pay() · 订单 1001', 'run', '进行中', '业务'); },
+    600, () => fly('ORDER_PAID → MQ', [140, 110], [330, 100], 'blue'),
+    1500, () => txs('BIZ', 'rb', '提交失败 · 回滚'),
+    1900, () => note2('顺序二：先发 MQ，再提交', `消息已发 → 提交失败回滚<br>结果：下游处理了一件<b>不存在的事</b>。`, 290)),
+  step('outbox 的思路：<em>不在事务里发消息，而是把“要发的消息”当成一行数据，和业务修改写进同一个事务</em>。提交了，这一行就一定在；回滚了，它就不存在。之后再由中继把这一行可靠地投递出去。',
+    0, () => { clearMid(); gone('tx_BIZ'); },
+    300, () => note('outbox：把消息变成业务表里的一行', `<ul><li>业务修改 + <code>INSERT business_outbox</code>：<b>同一个本地事务</b></li><li>中继在事务外读这些行、投递、记录结果</li><li>投递可能重复 → 消费端必须幂等</li></ul>一句话：<b>至少一次投递 + 恰好一次效果</b>`, 182)),
+]);
+
+scene('② 同事务写入', [
+  step('支付事务里，改订单状态、写支付事实之后，再插入一行 <code>ORDER_PAID</code>，状态 <code>PENDING</code>，<code>next_attempt_at</code> 取数据库时间。这一行和订单修改<em>一起提交</em>。',
+    0, () => { clearMid(); clock('10:03:20.503', true); card('BIZ', 26, 88, 248, 'pay() · 订单 1001', 'run', '进行中', '业务'); },
+    400, () => code(`INSERT INTO business_outbox(kind, aggregate_id, user_id, state, next_attempt_at)\nVALUES ('ORDER_PAID', 1001, 42, 'PENDING', NOW(3))\n-- 延迟事件另走 insertEventAt：next_attempt_at = deliver_at`),
+    1100, () => fly('INSERT', [200, 110], toDB('outbox'), 'blue'),
+    1900, () => row('outbox', 9004, ob(9004, 'ORDER_PAID', 1001, 'PENDING', '03:20.5'), 'BIZ')),
+  step('写事件的方法是 <code>@Transactional(propagation = MANDATORY)</code>：调用方<em>必须已经在事务里</em>，否则直接抛异常。这就从代码层面保证，不会有人在事务外单独写一条事件。',
+    0, () => note('两种写入方式', `<ul><li><b>普通事件</b>：<code>INSERT</code>，每次业务动作一行（订单创建、支付、关单……）</li><li><b>由消费者登记的后续任务</b>：<code>INSERT IGNORE</code> + 唯一键 <code>idempotency_key</code>，如 <code>ENTITLEMENT_GRANT</code>、<code>CAMPAIGN_FULFILL</code>。同一件事重复登记，也只有一行</li></ul>`, 290)),
+]);
+
+scene('③ 唤醒与轮询', [
+  step('事务提交后，<code>afterCommit</code> 回调调用 <code>wakeUp()</code>：用 <code>AtomicBoolean</code> 做一次 CAS，把 <code>scheduled</code> 从 false 改成 true，再往单线程执行器里放一个投递任务。<em>回滚时根本不会触发</em>。',
+    0, () => { clearMid(); commit('BIZ'); txs('BIZ', 'ok', '已提交'); trg('false'); },
+    700, () => { ping(140, 160); trg('true ← CAS 成功'); },
+    1300, () => code(`if (!scheduled.compareAndSet(false, true)) return;  // 已有任务在排队\nexecutor.execute(() -> {\n  scheduled.set(false);\n  relay.relayOutboxBatch();\n});`)),
+  step('这时又有两个事务紧接着提交，它们的 CAS 都失败，直接返回：<em>多次唤醒合并成一次</em>。反正一次投递会把所有到期事件一起认领，不需要每次提交都开一轮。',
+    0, () => { ping(140, 160); tagAt('w2', '提交 → wakeUp() → CAS 失败，返回', 30, 250, ''); },
+    700, () => { ping(140, 160); tagAt('w3', '提交 → wakeUp() → CAS 失败，返回', 30, 286, ''); },
+    1500, () => { gone('w2'); gone('w3'); trg('false（任务已开始执行）'); }),
+  step('唤醒只是为了<em>快</em>，正确性靠兜底轮询：每个实例每 1 秒跑一次，先投递到期批次（整批满了就继续，最多 10 批），再做 SENT 重驱动。唤醒失败、进程重启，最多晚 1 秒。注意：<em>这里没有 Canal</em>。',
+    0, () => { gone('tx_BIZ'); note('两个触发源', `<ul><li><b>afterCommit 唤醒</b>：低延迟，多次合并成一次，失败只打日志</li><li><b>@Scheduled(fixedDelay = 1000)</b>：<code>relayDueBatches()</code> + <code>redriveUnconsumedEvents()</code></li><li>Canal 只用于目录缓存失效，和 outbox 投递无关</li></ul>`, 182); }),
+]);
+
+scene('④ 认领', [
+  step('两个实例同时来抢：实例 B 的轮询刚好到点，实例 A 被唤醒。两边各开一个<em>很短的认领事务</em>，隔离级别是 <code>READ COMMITTED</code>。为了画面清楚，这里每批只取 2 条（默认 50）。',
+    0, () => { clearMid(); gone('tx_BIZ'); clock('10:03:20.505', true); trg('false'); },
+    400, () => { relay('B', '轮询 · 认领事务', 'run'); },
+    800, () => { relay('A', '唤醒 · 认领事务', 'run'); },
+    1300, () => code(`(SELECT * FROM business_outbox\n WHERE state = 'SENDING' AND lease_until < NOW(3)   -- ① 租约过期\n ORDER BY lease_until, id LIMIT 2 FOR UPDATE SKIP LOCKED)\nUNION ALL\n(SELECT * FROM business_outbox\n WHERE state = 'PENDING' AND next_attempt_at <= NOW(3)  -- ② 到期待发\n ORDER BY next_attempt_at, id LIMIT 2 FOR UPDATE SKIP LOCKED)\nLIMIT 2`, 182)),
+  step('B 先执行，锁住最早到期的 9001、9002。A 紧跟着执行：<code>SKIP LOCKED</code> 让它<em>跳过 B 已经锁住的行</em>，不排队，直接拿到 9004。9003 是 15 分钟后才到期的关单事件，两边都不会选。',
+    0, () => { hl('outbox', 9001); hl('outbox', 9002); },
+    500, () => { lock('outbox', 9001, 'X', 'B'); lock('outbox', 9002, 'X', 'B'); },
+    1300, () => { hl('outbox', 9001, null); hl('outbox', 9002, null); hl('outbox', 9004); },
+    1700, () => lock('outbox', 9004, 'X', 'A'),
+    2300, () => { hl('outbox', 9004, null); dim('outbox', 9003); }),
+  step('拿到行锁后，逐条执行 <code>claimEvent</code>：改成 <code>SENDING</code>，写入本批的 owner（每批一个新 UUID）和 30 秒租约。WHERE 里把认领条件再查一遍，然后<em>立刻提交</em>，锁随之释放，认领事务里不做任何网络调用。',
+    0, () => code(`UPDATE business_outbox\nSET state = 'SENDING', lease_owner = ?,\n    lease_until = DATE_ADD(NOW(3), INTERVAL 30 SECOND)\nWHERE id = ? AND ((state = 'PENDING' AND next_attempt_at <= NOW(3))\n              OR (state = 'SENDING' AND lease_until < NOW(3)))`, 182),
+    900, () => { obSet(9001, { state: 'SENDING', owner: 'B·91d2', lease: '03:50.5' }); obSet(9002, { state: 'SENDING', owner: 'B·91d2', lease: '03:50.5' }); },
+    1400, () => obSet(9004, { state: 'SENDING', owner: 'A·7f3c', lease: '03:50.5' }),
+    2100, () => { unlock('A'); unlock('B'); relay('A', '本批 9004', 'run', '投递中'); relay('B', '9001、9002', 'run', '投递中'); dim('outbox', 9003, false); }),
+  step('这里有两个容易混的点。<em>READ COMMITTED 是隔离级别</em>，作用是去掉间隙锁，认领时不会挡住业务事务往 outbox 插新行；<em>SKIP LOCKED 是加锁行为</em>，作用是多个实例互不排队。租约过期的行排在前面，积压再多也不会被饿死。',
+    0, () => { gone('code'); note('认领 SQL 的三个设计', `<ul><li><b>RC</b>：可重复读下范围加锁会带间隙锁，会挡住业务插入新事件；RC 只锁选中的行</li><li><b>SKIP LOCKED</b>：别人锁着的行直接跳过，多实例并行认领</li><li><b>UNION ALL 两路</b>：各走自己的索引（<code>idx_..._lease</code> / <code>idx_..._due</code>），过期租约优先</li><li>认领事务提交后，<b>SENDING + 未过期租约</b>本身就是“别碰我”的标记</li></ul>`, 182); }),
+]);
+
+scene('⑤ 投递与消费五步', [
+  step('A 在<em>事务外</em>投递 9004。先看租约是否已过半（刚认领，不用续租）；再看 <code>deliver_at</code>（为空，不是延迟事件）；然后交给传输层。默认传输是 <code>local</code>：在同一个进程里直接调用消费者。',
+    0, () => { clearMid(); card('TP', 306, 88, 384, '传输 transport = local（同进程同步调用）', 'ret', '默认', '传输'); },
+    800, () => fly(`${ENV(9004)} {kind: ORDER_PAID, aggregateId: 1001, userId: 42}`, RA, [330, 140], ''),
+    1700, () => card('CG', 306, 134, 384, '消费组 order-events · consume()', 'run', '进行中', '消费')),
+  step('消费第 ① 步：<em>先校验信封</em>，此时还没碰数据库。版本号对不对、eventId 和 kind 是否合法、<em>这种事件是不是归这个消费组处理</em>。任何一项不对就直接拒绝。',
+    0, () => gate('consume()：五步，后四步在同一个事务里', [['① 校验信封', ''], ['② 锁 outbox 行，逐字段核对', ''], ['③ DONE 或 inbox 已有 → 重复', ''], ['④ 投影（业务效果）', ''], ['⑤ inbox + DONE 一起提交', '']], 182),
+    700, () => check(0, 'ok', '版本 · 类型 · 消费组 ✓')),
+  step('第 ② 步：开事务，用 <code>FOR UPDATE</code> 锁住库里的 9004，逐字段核对 kind、aggregate_id、user_id、发生时间、投递时间。<em>消息只是一个定位符，事实以库里这一行为准</em>；锁住它，同一事件的另一份消息只能排队。',
+    0, () => { fly('SELECT … FOR UPDATE', MID, toDB('outbox'), 'blue'); },
+    800, () => { lock('outbox', 9004, 'X', 'CG'); hl('outbox', 9004); },
+    1300, () => check(1, 'ok', '5 个字段一致')),
+  step('第 ③ 步判重：行状态已经是 <code>DONE</code>，或者 <code>message_inbox</code> 里已有 (order-events, 9004)，就是重复消息，直接返回。都没有，而且不是 <code>REVIEW</code>，才往下走。',
+    0, () => { fly('查 inbox', MID, toDB('inbox'), 'blue'); },
+    900, () => check(2, 'ok', '首次')),
+  step('第 ④ 步投影：核对订单 1001 确实是 PAID + MOCK，再 <code>INSERT IGNORE</code> 写订单历史；因为是支付事件，再用 <code>INSERT IGNORE</code> 登记第二跳任务 <code>ENTITLEMENT_GRANT</code>，唯一键是 <code>entitlement-grant:1001:CREDITS</code>。',
+    0, () => { hl('outbox', 9004, null); fly('INSERT IGNORE', MID, toDB('event'), 'blue'); },
+    800, () => row('event', 9004, { event_id: 9004, order_id: 1001, event_type: 'ORDER_PAID' }, 'CG'),
+    1300, () => fly('INSERT IGNORE（idempotency_key）', MID, toDB('outbox'), 'blue'),
+    2100, () => row('outbox', 9005, ob(9005, 'ENTITLEMENT_GRANT', 1001, 'PENDING', '03:20.5'), 'CG'),
+    2400, () => check(3, 'ok', '历史 + 登记发权益')),
+  step('第 ⑤ 步：写 inbox (order-events, 9004)，把 9004 标成 <code>DONE</code>，<em>和投影效果一起提交</em>。任何一步失败，投影、inbox、DONE 全部回滚，下次重投从头再来，不会出现“效果做了一半”。',
+    0, () => { fly('INSERT inbox', MID, toDB('inbox'), 'blue'); },
+    700, () => row('inbox', 'g9004', { group: 'order-events', event_id: 9004 }, 'CG'),
+    1100, () => obSet(9004, { state: 'DONE', owner: '', lease: '' }),
+    1700, () => { check(4, 'ok', '提交'); commit('CG'); txs('CG', 'ok'); }),
+  step('回到实例 A：传输层调用返回后执行 <code>markSent</code>，条件是 <code>state = &#39;SENDING&#39; AND lease_owner = A</code>。可本地传输是同步消费的，行<em>已经是 DONE</em>，影响 0 行，什么也不改。第二跳 9005 会被下一轮认领（权益那一集再讲）。',
+    0, () => { clearMid(); code(`UPDATE business_outbox SET state = 'SENT', sent_at = NOW(3), ...\nWHERE id = 9004 AND state = 'SENDING' AND lease_owner = 'A·7f3c'\n-- 影响 0 行：local 模式下 DONE 先于 SENT`, 182); },
+    900, () => { relay('A', '本批完成', 'ok', '空闲'); gone('tx_CG'); }),
+]);
+
+scene('⑥ 消费失败', [
+  step('实例 B 投递 9001：商品 7 的缓存失效事件，消费组 <code>catalog-cache</code>。投影要删 Redis 里的商品缓存，可 <em>Redis 暂时不可用</em>，抛出异常，消费事务整体回滚。',
+    0, () => { clearMid(); clock('10:03:20.520'); },
+    300, () => fly(`${ENV(9001)} PRODUCT_INVALIDATE`, RB, [330, 140], ''),
+    1200, () => card('CG', 306, 134, 384, '消费组 catalog-cache · consume()', 'run', '进行中', '消费'),
+    1700, () => gate('consume() · 9001', [['① 校验信封', ''], ['② 锁行核对', ''], ['③ 判重', ''], ['④ 投影：删除 Redis 商品缓存', '']], 182),
+    2100, () => { check(0, 'ok'); check(1, 'ok'); check(2, 'ok', '首次'); },
+    2700, () => { check(3, 'no', 'CacheUnavailableException'); txs('CG', 'rb', '已回滚'); }),
+  step('接着记录失败：<code>consume_attempts + 1</code>，还没到 5 次，返回“未记录完成”；本地传输就把异常抛回中继，中继再执行 <code>recordSendFailure</code>：<code>attempts + 1</code>，改回 <code>PENDING</code>，<em>2 秒后</em>再试。',
+    0, () => { gone('gate'); code(`recordConsumptionFailure → consume_attempts = 1  (< 5，返回 false)\nLocalEventPublisher：未持久化完成 → 把异常抛给中继\nrecordSendFailure：attempts = 1, state = 'PENDING',\n  next_attempt_at = NOW(3) + 2^1 秒, 清空 owner / lease`, 182); },
+    1000, () => obSet(9001, { att: '1/1', state: 'PENDING', next_at: '03:22.5', owner: '', lease: '' }),
+    1500, () => gone('tx_CG')),
+  step('偏偏这时实例 B 崩溃了：它这一批里的 9002 <em>还没投递</em>，还挂着 B 的租约，状态停在 <code>SENDING</code>。没有任何人会去通知别的实例，<em>只能靠租约到期</em>。',
+    0, () => { gone('code'); relay('B', '本批 9002 未投递', 'rb', '💥 已崩溃'); hl('outbox', 9002, 'hlr'); },
+    1000, () => note('崩溃时 9002 的状态', `<code>state = SENDING</code>，<code>lease_owner = B·91d2</code>，<code>lease_until = 03:50.5</code><br>在租约到期前，任何认领 SQL 都不会选它。`, 182)),
+  step('9001 继续重试，由实例 A 的轮询接手。每失败一次，等待时间翻倍：2 秒、4 秒、8 秒、16 秒……上限 300 秒。<em>指数退避</em>让下游有时间恢复，也不会在故障期间把数据库刷爆。',
+    0, () => { gone('note'); hl('outbox', 9002, null); },
+    300, () => { clock('10:03:22.500', true); relay('A', '重试 9001', 'run', '投递中'); },
+    900, () => { obSet(9001, { att: '2/2', next_at: '03:26.5' }); relay('A', '9001 第 2 次失败', 'ok', '空闲'); },
+    1700, () => { clock('10:03:26.500', true); },
+    2200, () => obSet(9001, { att: '3/3', next_at: '03:34.5' }),
+    3000, () => { clock('10:03:34.500', true); },
+    3500, () => obSet(9001, { att: '4/4', next_at: '03:50.5' })),
+  step('第 5 次消费失败，达到上限：在 <code>message_failure</code> 里记下 <code>outbox:9001</code>，并把这一行标为 <code>REVIEW</code>，不再被任何认领 SQL 选中。注意 <em>outbox 没有单独的死信表</em>，REVIEW 就是隔离状态。',
+    0, () => { clock('10:03:50.500', true); relay('A', '重试 9001', 'run', '投递中'); },
+    800, () => fly('INSERT message_failure', MID, toDB('failure'), 'red'),
+    1500, () => row('failure', 'f9001', { group: 'catalog-cache', key: 'outbox:9001', event_id: 9001, reason: 'Redis 不可用，缓存失效未完成' }),
+    1900, () => { obSet(9001, { att: '4/5', state: 'REVIEW', owner: '', lease: '' }); hl('outbox', 9001, 'hlr'); relay('A', '9001 已隔离', 'ok', '空闲'); },
+    2500, () => note('之后怎么办', `修好 Redis 后，管理员调用 <code>retryReview</code>：<br><code>state = 'PENDING', attempts = 0, consume_attempts = 0, next_attempt_at = NOW(3)</code><br>它会重新进入正常的认领流程。`, 182)),
+]);
+
+scene('⑦ 租约接管', [
+  step('现在是 10:03:51.2，9002 的租约在 03:50.5 已经过期。实例 A 的下一轮认领 SQL，第一路 <code>state = &#39;SENDING&#39; AND lease_until &lt; NOW(3)</code> 自动选中了它。<em>这不是 Redis 的 XCLAIM</em>，只是同一条认领 SQL。',
+    0, () => { clearMid(); hl('outbox', 9001, null); dim('outbox', 9001); clock('10:03:51.200', true); },
+    600, () => { hl('outbox', 9002, 'hlr'); cell('outbox', 9002, 'lease', '<span style="color:var(--red)">03:50.5 已过期</span>'); },
+    1300, () => { relay('A', '轮询 · 认领事务', 'run'); lock('outbox', 9002, 'X', 'A'); },
+    2000, () => { obSet(9002, { owner: 'A·c2e8', lease: '04:21.2' }); unlock('A'); hl('outbox', 9002); }),
+  step('A 用新的 owner 投递 9002：信封核对、判重、投影，消费成功后标 <code>DONE</code>。一个实例挂了，它手里的事件最多晚一个租约周期被别人接走。',
+    0, () => fly(`${ENV(9002)} ORDER_CREATED`, RA, [330, 140], ''),
+    900, () => card('CG', 306, 134, 384, '消费组 order-events · consume()', 'run', '进行中', '消费'),
+    1500, () => { row('event', 9002, { event_id: 9002, order_id: 1003, event_type: 'ORDER_CREATED' }); row('inbox', 'g9002', { group: 'order-events', event_id: 9002 }); },
+    2000, () => { obSet(9002, { state: 'DONE', owner: '', lease: '' }); hl('outbox', 9002, null); txs('CG', 'ok'); relay('A', '本批完成', 'ok', '空闲'); }),
+  step('如果 B 其实没死，只是卡了很久（比如长时间 GC），现在醒过来继续执行：它的 <code>markSent</code>、<code>renewLease</code>、<code>recordSendFailure</code> 都带着 <code>lease_owner = B·91d2</code>，<em>全部影响 0 行</em>，改不动别人接管的行。',
+    0, () => { relay('B', '醒来，继续旧批次', 'wait', '旧 owner'); },
+    700, () => code(`UPDATE business_outbox SET state = 'SENT', ...\nWHERE id = 9002 AND state = 'SENDING'\n  AND lease_owner = 'B·91d2'      -- 现在是 A·c2e8 / 已 DONE\n-- 影响 0 行`, 182),
+    1500, () => relay('B', '写入全部落空', 'rb', '影响 0 行')),
+  step('但如果 B 卡住之前<em>已经把消息发出去了</em>，9002 就会被投递两次。这正是 outbox 的语义：<em>至少一次投递</em>。第二份消息到消费端，锁住行后看到 <code>DONE</code>，直接当重复丢掉，所以效果只生效一次。',
+    0, () => { gone('code'); fly(`${ENV(9002)}（B 卡住前发出的那份）`, RB, [330, 140], 'grey'); },
+    900, () => { card('CG', 306, 134, 384, '消费组 order-events · consume()', 'run', '进行中', '消费'); gate('第二份 9002', [['② 锁行核对', ''], ['③ state = DONE → 重复', '']], 182); },
+    1500, () => { check(0, 'ok'); check(1, 'go', '直接返回，不再投影'); txs('CG', 'ret', '重复丢弃'); relay('B', '已退出', 'rb', '下线'); }),
+]);
+
+scene('⑧ 续租与延迟事件', [
+  step('还有两个投递细节。第一个是续租：一批里前面几条投递很慢，后面的行租约可能快到期。所以每条投递前看一眼，<em>持有时间过了租约的一半</em>，就先续租；续租失败说明已被别人接管，跳过这一条。',
+    0, () => { clearMid(); gone('tx_CG'); gone('tx_B'); },
+    300, () => code(`long held = (now - claimedAt) / 1s;\nif (held * 2 >= 30 && renewLease(id, owner, 30) != 1) return;  // 已被接管\n\nUPDATE business_outbox SET lease_until = NOW(3) + 30s\nWHERE id = ? AND state = 'SENDING' AND lease_owner = ?`, 182),
+    900, () => note('为什么过半才续，而不是每条都续', `认领时已经写了 30 秒租约。每次续租都是一次写盘，逐条续会让投递时间翻倍；过半再续，既不会被误接管，也省掉大部分写入。`, 330)),
+  step('第二个是延迟事件，比如订单截止时的 <code>ORDER_EXPIRE</code>。它的 <code>next_attempt_at</code> 本来就等于 <code>deliver_at</code>，不到点不会被认领；万一被提前认领了，就 <code>deferDeadline</code>：改回 <code>PENDING</code>，下次认领时间定为 <code>deliver_at</code>。',
+    0, () => { hl('outbox', 9003); },
+    300, () => code(`if (deliverAt != null && deliverAt > now) {\n  UPDATE business_outbox SET state = 'PENDING', next_attempt_at = deliver_at,\n         lease_owner = NULL, lease_until = NULL\n  WHERE id = ? AND state = 'SENDING' AND lease_owner = ?;\n}`, 182),
+    900, () => note('RocketMQ 下的延迟', `传输层是 RocketMQ 时，到期前已经发出的延迟事件会设置 <code>setDeliverTimeMs(deliverAt)</code>，由 Broker 定时投递（最多 24 小时）。`, 330),
+    2000, () => hl('outbox', 9003, null)),
+]);
+
+scene('⑨ RocketMQ：SENT ≠ DONE', [
+  step('把传输层切到 RocketMQ。发送时 <code>keys = eventId</code>，所有事件发到同一个 Topic；每个逻辑消费组都订阅它，<em>只处理归自己的事件类型</em>，其余跳过。Broker 确认 <code>SEND_OK</code> 后，中继标 <code>SENT</code>。',
+    0, () => { clearMid(); dim('outbox', 9001, false); rmRow('outbox', 9001); rmRow('outbox', 9002); rmRow('event', 9002); rmRow('inbox', 'g9002'); clock('10:10:00.000', true); },
+    500, () => card('TP', 306, 88, 384, '传输 transport = rocketmq · 1 个 Topic', 'run', 'Broker', '传输'),
+    900, () => row('outbox', 9006, ob(9006, 'ORDER_CREATED', 1006, 'PENDING', '10:00.0')),
+    1500, () => { relay('A', '本批 9006', 'run', '投递中'); obSet(9006, { state: 'SENDING', owner: 'A·e41b', lease: '10:30.0' }); },
+    2300, () => fly('send(keys=9006) → SEND_OK', RA, [330, 100], 'blue'),
+    3100, () => { obSet(9006, { state: 'SENT', owner: '', lease: '', sent: '10:00.1' }); relay('A', '本批完成', 'ok', '空闲'); }),
+  step('<em>SENT 只说明 Broker 收到了，不说明消费者处理了</em>。假如 order-events 的消费者全部宕机，消息一直没人消费，9006 就停在 <code>SENT</code>，永远到不了 <code>DONE</code>。',
+    0, () => { card('CG', 306, 134, 384, '消费组 order-events', 'rb', '全部宕机', '消费'); },
+    800, () => note('三个状态的含义', `<ul><li><b>SENDING</b>：某个实例认领了，正在发</li><li><b>SENT</b>：Broker 确认收到</li><li><b>DONE</b>：消费者在自己的事务里完成了投影</li></ul>只有 DONE 才算这件事真的做完了。`, 182)),
+  step('所以轮询里还有一步重驱动：<code>SENT</code> 超过 30 秒还没变成 <code>DONE</code>，就改回 <code>PENDING</code>，重新认领、重新发送。先无锁查出 id，再逐行条件更新，<em>避免范围 UPDATE 锁住大片行、挡住业务写入新事件</em>。',
+    0, () => { gone('note'); clock('10:10:30.200', true); hl('outbox', 9006, 'hlr'); },
+    500, () => code(`SELECT id FROM business_outbox                 -- 无锁\nWHERE state = 'SENT' AND sent_at <= NOW(3) - 30s LIMIT 50;\n\nUPDATE business_outbox SET state = 'PENDING', next_attempt_at = NOW(3)\nWHERE id = ? AND state = 'SENT' AND sent_at <= NOW(3) - 30s;`, 182),
+    1500, () => obSet(9006, { state: 'PENDING', next_at: '10:30.2', sent: '10:00.1' }),
+    2200, () => { relay('A', '本批 9006', 'run', '投递中'); obSet(9006, { state: 'SENDING', owner: 'A·5b77', lease: '11:00.2' }); },
+    2900, () => fly('send(keys=9006) → SEND_OK', RA, [330, 100], 'blue'),
+    3600, () => { obSet(9006, { state: 'SENT', owner: '', lease: '', sent: '10:30.3' }); hl('outbox', 9006, null); relay('A', '本批完成', 'ok', '空闲'); }),
+  step('消费者恢复了，Broker 里现在有<em>两份 9006</em>。第一份走完五步：投影、写 inbox、标 <code>DONE</code>。',
+    0, () => { clearMid(); clock('10:10:41.000', true); card('CG', 306, 134, 384, '消费组 order-events · consume()', 'run', '已恢复', '消费'); },
+    500, () => fly(`${ENV(9006)} 第 1 份`, [330, 100], [330, 140], ''),
+    1200, () => gate('第一份 9006', [['①② 信封 + 锁行核对', ''], ['③ 判重', ''], ['④⑤ 投影 + inbox + DONE', '']], 182),
+    1600, () => { check(0, 'ok'); check(1, 'ok', '首次'); },
+    2200, () => { row('event', 9006, { event_id: 9006, order_id: 1006, event_type: 'ORDER_CREATED' }); row('inbox', 'g9006', { group: 'order-events', event_id: 9006 }); obSet(9006, { state: 'DONE' }); check(2, 'ok', '提交'); }),
+  step('第二份到达：锁住行，看到 <code>DONE</code>，直接返回 <code>CONSUME_SUCCESS</code>，不再投影。消费端有两道防线：<em>outbox 行的 DONE 状态，和 inbox 的主键 (consumer_group, event_id)</em>；投影本身也按 event_id 幂等写入。',
+    0, () => fly(`${ENV(9006)} 第 2 份`, [330, 100], [330, 140], 'grey'),
+    800, () => gate('第二份 9006', [['①② 信封 + 锁行核对', ''], ['③ DONE 或 inbox 已有', '']], 182),
+    1200, () => { check(0, 'ok'); check(1, 'go', '重复，直接返回'); txs('CG', 'ret', '重复丢弃'); },
+    1900, () => note('第二道防线什么时候起作用', `<ul><li>行被 <code>retryReview</code> 改回 PENDING，但这个消费组其实已经处理过：inbox 有记录 → <code>markDuplicateDone</code></li><li>Broker 先完成了消费、<code>SEND_OK</code> 才返回：<code>markConsumed</code> 会顺手补上 <code>sent_at</code></li></ul>`, 300)),
+]);
+
+scene('⑩ 伪造消息', [
+  step('最后，有人往 Topic 里塞了一条伪造消息：eventId 写成 9006，但 aggregateId 是 1002、userId 是 99，想冒充订单事件。信封格式完全合法，<em>第 ① 步拦不住</em>。',
+    0, () => { clearMid(); clock('10:12:00.000', true); card('CG', 306, 134, 384, '消费组 order-events · consume()', 'run', '进行中', '消费'); },
+    500, () => fly('📨 9006 {aggregateId: 1002, userId: 99}', [330, 100], [330, 140], 'red'),
+    1300, () => gate('伪造的 9006', [['① 校验信封', ''], ['② 锁库里的 9006 逐字段核对', ''], ['③④⑤', '']], 182),
+    1700, () => check(0, 'ok', '格式合法')),
+  step('第 ② 步回查<em>库里的 outbox 行</em>：真实的 9006 是订单 1006、用户 42，字段对不上，抛异常，事务回滚。所以消息里的数据从来不被信任，它只负责告诉消费者“去看哪一行”。',
+    0, () => { lock('outbox', 9006, 'X', 'CG'); hl('outbox', 9006, 'hlr'); },
+    700, () => check(1, 'no', 'aggregate 1002 ≠ 1006'),
+    1200, () => { unlock('CG'); txs('CG', 'rb', '已回滚'); hl('outbox', 9006, null); }),
+  step('失败记录时再核对一次，发现无法归属到任何真实事件，就按 Broker 消息 ID 写入 <code>message_failure</code>（key 是 <code>broker:…</code>），然后确认消费，不再重投。<em>真实的 9006 一个字段都没被改动</em>。',
+    0, () => fly('INSERT message_failure', MID, toDB('failure'), 'red'),
+    800, () => row('failure', 'fb', { group: 'order-events', key: 'broker:7F00…A21C', event_id: 'NULL', reason: '聚合身份与任务不一致' }),
+    1400, () => { txs('CG', 'ret', '已隔离 · 确认消费'); hl('outbox', 9006, 'hlg'); }),
+]);
+
+scene('总结与思考', [
+  step('最后用一张状态机把整条链路串起来：<code>PENDING → SENDING → SENT → DONE</code>，失败退避、租约过期、提前认领、SENT 超时，都是指回 PENDING 或 SENDING 的回边；消费失败 5 次或发送失败 10 次进入 <code>REVIEW</code>。',
+    0, () => ov(`<div class="kp">business_outbox 状态机</div>
+      <svg class="sm" width="880" height="330" viewBox="0 0 880 330">
+        <defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#8d99b8"/></marker></defs>
+        <g font-size="17" font-weight="700" text-anchor="middle">
+          <rect x="20" y="110" width="150" height="56" rx="10" fill="#1b2440" stroke="#5aa9ff"/><text x="95" y="144" fill="#9fd0ff">PENDING</text>
+          <rect x="250" y="110" width="150" height="56" rx="10" fill="#1b2440" stroke="#ffc857"/><text x="325" y="144" fill="#ffe08a">SENDING</text>
+          <rect x="480" y="110" width="150" height="56" rx="10" fill="#1b2440" stroke="#b58cff"/><text x="555" y="144" fill="#e4dcff">SENT</text>
+          <rect x="710" y="110" width="150" height="56" rx="10" fill="#11452f" stroke="#3ecf8e"/><text x="785" y="144" fill="#7ff0bc">DONE</text>
+          <rect x="365" y="258" width="150" height="56" rx="10" fill="#3a1a20" stroke="#ff6b6b"/><text x="440" y="292" fill="#ffb1b1">REVIEW</text>
+        </g>
+        <g stroke="#8d99b8" stroke-width="2" fill="none" marker-end="url(#ar)">
+          <path d="M170 130 L248 130"/><path d="M400 130 L478 130"/><path d="M630 130 L708 130"/>
+          <path d="M325 166 C 300 230, 120 230, 95 168"/>
+          <path d="M555 110 C 520 10, 140 10, 100 108"/>
+          <path d="M325 110 C 330 70, 300 70, 300 108"/>
+          <path d="M380 166 L420 256"/>
+          <path d="M365 290 C 200 300, 60 250, 70 168"/>
+          <path d="M400 150 C 520 200, 640 200, 735 168"/>
+        </g>
+        <g font-size="13" fill="#cfd8ee" text-anchor="middle">
+          <text x="209" y="122">认领</text><text x="439" y="122">SEND_OK</text><text x="669" y="122">消费提交</text>
+          <text x="215" y="218">发送失败退避 / 未到 deliver_at</text>
+          <text x="330" y="22">SENT 超过 30 秒未 DONE → 重驱动</text>
+          <text x="232" y="92" font-size="12" fill="#ffe08a">租约过期 → 重新认领 ↻</text>
+          <text x="500" y="240" fill="#ffb1b1">消费 5 次 / 发送 10 次</text>
+          <text x="170" y="306" fill="#ffb1b1">retryReview</text>
+          <text x="610" y="206" fill="#7ff0bc">local：同步消费直接 DONE</text>
+        </g>
+      </svg>`)),
+  step('暂停思考第 1 题：中继把消息发出去之后、执行 markSent 之前崩溃了，会发生什么？最终结果对不对？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">中继已经把 9004 发给 Broker，在执行 <code>markSent</code> 之前进程崩溃。接下来会发生什么？会不会丢、会不会重复生效？</div>`)),
+  step('参考答案：行停在 SENDING，30 秒租约过期后被下一轮认领 SQL 选中重发，消费者可能收到两份；第二份锁行后看到 DONE 或 inbox 已有，直接丢弃。不丢，也不重复生效。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>行停在 <code>SENDING</code>，owner 还是崩溃的那一批；没有任何通知机制</li>
+      <li>30 秒后 <code>lease_until &lt; NOW(3)</code>，认领 SQL 的第一路选中它，换新 owner 重发</li>
+      <li>Broker 里可能有两份：第一份走完五步变 <code>DONE</code>；第二份锁行看到 <code>DONE</code> / inbox 已有，当重复丢弃</li>
+      <li>结论：<b>至少一次投递 + 恰好一次效果</b>；旧实例醒来也改不动，因为它的写入都带着旧 owner</li></ul></div>`)),
+  step('暂停思考第 2 题：认领为什么用 READ COMMITTED 加 FOR UPDATE SKIP LOCKED？两者各自解决什么问题？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">认领事务为什么用 <code>READ COMMITTED</code>，SQL 里又为什么用 <code>FOR UPDATE SKIP LOCKED</code>？它们分别解决什么问题？为什么认领完立刻提交，在事务外投递？</div>`)),
+  step('参考答案：RC 是隔离级别，去掉间隙锁，不挡业务插入新事件；SKIP LOCKED 是加锁行为，让多个实例互不排队；认领后立刻提交，锁不跨越网络调用，租约接替锁来表达“谁在处理”。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li><b>READ COMMITTED</b>：隔离级别。按状态和时间范围加锁时没有间隙锁，业务事务往 outbox 插新行不会被认领挡住</li>
+      <li><b>SKIP LOCKED</b>：加锁行为。别的实例锁着的行直接跳过，多个中继并行认领、互不等待</li>
+      <li><b>立刻提交</b>：发 MQ 可能很慢甚至超时，不能拿着行锁等网络。提交后由 <code>SENDING + owner + lease_until</code> 表达“正在处理”，过期即可被接管</li></ul></div>`)),
+  step('暂停思考第 3 题：消费端为什么要锁库里的 outbox 行逐字段核对，而不是直接信任消息体？伪造消息最后落到哪里？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">消费端为什么要先 <code>FOR UPDATE</code> 锁住库里的 outbox 行、逐字段核对，而不是直接相信消息体？一条伪造消息最后落到哪里，会不会改动真实事件？</div>`)),
+  step('参考答案：消息体只是定位符，事实以库里的行为准；锁行同时让同一事件的多份消息串行，配合 DONE 和 inbox 去重。伪造消息核对失败，按 Broker 消息 ID 记入 message_failure，真实事件不受影响。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li>消息只携带定位字段，<b>事实来源是数据库里的 outbox 行</b>；kind、aggregate_id、user_id、发生时间、投递时间全部要一致</li>
+      <li>锁住这一行，同一事件的多份消息只能排队，后到的一定能看到 <code>DONE</code>，判重才可靠</li>
+      <li>伪造消息：第 ② 步核对失败回滚；失败记录时无法归属 → 写 <code>message_failure</code>（key = <code>broker:消息ID</code>），确认消费不再重投，<b>不修改任何真实任务</b></li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

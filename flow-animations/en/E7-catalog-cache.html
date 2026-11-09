@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E7 Catalog Cache</title>
+<link rel="stylesheet" href="../lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 5px;font-size:11.5px}
+.bd.tx{display:none}
+.inst{font-size:12.5px;line-height:1.55}
+.inst .h{display:flex;justify-content:space-between;align-items:center;font-weight:700;color:#fff;margin-bottom:4px}
+.inst .h span{font-size:11px;font-weight:400;color:var(--muted)}
+.inst .row{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11.5px;color:#cfd8ee}
+.inst .row b{color:var(--yellow);font-weight:600}
+.inst .ent{margin-top:4px;padding:3px 6px;border-radius:5px;background:#0b1020;font-family:var(--mono);font-size:11px;color:#9fd0ff;min-height:20px}
+</style>
+</head>
+<body>
+<script src="../lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: '../E7-目录缓存.html', home: '../index.html?lang=en', title: 'E7 · Catalog Cache', docTitle: 'E7 Catalog Cache', example: 'Example: details of app 7 · key = catalog:application:7',
+  lanes: [['App instances', 'A and B'], ['App service', 'read path · invalidation'], ['Shared stores', 'Memcache · Redis · MySQL']] });
+
+/* ============ Script ============ */
+const K = 'catalog:application:7';
+const TY = { rd: 88, mc: 212, db: 296, ob: 360 };
+const toDB = t => [770, TY[t] + 4];
+const MID = [600, 230];
+function clearMid() { ['code', 'gate', 'note', 'note2'].forEach(gone); }
+// Instance panel: local cache, local version, single-flight map
+function inst(id, y, o) {
+  put('inst' + id, 'fe st inst', `<div class="h">Instance ${id}<span>${o.tag || ''}</span></div>
+    <div class="row"><span>Caffeine (5 s)</span><b>${o.local || 'empty'}</b></div>
+    <div class="row"><span>local version app:7</span><b>${o.ver ?? 0}</b></div>
+    <div class="row"><span>inFlight single-flight</span><b>${o.fly || 'none'}</b></div>
+    <div class="ent">${o.note || ''}</div>`, 26, y, 248, null);
+}
+// Layer-by-layer check of the five-layer read
+function ladder(title, marks) {
+  const names = ['① Request scope (this request)', '② Caffeine (this instance, 5 s)', '③ Memcache (key carries version)', '④ Redis (shared, with TTL)', '⑤ MySQL (source)'];
+  gate(title, names.map(n => [n, '']), 182);
+  marks.forEach(([i, st, oc], k) => later(400 + k * 450, () => check(i, st, oc)));
+}
+
+scene('Intro', [
+  step('The final episode covers the <em>catalog cache</em>: for public, read-heavy data like app and product details, how do we read fast, avoid cache stampedes, invalidate quickly after a change, and keep the database alive when Redis is down?',
+    0, () => ov(`<div class="kp">Flow Animations · Episode 7</div><h1>Catalog Cache</h1><h2>Five-layer reads, two layers against stampedes, version-based invalidation, bounded fallback when Redis fails</h2>
+      <ol><li>Layered reads: request scope → Caffeine → Memcache → Redis → MySQL</li><li><b>In-process single-flight</b> + <b>cross-process mutex</b> — two different layers</li><li>cache-fill.lua: write back only if <b>lock owner + version</b> both match</li><li>Invalidation route A: outbox in the same txn → <b>INCR version, DEL, PUBLISH</b></li><li>Fallback semaphore; optional route B: Canal</li></ol>`)),
+  step('Layout: on the left, two app instances A and B, each with its own Caffeine cache and local version; on the right, Redis, Memcache and MySQL shared by all instances. App 7 is published and every cache layer is empty.',
+    0, () => ovOff(),
+    300, () => {
+      inst('A', 88, {}); inst('B', 300, {});
+      table('rd', 722, TY.rd, 532, 'Redis', 'data · version · lock', [['k', 'key', 270], ['v', 'value', 150], ['ttl', 'TTL', 70]]);
+      row('rd', 'ver', { k: K + ':version', v: '0', ttl: '—' });
+      table('mc', 722, TY.mc, 532, 'Memcache', 'key = sha256(key) + version', [['k', 'key', 270], ['v', 'value', 150]]);
+      table('db', 722, TY.db, 532, 'ai_application', 'MySQL', [['id', 'id', 40], ['name', 'name', 160], ['st', 'status', 90]]);
+      row('db', 7, { id: 7, name: 'AI Poster', st: '1 published' });
+      table('ob', 722, TY.ob, 532, 'business_outbox', '', [['id', 'id', 50], ['kind', 'kind', 200], ['s', 'state', 80]]);
+    }),
+]);
+
+scene('① Layered reads', [
+  step('A request hits instance A for app 7\'s details. The first two layers are in-process: request scope (repeated reads within one request skip the lookup) and Caffeine (5 s). Both miss, so it records local version 0 and starts loading.',
+    0, () => { clearMid(); fly('GET /applications/7', [140, 60], [140, 100], 'blue'); },
+    600, () => ladder('Read catalog:application:7', [[0, 'no', 'miss'], [1, 'no', 'miss']]),
+    1700, () => inst('A', 88, { ver: 0, note: 'records version = 0, starts loading' })),
+  step('Layer three, Memcache: its key is <em>a digest of the key + the version stored in Redis</em>. It reads <code>…:version</code> (0), then looks up <code>mc:…:0</code> — nothing. Layer four, Redis, is empty too. It must go to the source.',
+    0, () => { fly('GET …:version', MID, toDB('rd'), 'blue'); hl('rd', 'ver'); },
+    700, () => { check(2, 'no', 'mc:…:0 miss'); hl('rd', 'ver', null); },
+    1300, () => check(3, 'no', 'miss')),
+  step('At the same moment 100 requests on instance A want the same key. The first line of defense is <em>in-process single-flight</em>: <code>inFlight.putIfAbsent(key, future)</code> — only the first request actually loads, and the other 99 wait on that same future.',
+    0, () => { inst('A', 88, { ver: 0, fly: 'app:7 → 1 loader', note: 'the other 99 requests wait on one future' }); },
+    600, () => { for (let i = 0; i < 4; i++) later(i * 150, () => fly('req', [60 + i * 40, 60], [120, 120], 'grey')); },
+    1400, () => code('CompletableFuture<…> mine = new CompletableFuture<>();\nrunning = inFlight.putIfAbsent(key, mine);\nif (running != null) return await(running);   // wait for the first one\ntry { load the layers } finally { inFlight.remove(key, mine); }', 330)),
+  step('But instance B misses at the same time. <em>Single-flight only covers its own process</em>; across processes the second line is a Redis mutex, <code>SET lock:cache:… NX PX 10s</code>. A wins; B loses and retries every 20–40 ms, <em>re-reading Redis first</em> each time, waiting at most 2 s before returning 503.',
+    0, () => { clearMid(); inst('B', 300, { ver: 0, fly: 'app:7 → 1 loader', note: 'lock lost, re-read Redis in 20–40 ms' }); },
+    500, () => { fly('SET NX PX 10s', [600, 160], toDB('rd'), 'blue'); },
+    1100, () => row('rd', 'lock', { k: 'lock:cache:' + K, v: 'owner=A·5e1', ttl: '10 s' }),
+    1600, () => fly('SET NX (fails)', [600, 380], toDB('rd'), 'red'),
+    2300, () => note('Two layers against stampedes, not one', `<ul><li><b>In-process single-flight</b>: the <code>inFlight</code> map — one loader per key per instance</li><li><b>Cross-process mutex</b>: Redis <code>SET NX PX</code> — one source load per key across all instances</li><li>Losers re-read Redis for up to 2 s, then 503 (never queue onto the database)</li></ul>`, 182)),
+  step('With the lock, A <em>double-checks</em>: reads Redis again (someone may have just filled it) — still empty; reads the current version, 0; only then queries MySQL. Write-back uses <code>cache-fill.lua</code>: <em>the lock owner is still me and the version is still 0</em> — only when both hold does it SET.',
+    0, () => { clearMid(); fly('SELECT … WHERE id = 7', MID, toDB('db'), 'blue'); hl('db', 7); },
+    800, () => code('-- cache-fill.lua\nif GET(lock:cache:…) ~= owner  then return 0 end   -- lock expired or taken\nif GET(…:version)   ~= "0"    then return 0 end   -- invalidated while loading\nSET catalog:application:7 <json> PX <ttl>\nreturn 1', 182),
+    1600, () => { hl('db', 7, null); row('rd', 'data', { k: K, v: '{name: AI Poster …}', ttl: '5 min' }); },
+    2100, () => { row('mc', 'v0', { k: 'mc:sha(…app:7):0', v: '{name: AI Poster …}' }); rmRow('rd', 'lock'); }),
+  step('After a successful write-back it also fills Memcache (with version 0) and releases the lock (the unlock script checks the owner too). A\'s load ends: <em>the local version did not change during the load</em>, so it writes Caffeine and the request scope. B\'s next retry hits Redis and returns.',
+    0, () => { inst('A', 88, { ver: 0, local: 'app:7', note: 'local version unchanged → write Caffeine' }); },
+    800, () => { fly('GET (retry) → hit', [600, 380], toDB('rd'), 'green'); },
+    1500, () => inst('B', 300, { ver: 0, local: 'app:7', note: 'Redis hit, fill Memcache and local' })),
+  step('Requests within the next 5 s hit Caffeine and never touch Redis. Reading a <em>non-existent app 99</em> loads an empty value, and the empty string <code>""</code> is still written to Redis with a 120 s TTL, so nobody can punch through to the database with ids that do not exist.',
+    0, () => { clearMid(); ladder('Read app:7 again', [[0, 'no'], [1, 'go', 'hit, return']]); },
+    1500, () => row('rd', 'null', { k: 'catalog:application:99', v: '"" (empty value)', ttl: '120 s' })),
+  step('One point that is easy to miss: <em>the cache stores content, it does not decide visibility</em>. After getting cached content, the details endpoint <em>always checks the live status with <code>selectStatus</code></em>. The moment an app is unpublished, the endpoint returns 404 even if the cache still holds old content.',
+    0, () => { clearMid(); code('detail = cache.query("catalog:application:7", …);\nInteger liveStatus = mapper.selectStatus(7);   // checked every time\nif (liveStatus != PUBLISHED) throw NOT_FOUND;', 182); },
+    900, () => { hl('db', 7); },
+    1800, () => hl('db', 7, null)),
+]);
+
+scene('② Invalidation route A', [
+  step('An admin renames app 7. <em>The table change and the outbox row share one transaction</em>: <code>APPLICATION_INVALIDATE</code>. On rollback neither the event nor the invalidation happens; on commit, the invalidation is guaranteed to run (the E1 guarantee).',
+    0, () => { clearMid(); rmRow('rd', 'null'); clock('10:30:00.000'); tx('ADM', 0, 'updateApplication(7) · @Transactional', 'run'); },
+    700, () => cell('db', 7, 'name', 'AI Poster Pro', 'ADM'),
+    1200, () => row('ob', 9301, { id: 9301, kind: 'APPLICATION_INVALIDATE', s: 'PENDING' }, 'ADM'),
+    1800, () => { commit('ADM'); txs('ADM', 'ok'); }),
+  step('The outbox delivers it to the <code>catalog-cache</code> group, whose projection deletes <em>three kinds of keys</em>: app details, that app\'s product list, and every app search result (by prefix scan). Each key goes through the same <code>invalidate(key)</code>.',
+    0, () => { gone('tx_ADM'); tx('CC', 0, 'consume 9301 · catalog-cache', 'run'); },
+    600, () => code('invalidate("catalog:application:7")\ninvalidate("catalog:product:list:7")\ninvalidatePrefix("catalog:application:search:")   // SCAN, then invalidate each\nany failure → CacheUnavailableException → outbox backoff retry', 182)),
+  step('<code>invalidate(key)</code> does <em>five things</em>: on this instance, ① local version + 1 and ② delete the Caffeine and request-scope entries; then <code>cache-invalidate.lua</code>: ③ <code>INCR …:version</code> ④ <code>DEL key</code> ⑤ <code>PUBLISH</code> to the other instances. Instance B gets the message and also bumps its local version and deletes its local entry. <em>Memcache is not deleted</em>.',
+    0, () => { clearMid(); inst('A', 88, { ver: 1, local: 'empty', note: '① local version +1 ② delete local entry' }); },
+    800, () => { fly('EVAL cache-invalidate.lua', MID, toDB('rd'), 'blue'); },
+    1500, () => { cell('rd', 'ver', 'v', '1'); rmRow('rd', 'data'); },
+    2100, () => fly('PUBLISH → instance B', [800, 100], [140, 320], 'green'),
+    2800, () => { inst('B', 300, { ver: 1, local: 'empty', note: 'notified: evictLocal(key)' }); txs('CC', 'ok'); cell('ob', 9301, 's', 'DONE'); }),
+  step('Why not delete Memcache? Because the version is now 1, every future read looks for <code>mc:…:1</code>, and the old <code>mc:…:0</code> will never be read again — it simply expires. <em>Bumping the version achieves three things at once</em>, shown next with a race.',
+    0, () => { gone('tx_CC'); dim('mc', 'v0'); cell('mc', 'v0', 'k', 'mc:sha(…app:7):0 (never read again)'); },
+    800, () => note('Three effects of version + 1', `<ol style="margin:2px 0 0;padding-left:18px"><li><b>Blocks stale loads</b>: version recorded before loading ≠ current → <code>cache-fill.lua</code> refuses the write</li><li><b>Old Memcache entries become unreachable</b>: the key carries the version</li><li><b>Local check</b>: the local version changed during the load → do not write Caffeine</li></ol>`, 182)),
+  step('The race: instance B now starts loading, records version 1 and reads the name "AI Poster Pro". Just before it writes back, the admin renames the app again and a new invalidation moves the version to 2. B runs <code>cache-fill.lua</code>: 1 ≠ 2, <em>returns 0 and refuses</em>; B\'s local version changed too, so <em>it skips Caffeine</em>. The request still returns, but the stale value stays in no cache layer.',
+    0, () => { clearMid(); inst('B', 300, { ver: 1, fly: 'app:7 loading', note: 'load starts: version = 1' }); fly('SELECT (reads old value)', [600, 380], toDB('db'), 'grey'); },
+    1000, () => { cell('db', 7, 'name', 'AI Poster Max'); cell('rd', 'ver', 'v', '2'); inst('B', 300, { ver: 2, fly: 'app:7 loading', note: 'PUBLISH received: local version → 2' }); inst('A', 88, { ver: 2, local: 'empty', note: 'second invalidation: version → 2' }); },
+    1800, () => { fly('cache-fill.lua(version=1)', [600, 380], toDB('rd'), 'red'); },
+    2500, () => { gate('cache-fill.lua · instance B', [['Lock owner still me?', ''], ['Current version = 1?', '']], 182); },
+    2900, () => check(0, 'ok'), 3300, () => check(1, 'no', 'now 2 → refuse'),
+    3800, () => inst('B', 300, { ver: 2, local: 'empty', note: 'version 1 → 2: skip Caffeine (fenced)' })),
+]);
+
+scene('③ Redis outage fallback', [
+  step('If Redis goes down: a failed Redis read opens a 1-second "fallback window" during which Redis is skipped. Loading from the source first needs a <em>fair semaphore</em> permit: at most 4 concurrent loads, waiting at most 50 ms, otherwise 503. And <em>fallback results are never written back</em> to any cache.',
+    0, () => { clearMid(); dim('rd', 'ver'); },
+    500, () => code('if (redisDown()) return degraded(…);\ntry (Permit p = fallback.acquire()) {   // Semaphore(4, fair), tryAcquire 50ms\n  if (p == null) throw 503 "cache unavailable";\n  json = source.get();                     // load from MySQL\n  return new CacheSnapshot(json, ttl, cacheable = false);   // no write-back\n}', 182),
+    1300, () => note('Why limit source loads', `When the cache is down, every read would rush to the database. The semaphore caps source loads at <b>4</b> and fails the rest fast, protecting the database and the write paths.<br>Once Redis recovers, the next request reads through the layers and fills them as usual.`, 350),
+    2500, () => dim('rd', 'ver', false)),
+]);
+
+scene('④ Route B: Canal (optional)', [
+  step('There is an optional second invalidation route: Canal subscribes to the MySQL binlog. It is <em>off by default</em> (<code>APP_CDC_ENABLED=false</code>) and only turned on when "edits made directly in the database must also invalidate" is needed. It subscribes to just two tables: <code>ai_application</code> and <code>usage_product</code>.',
+    0, () => { clearMid(); tx('CDC', 0, 'CanalCacheConsumer · single leader', 'wait', 'off by default'); },
+    600, () => note('Why only one leader', `One destination can have only one consumer pulling batches and acknowledging positions: several instances calling <code>getWithoutAck</code> / <code>ack</code> would acknowledge each other's batches and skip work.<br>So a Redis lease (<code>SET NX</code>) elects a leader, renewed periodically by a script that checks the owner.`, 182)),
+  step('One batch: <code>getWithoutAck</code> fetches it → map tables to <code>invalidate</code> → <em>confirm still the leader</em> → write the checkpoint → <em>confirm leadership again</em> → <code>ack</code>. Any failure calls <code>rollback(batchId)</code> so Canal replays it. On connect it calls <code>rollback()</code> once to restart from the last unacknowledged position.',
+    0, () => { txs('CDC', 'run', 'leader'); code('connect(); subscribe("schema\\.(ai_application|usage_product)"); rollback();\nloop:\n  batch = getWithoutAck(size, timeout)\n  projector maps → cache.invalidate / invalidatePrefix\n  requireLeadership()  → write checkpoint (audit only)\n  requireLeadership()  → ack(batch.id)\n  failure → rollback(batch.id), replay from the same position', 182); },
+    1200, () => note('The checkpoint is only for auditing', `The resume position lives in <b>Canal's own meta</b>; <code>cache_cdc_checkpoint</code> only records progress for observing lag and troubleshooting, never for resuming.`, 380)),
+]);
+
+scene('Recap & questions', [
+  step('Recap: five layers read in order; single-flight covers the process and the mutex covers the cluster; write-back needs both the lock owner and the version to match; invalidation goes through the outbox, and bumping the version is the core of the five actions; during a Redis outage source loads are limited and nothing is written back.',
+    0, () => ov(`<div class="kp">Episode recap</div><h1 style="font-size:32px">Key points of the catalog cache</h1><ol style="margin-top:14px">
+      <li>Read: request scope → Caffeine 5 s → Memcache (versioned) → Redis → MySQL</li>
+      <li>Two stampede layers: <b>inFlight single-flight</b> + <b>SET NX PX 10s</b>, 503 after 2 s; empty value <b>""</b> cached 120 s</li>
+      <li>Write-back: <b>cache-fill.lua checks lock owner + version</b>; skip Caffeine if the local version changed</li>
+      <li>Invalidate: table + outbox in one txn → three key kinds → <b>local version +1, delete local, INCR, DEL, PUBLISH</b></li>
+      <li>Visibility via <b>selectStatus</b>; fallback <b>semaphore 4, 50 ms wait, no write-back</b>; Canal optional, single leader</li></ol>`)),
+  step('Pause and think, question 1: single-flight and the Redis mutex both prevent stampedes — why keep both? What breaks with only one?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 1 / 3</div><div class="q">In-process single-flight (inFlight) and the Redis mutex both prevent cache stampedes. Why keep both? What goes wrong if only one remains?</div>`)),
+  step('Answer: single-flight only merges concurrency within one process, so several instances would still each hit the source; the mutex covers all instances, but without single-flight hundreds of threads per instance would contend for the lock, retry and read Redis. Single-flight reduces each instance to one loader; the mutex reduces the cluster to one source load.',
+    0, () => ov(`<div class="cd">✅ Answer · 1 / 3</div><div class="a"><ul>
+      <li>Single-flight only: N instances mean N source loads; a hot key expiring hits the DB N times</li>
+      <li>Mutex only: thousands of threads per instance <code>SET NX</code> and re-read Redis every 20–40 ms — heavy Redis load and many busy threads</li>
+      <li>Both: 1 loader per instance → 1 source load per cluster; the rest wait on the future or re-read Redis</li>
+      <li>After taking the lock, <b>double-check</b> Redis so a value just written by someone else is not loaded again</li></ul></div>`)),
+  step('Pause and think, question 2: why bump the version on invalidation? Is deleting the Redis key not enough?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 2 / 3</div><div class="q">Is <code>DEL</code> of the Redis key not enough on invalidation? Why also <code>INCR …:version</code>? Which problems does it solve at once, and why is Memcache not deleted?</div>`)),
+  step('Answer: with only DEL, a loader already reading old data writes the stale value back afterwards and the cache is dirty again. The version makes the write-back carry "the version when loading began" and refuses on mismatch; Memcache keys carry the version so old entries become unreachable; locally the version shows whether an invalidation happened during the load.',
+    0, () => ov(`<div class="cd">✅ Answer · 2 / 3</div><div class="a"><ul>
+      <li>The race: A reads old data → invalidation DELs → A writes the old value back → dirty cache. <b>DEL alone cannot stop it</b></li>
+      <li>① <code>cache-fill.lua</code> compares versions: version before loading ≠ current → refuse</li>
+      <li>② Memcache key = digest + version: once the version changes, old entries are never read, <b>no delete needed</b></li>
+      <li>③ Local version: an invalidation during the load (local version changed) → skip Caffeine</li></ul></div>`)),
+  step('Pause and think, question 3: what happens to catalog reads when Redis is completely down? Why are fallback results not written back to the cache?',
+    0, () => ov(`<div class="cd">⏸ Pause and think · 3 / 3</div><div class="q">When Redis is completely down, how do catalog reads proceed? Why limit source loads with a semaphore? Why are results read during fallback not written back to any cache?</div>`)),
+  step('Answer: a 1-second fallback window skips Redis and loads from the source, but only with a fair semaphore permit (4 permits, wait at most 50 ms), otherwise 503 — protecting the database. Nothing is written back because there is no lock or version protection at that point and it could write a stale value; once Redis recovers, the normal path fills the caches.',
+    0, () => ov(`<div class="cd">✅ Answer · 3 / 3</div><div class="a"><ul>
+      <li>Redis error → <code>markRedisDown</code>: for 1 s, reads go straight to <code>degraded</code></li>
+      <li><code>Semaphore(4, fair)</code> + <code>tryAcquire(50ms)</code>: at most 4 concurrent source loads, the rest fail fast with 503</li>
+      <li>No write-back: without owner and version checks it could store a stale value; not kept locally either (<code>cacheable = false</code>)</li>
+      <li>Visibility is unaffected: details still check <code>selectStatus</code> live</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

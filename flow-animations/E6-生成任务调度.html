@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E6 生成任务调度</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.tbl .td{padding:0 4px;font-size:11px}
+.tn{font-size:11.5px}
+.bd.tx{display:none}
+.fair{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;font-size:12.5px}
+.fair table{width:100%;border-collapse:collapse;font-family:var(--mono);font-size:12px}
+.fair th{color:var(--muted);font-weight:400;text-align:left;padding:2px 4px}
+.fair td{padding:3px 4px;border-top:1px solid #26304d}
+.fair tr.win td{background:rgba(62,207,142,.22);color:#fff}
+.fair .h{color:var(--purple);font-weight:700;margin-bottom:4px}
+.aimd{background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.aimd .h{color:var(--purple);font-weight:700;font-size:13px;margin-bottom:2px}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E6-generation-scheduling.html', home: 'index.html', title: 'E6 · 生成任务调度', docTitle: 'E6 生成任务调度', example: '例子：用户 42 / 77 / 88 · 渠道上限 4',
+  cols: [[16, 214], [238, 376], [622, 642]],
+  lanes: [['用户 · 后台线程', ''], ['应用服务', '提交 · 调度 · 写回 · 结算'], ['调度表', '｜ 任务与账务']] });
+
+/* ============ 剧本 ============ */
+const TY = { ch: 88, ho: 150, at: 312, rs: 414, tk: 88, qt: 250, gr: 352, st: 434 };
+const LX = 632, RX = 948;
+const toL = t => [660, TY[t] + 4], toR = t => [975, TY[t] + 4];
+const MID = [520, 240];
+const UY = { 42: 88, 77: 134, 88: 180 };
+function user(u, text, st = 'run') { card('U' + u, 26, UY[u], 194, '', st, text, '用户 ' + u); }
+function bg(text, st = 'run') { card('BG', 26, 236, 194, '', st, text, '调度'); }
+function clearMid() { ['code', 'gate', 'note', 'note2', 'fair', 'aimd'].forEach(gone); }
+function tk(id, u, s, a = 'FROZEN') { row('tk', id, { id, u, s, a }); }
+function ho(id, task, s, g, o = '', n = '') { row('ho', id, { id, task, s, g, o, n }); }
+// 公平挑选表：用户、在途、权重、比较值
+function fair(rows, win, title = '公平挑选：在途数 / 权重 最小者优先') {
+  put('fair', 'fair', `<div class="h">${title}</div><table><tr><th>用户</th><th>在途</th><th>权重</th><th>份额</th><th>最早排队</th></tr>` +
+    rows.map(r => `<tr class="${r[0] === win ? 'win' : ''}"><td>${r[0]}</td><td>${r[1]}</td><td>${r[2]}</td><td>${r[1]}/${r[2]}</td><td>h${r[3]}</td></tr>`).join('') + '</table>', M.x, 182, M.w);
+}
+// AIMD 曲线：生效并发随时间变化
+function aimd(points, note, y = 330) {
+  const W = 330, H = 110, x0 = 26, y0 = 92, sx = (W - x0 - 6) / 10, sy = 18;
+  let d = '', px = 0, py = 0;
+  points.forEach(([t, v], i) => { const X = x0 + t * sx, Y = y0 - v * sy; d += i === 0 ? `M${X},${Y}` : `L${X},${py}L${X},${Y}`; px = X; py = Y; });
+  d += `L${W - 6},${py}`;
+  put('aimd', 'aimd', `<div class="h">AIMD：生效并发 effective_in_flight</div>
+    <svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+      <line x1="${x0}" y1="${y0}" x2="${W - 6}" y2="${y0}" stroke="#56607e"/><line x1="${x0}" y1="${y0 - 4 * sy}" x2="${W - 6}" y2="${y0 - 4 * sy}" stroke="#ff8f8f" stroke-dasharray="4 3"/>
+      <text x="4" y="${y0 - 4 * sy + 4}" fill="#ff8f8f" font-size="11">max 4</text>
+      ${[1, 2, 3].map(v => `<text x="10" y="${y0 - v * sy + 4}" fill="#8d99b8" font-size="11">${v}</text>`).join('')}
+      <path d="${d}" fill="none" stroke="#3ecf8e" stroke-width="2.5"/>
+      <text x="${x0}" y="${H - 2}" fill="#8d99b8" font-size="11">${note}</text>
+    </svg>`, M.x, y, M.w);
+}
+
+scene('片头', [
+  step('最后一集讲<em>生成任务调度</em>：用户提交一个 AI 出图任务，系统怎么冻结额度、公平地把任务派给上游、根据上游的各种回应推进状态，最后落盘并结算。<em>整条链路不用 Redis</em>，全靠数据库的条件更新和租约。',
+    0, () => ov(`<div class="kp">链路动画 · 第 6 集</div><h1>生成任务调度</h1><h2>一个事务受理并冻结；短事务公平认领；网络调用在事务外；终态只写一次、结算只有一次</h2>
+      <ol><li>提交：请求键、选包 <b>FOR UPDATE NOWAIT</b>、占名额、冻结、交接行</li><li>调度：唤醒 + 每 2 秒扫描，<b>公平挑选</b>，claimOne</li><li>调上游的五种结果，<b>超时绝不当失败</b>；AIMD 自适应并发</li><li>回调与轮询竞争终态：<b>owner + generation</b> 条件写回</li><li>落盘、<b>唯一结算入口</b>、补偿扫描</li></ol>`)),
+  step('右侧左半边是调度用的表：渠道（在途计数、生效并发）、交接行、上游尝试、结果文件；右半边是任务、用户名额、权益包和结算表。渠道上限 4，当前生效并发（eff）3。',
+    0, () => ovOff(),
+    300, () => {
+      clock('11-08 14:00:00.000');
+      table('ch', LX, TY.ch, 306, 'provider_channel', '渠道', [['in', 'in_flight', 68], ['eff', 'eff', 44], ['max', 'max', 36], ['q', 'queued', 52], ['p', 'paused', 86]]);
+      row('ch', 1, { in: 0, eff: 3, max: 4, q: 0, p: '' });
+      table('ho', LX, TY.ho, 306, 'generation_task_handoff', '交接行', [['id', 'id', 38], ['task', 'task', 36], ['s', 'state', 66], ['g', 'gen', 30], ['o', 'owner', 54], ['n', 'note', 70]]);
+      table('at', LX, TY.at, 306, 'provider_attempt', '上游尝试', [['id', 'id', 36], ['task', 'task', 36], ['k', 'key', 50], ['s', 'state', 104], ['o', 'owner', 44], ['g', 'gen', 30]]);
+      table('rs', LX, TY.rs, 306, 'generation_result', '结果文件', [['task', 'task', 40], ['i', 'idx', 30], ['s', 'state', 70], ['o', 'lease owner', 90]]);
+    },
+    900, () => {
+      table('tk', RX, TY.tk, 306, 'generation_task', '', [['id', 'id', 36], ['u', 'user', 36], ['s', 'state', 120], ['a', 'accounting', 80]]);
+      table('qt', RX, TY.qt, 306, 'generation_user_quota', '用户名额', [['u', 'user', 40], ['act', 'active', 50], ['lim', 'limit', 46], ['w', 'weight', 54]]);
+      row('qt', 42, { u: 42, act: 0, lim: 5, w: 1 }); row('qt', 77, { u: 77, act: 0, lim: 5, w: 1 }); row('qt', 88, { u: 88, act: 0, lim: 5, w: 2 });
+      table('gr', RX, TY.gr, 306, 'entitlement_grant', '', [['id', 'id', 28], ['u', 'user', 38], ['a', 'avail', 50], ['f', 'frozen', 50], ['c', 'consumed', 66]]);
+      row('gr', 21, { id: 21, u: 42, a: 50, f: 0, c: 0 }); row('gr', 22, { id: 22, u: 77, a: 10, f: 0, c: 0 });
+      table('st', RX, TY.st, 306, 'generation_settlement', '唯一键 task_id', [['task', 'task', 40], ['k', 'kind', 70], ['t', 'target', 80], ['l', 'ledger', 60]]);
+    }),
+]);
+
+scene('① 提交：一个事务', [
+  step('用户 42 提交任务。和普通购买一样，先用请求键在 <code>generation_request</code> 上竞争插入、锁定读、比对摘要；已经绑定过任务就直接返回原任务。<em>已提交任务的重试，不受余额、过期或下架影响</em>。',
+    0, () => { user(42, '提交任务'); fly('POST /generation/tasks {requestKey, prompt, …}', [100, 100], [260, 100], 'blue'); },
+    900, () => tx('SUB', 0, 'submit() · @Transactional', 'run'),
+    1300, () => code('INSERT generation_request … ON DUPLICATE KEY UPDATE …\nSELECT … FOR UPDATE   -- 摘要不同 → 409；已有 task_id → 返回原任务\n锁定本次引用的素材（与删除素材互斥）', 182)),
+  step('选权益包：先<em>不加锁</em>查出最多 8 个符合规格的候选包，再逐个 <code>FOR UPDATE NOWAIT</code>：锁不到立刻失败、短暂重试，不排队等待；锁到后用数据库时间<em>复核</em>它仍可用。全部锁不到返回“繁忙”，确实没有可用包返回“额度不足”。',
+    0, () => code('ids = 符合应用/版本/模型/尺寸/张数的可用包（最多 8 个，无锁）\nfor id in ids:\n  try  SELECT … WHERE id = ? FOR UPDATE NOWAIT\n       复核：ACTIVE、在有效期、可用 ≥ 1  → 选中\n  catch 锁冲突 → 短暂停顿后重试，最后报 SUBMISSION_BUSY', 182),
+    1000, () => { lock('gr', 21, 'X', 'SUB'); hl('gr', 21); }),
+  step('占名额，两个条件更新：渠道排队数 +1（满了返回“队列已满”），用户活动任务数 +1（超过 5 个返回“活动任务过多”）。然后插入任务（QUEUED / FROZEN），冻结 1 次额度并写 FREEZE 流水。',
+    0, () => { gone('code'); hl('gr', 21, null); cell('ch', 1, 'q', '1'); cell('qt', 42, 'act', '1'); },
+    700, () => tk(301, 42, 'QUEUED'),
+    1200, () => { cell('gr', 21, 'a', '49'); cell('gr', 21, 'f', '1'); }),
+  step('最后写交接行（PENDING）和一条 <code>GENERATION_DISPATCH</code> outbox 事件，并把任务号回填到请求行。这条事件<em>只负责唤醒调度</em>，真正派不派、什么时候派，由数据库里的交接行、容量和开关决定。任何一步失败，全部回滚。',
+    0, () => { ho(101, 301, 'PENDING', 0); },
+    700, () => { tagAt('evt', 'outbox: GENERATION_DISPATCH（只唤醒）', 248, 330, 'ok'); },
+    1300, () => { unlock('SUB'); txs('SUB', 'ok'); user(42, '301 排队中', 'ok'); }),
+  step('很快，用户 42 又提交了 302、303，用户 77 提交了 304，用户 88（权重 2）提交了 305、306。现在一共 6 个任务在排队。',
+    0, () => { gone('evt'); gone('tx_SUB'); },
+    300, () => { tk(302, 42, 'QUEUED'); tk(303, 42, 'QUEUED'); ho(102, 302, 'PENDING', 0); ho(103, 303, 'PENDING', 0); cell('qt', 42, 'act', '3'); cell('gr', 21, 'a', '47'); cell('gr', 21, 'f', '3'); },
+    900, () => { tk(304, 77, 'QUEUED'); ho(104, 304, 'PENDING', 0); cell('qt', 77, 'act', '1'); cell('gr', 22, 'a', '9'); cell('gr', 22, 'f', '1'); user(77, '304 排队中', 'ok'); },
+    1500, () => { tk(305, 88, 'QUEUED'); tk(306, 88, 'QUEUED'); ho(105, 305, 'PENDING', 0); ho(106, 306, 'PENDING', 0); cell('qt', 88, 'act', '2'); user(88, '305、306 排队', 'ok'); },
+    2000, () => cell('ch', 1, 'q', '6')),
+]);
+
+scene('② 调度：短事务认领', [
+  step('调度有两个触发源：事件唤醒（提交后才唤醒），和每 2 秒的扫描兜底。同一实例里用 <code>AtomicBoolean running</code> 防止两轮同时跑。一轮调度是<em>一个短事务</em>，里面<em>不做任何网络调用</em>。',
+    0, () => { clearMid(); bg('一轮调度开始'); code('if (!running.compareAndSet(false, true)) return;\n@Transactional claimDueHandoffs():\n  渠道 ENABLED、可提交？\n  cleanHandoffs()          // 过期认领、已取消、排队超时\n  if (paused) return [];   // 429 暂停期\n  slots = min(batch 20, limit - in_flight)\n  claimFair(slots)', 182); }),
+  step('先做清理，它不依赖空位：认领租约过期的交接行要恢复；任务已被取消的交接行要结束；排队超过 30 分钟的任务<em>超时</em>：归还队列和用户名额，释放冻结。本轮没有要清理的。然后算空位：<code>min(20, 3 − 0) = 3</code>。',
+    0, () => note('排队超时的处理', `交接行完成是唯一的“排队责任闸门”：取消和超时只会有一个成功，成功的那一方才<b>归还队列名额、用户名额，并按 QUEUE_TIMEOUT 释放冻结</b>。`, 330),
+    800, () => hl('ch', 1),
+    1800, () => hl('ch', 1, null)),
+  step('公平挑选：按用户分组，算出每个用户<em>当前在途数 ÷ 权重</em>，最小的优先；相同时给最早排队的。比较时<em>交叉相乘</em>（a在途×b权重 对比 b在途×a权重），避免除法和小数。第 1 个空位：三人都是 0，按最早排队选中 42 的 h101。',
+    0, () => { clearMid(); fair([[42, 0, 1, 101], [77, 0, 1, 104], [88, 0, 2, 105]], 42); },
+    700, () => { hl('ho', 101, 'hlg'); }),
+  step('<code>claimOne</code>：交接行改 CLAIMED、<code>generation + 1</code>、写 owner；渠道在途 +1（条件更新兜底）；任务从 QUEUED 抢成 DISPATCHING（如果用户刚好取消了，这一步失败，本次认领作废）；新建一条上游尝试，<em>attemptKey 是稳定的</em>，以后重试都用它。',
+    0, () => { lock('ho', 101, 'X', 'D'); cell('ho', 101, 's', 'CLAIMED'); cell('ho', 101, 'g', '1'); cell('ho', 101, 'o', 'd·7a1'); },
+    600, () => cell('ch', 1, 'in', '1'),
+    1100, () => cell('tk', 301, 's', 'DISPATCHING'),
+    1600, () => row('at', 9001, { id: 9001, task: 301, k: 'k-3f0e', s: 'SUBMITTING', o: 'd·7a1', g: 0 })),
+  step('第 2 个空位重新算：42 的份额变成 1/1，77 和 88 都是 0。交叉相乘比较后 77 和 88 并列，选最早排队的 77。第 3 个空位：42 和 77 都是 1/1，88 是 0/2，选 88。',
+    0, () => { hl('ho', 101, null); fair([[42, 1, 1, 102], [77, 0, 1, 104], [88, 0, 2, 105]], 77); },
+    600, () => { cell('ho', 104, 's', 'CLAIMED'); cell('ho', 104, 'g', '1'); cell('ho', 104, 'o', 'd·7a1'); cell('ch', 1, 'in', '2'); cell('tk', 304, 's', 'DISPATCHING'); row('at', 9002, { id: 9002, task: 304, k: 'k-91c2', s: 'SUBMITTING', o: 'd·7a1', g: 0 }); },
+    1700, () => fair([[42, 1, 1, 102], [77, 1, 1, '—'], [88, 0, 2, 105]], 88),
+    2300, () => { cell('ho', 105, 's', 'CLAIMED'); cell('ho', 105, 'g', '1'); cell('ho', 105, 'o', 'd·7a1'); cell('ch', 1, 'in', '3'); cell('tk', 305, 's', 'DISPATCHING'); row('at', 9003, { id: 9003, task: 305, k: 'k-5d77', s: 'SUBMITTING', o: 'd·7a1', g: 0 }); }),
+  step('如果还有第 4 个空位，会给谁？42、77 都是 1/1，88 是 1/2，<em>权重 2 的用户 88 会再拿一个</em>。如果按先来先服务，三个空位会全部给 42，77 和 88 只能干等。',
+    0, () => fair([[42, 1, 1, 102], [77, 1, 1, '—'], [88, 1, 2, 106]], 88, '假如有第 4 个空位'),
+    800, () => note('对比：先来先服务', `FIFO 会按 h101、h102、h103 全派给用户 42。<br>公平调度按“在途 ÷ 权重”轮流分配，<b>重度用户不能占满渠道</b>，高权重用户分到更多份额。`, 330)),
+  step('认领结束后做 AIMD 的“加法”判断：这一轮空位全部用完，而且排队数 6 大于认领数 3，说明确实跑满了；距离上次调整已过一个窗口（5 秒），<code>effective + 1</code>，变成 4（不超过上限 4）。然后提交认领事务。',
+    0, () => { clearMid(); unlock('D'); },
+    300, () => { cell('ch', 1, 'eff', '4'); aimd([[0, 3], [3, 4]], '跑满且有排队，过一个窗口 +1', 182); },
+    1000, () => { bg('认领事务已提交'); }),
+]);
+
+scene('③ 调上游：五种结果', [
+  step('认领事务提交后，三个尝试交给提交线程池，<em>在事务外</em>调上游。线程数等于渠道在途上限，不会排队。上游的回应会落到五种结果之一。',
+    0, () => { clearMid(); bg('提交线程 × 3', 'run'); },
+    400, () => gate('submitClaim 的五种结果', [['异步受理（返回上游任务号）', '→ ACCEPTED，等回调 / 轮询'], ['同步返回结果', '→ 同事务落终态'], ['429 限流', '→ 减半 + 暂停，回到排队'], ['明确拒绝', '→ FAILED，释放冻结'], ['超时 / 5xx / 未知异常', '→ RECONCILING，绝不当失败']], 182)),
+  step('304 被异步受理：拿到上游任务号，尝试改 ACCEPTED，任务改 ACCEPTED，交接行完成。所有写回都带着条件：<code>owner = 本次认领者 AND generation = 认领时的值</code>，认领已被别人接管就写不进去。',
+    0, () => { fly('submit(k-91c2) → 202 accepted', [520, 270], [660, TY.at + 30], 'blue'); },
+    800, () => { cell('at', 9002, 's', 'ACCEPTED'); cell('at', 9002, 'o', ''); cell('tk', 304, 's', 'ACCEPTED'); cell('ho', 104, 's', 'DONE'); check(0, 'go'); }),
+  step('301 调用<em>超时</em>：我们不知道上游有没有收到。如果当成失败退额度，上游其实做完了，就是白送；所以一律进 <code>RECONCILING</code>，冻结保留、在途名额保留，交给轮询去查。',
+    0, () => { fly('submit(k-3f0e) … 超时', [520, 250], [660, TY.at + 10], 'red', { lost: true }); },
+    900, () => { cell('at', 9001, 's', 'RECONCILING'); cell('at', 9001, 'o', ''); cell('tk', 301, 's', 'RECONCILING'); cell('ho', 101, 's', 'DONE'); check(4, 'go'); }),
+  step('305 收到 <em>429 限流</em>：AIMD 的“乘法减少”，生效并发减半 4 → 2，并暂停发送 5 秒。暂停期内再收到 429 <em>不会重复减半</em>（条件里要求暂停已结束）。305 退回排队：在途 −1，尝试改 SUBMIT_PENDING，<em>冻结和用户名额都保留</em>，排队时限仍从最初入队算。',
+    0, () => { fly('submit(k-5d77) → 429', [520, 290], [660, TY.at + 50], 'red'); },
+    800, () => { cell('ch', 1, 'eff', '2'); cell('ch', 1, 'p', '14:00:07.2'); aimd([[0, 3], [3, 4], [6, 2]], '429：减半并暂停 5 秒', 352); check(2, 'go'); },
+    1500, () => { cell('at', 9003, 's', 'SUBMIT_PENDING'); cell('at', 9003, 'o', ''); cell('tk', 305, 's', 'QUEUED'); cell('ch', 1, 'in', '2'); cell('ho', 105, 's', 'RETRY'); cell('ho', 105, 'n', '限流 5s'); }),
+  step('下一轮调度：暂停期内直接不认领。暂停结束后，空位 = <code>min(20, 2 − 2) = 0</code>，仍然不认领。<em>上游喊疼时，系统自动把压力降下来</em>；之后每个跑满的窗口再 +1 慢慢试探回去。',
+    0, () => { clearMid(); bg('本轮：暂停期，不认领', 'wait'); aimd([[0, 3], [3, 4], [6, 2]], '在途 2 = 生效 2 → 空位 0', 182); },
+    900, () => note('AIMD 只看 429', `超时和 5xx 不参与调整：它们不一定是“上游太忙”。<br>所有状态（生效值、窗口、暂停截止时间）都存在<b>渠道行</b>上，用条件更新修改，应用重启后照样生效。`, 330)),
+]);
+
+scene('④ 终态：回调与轮询', [
+  step('304 的上游完成了，<em>回调</em>直接打到后端：先验 HMAC 签名和时间戳；按 (渠道, 事件键) 插入回调 inbox。同一事件键、同样内容 → 重复，直接返回；同一事件键、内容不同 → 记冲突表，不采用。',
+    0, () => { clearMid(); clock('11-08 14:00:20.000', true); bg('回调到达', 'run'); fly('POST /provider/callback SUCCEEDED (k-91c2)', [100, 250], [260, 100], 'green'); },
+    800, () => gate('回调处理', [['HMAC 签名 + 时间戳', ''], ['回调 inbox：INSERT IGNORE (渠道, 事件键)', ''], ['同键不同内容？', '→ 冲突表'], ['锁尝试行，只允许非终态 → 终态', '']], 182),
+    1300, () => check(0, 'ok'), 1700, () => check(1, 'ok', '首次'), 2100, () => check(2, 'ok', '一致')),
+  step('锁住尝试行，条件更新：<em>只允许从非终态写成终态</em>，改成 RESULT_PENDING（上游成功、结果待落盘）。成功后做终态动作：渠道在途 −1、用户活动名额 −1，并按张数种下结果行。注意：<em>这时还不结算</em>，额度仍冻结。',
+    0, () => check(3, 'go', '影响 1 行'),
+    500, () => { cell('at', 9002, 's', 'RESULT_PENDING'); cell('tk', 304, 's', 'RESULT_PENDING'); },
+    1100, () => { cell('ch', 1, 'in', '1'); cell('qt', 77, 'act', '0'); },
+    1600, () => row('rs', 'r304', { task: 304, i: 0, s: 'PENDING', o: '' })),
+  step('301 在 RECONCILING，由<em>轮询</em>负责：每 2 秒扫描，用短事务给尝试加租约（新 owner、<code>generation + 1</code>），提交后在事务外调用 <code>query</code>。上游说：这个任务失败了。',
+    0, () => { clearMid(); bg('轮询线程', 'run'); cell('at', 9001, 'o', 'p·c41'); cell('at', 9001, 'g', '1'); },
+    800, () => fly('query(k-3f0e) → FAILED', [520, 250], [660, TY.at + 10], 'red'),
+    1500, () => note('轮询的其他分支', `<ul><li>ACCEPTED / RUNNING：更新状态，稍后再查</li><li>NOT_FOUND：渠道支持幂等提交时，用<b>同一个 attemptKey</b> 重提，上游不会出现两个任务；否则转 REVIEW</li><li>查询失败累计到上限（8 次）：转 REVIEW，冻结保留</li></ul>`, 330)),
+  step('轮询写回失败终态：条件带 <code>owner = p·c41 AND generation = 1</code>，并要求当前是非终态。影响 1 行后，同一个事务里：在途 −1、用户名额 −1，<em>并走唯一的释放入口</em>：任务改 FAILED / RELEASED，冻结退回可用，写一条 RELEASE 结算。',
+    0, () => { cell('at', 9001, 's', 'FAILED'); cell('at', 9001, 'o', ''); },
+    600, () => { cell('ch', 1, 'in', '0'); cell('qt', 42, 'act', '2'); },
+    1200, () => { cell('tk', 301, 's', 'FAILED'); cell('tk', 301, 'a', 'RELEASED'); cell('gr', 21, 'a', '48'); cell('gr', 21, 'f', '2'); },
+    1700, () => row('st', 301, { task: 301, k: 'RELEASE', t: 'AVAILABLE', l: 'L-501' })),
+  step('竞争：几乎同时，301 的“失败”回调也到了。回调同样是条件更新“只允许非终态 → 终态”，可现在已经是 FAILED，<em>影响 0 行</em>，标记 IGNORED，<em>不会再做一次终态动作</em>，额度也不会被释放两次。',
+    0, () => { fly('callback FAILED (k-3f0e)', [100, 250], [260, 100], 'grey'); },
+    800, () => gate('回调 · 301 FAILED', [['inbox 首次', ''], ['UPDATE … WHERE state 为非终态', '']], 182),
+    1200, () => check(0, 'ok'), 1600, () => check(1, 'no', '影响 0 行 → IGNORED'),
+    2000, () => note2('两条路径的写回条件', `<b>回调</b>：只看“非终态 → 终态”，不校验 owner（它不持有租约）<br><b>轮询 / 提交</b>：必须 <code>owner + generation</code> 都对上，防止过期的认领者覆盖新事实`, 300)),
+]);
+
+scene('⑤ 落盘与结算', [
+  step('结果行由下载任务处理：给结果行加租约，下载上游图片，<em>校验摘要</em>，再保存到媒体库并 <code>markSaved</code>。如果保存时发现租约已经不是自己的（被别人接管了），就<em>丢弃刚下载的文件</em>，不登记。',
+    0, () => { clearMid(); bg('结果下载线程', 'run'); cell('rs', 'r304', 'o', 'r·19b'); cell('rs', 'r304', 's', 'SAVING'); },
+    800, () => code('claimDue(): 结果行加租约 (owner = r·19b)\n下载 → 校验摘要 → 写入媒体库\nmarkSaved(… WHERE owner = r·19b)   // 影响 0 行 → 删除刚写的文件\n下载失败：重试，到上限转 REVIEW，冻结保留（不退款）', 182),
+    1500, () => { cell('rs', 'r304', 's', 'SAVED'); cell('rs', 'r304', 'o', ''); }),
+  step('所有结果都 SAVED 之后，走<em>唯一的结算入口</em> <code>tasks.finish</code>：条件是 <code>accounting_state = FROZEN</code> 且状态在允许范围内，抢到的才能结算。304 改成 SUCCEEDED / CONSUMED，冻结转为已用，写 CONSUME 结算。',
+    0, () => { clearMid(); code('UPDATE generation_task\nSET state = \'SUCCEEDED\', accounting_state = \'CONSUMED\', settled_at = NOW(3)\nWHERE id = 304 AND accounting_state = \'FROZEN\'\n  AND state IN (\'RESULT_PENDING\', \'REVIEW\')\n-- 影响 1 行 → consumeForTask(…) → 结算行', 182); },
+    900, () => { cell('tk', 304, 's', 'SUCCEEDED'); cell('tk', 304, 'a', 'CONSUMED'); cell('gr', 22, 'f', '0'); cell('gr', 22, 'c', '1'); },
+    1500, () => { row('st', 304, { task: 304, k: 'CONSUME', t: '', l: 'L-502' }); cell('rs', 'r304', 's', 'DELIVERED'); user(77, '304 完成', 'ok'); }),
+  step('为什么说“唯一”？消费和释放都必须先用 <code>accounting_state = FROZEN</code> 条件更新<em>抢占</em>任务行，谁影响 1 行谁才结算；结算表还有 <code>UNIQUE(task_id)</code> 兜底。所以一个任务<em>要么消费、要么释放，只发生一次</em>。',
+    0, () => { hl('st', 301); hl('st', 304); note('结算的三道保证', `<ul><li><b>finish 条件更新</b>：FROZEN → CONSUMED / RELEASED，只有一个赢家</li><li><b>结算前</b>先确认存在该任务的 FREEZE 流水</li><li><b>generation_settlement</b>：<code>UNIQUE(task_id)</code>、<code>UNIQUE(ledger_id)</code></li></ul>`, 330); },
+    2500, () => { hl('st', 301, null); hl('st', 304, null); }),
+  step('最后是补偿：每 5 秒一次补结算扫描，<em>只按已有的可信事实</em>补：结果都存好了就补消费；上游确认失败、取消或排队超时就补释放；结果不完整就保持冻结，<em>绝不猜测失败去退款</em>。每 10 分钟清理一次没有被登记的孤儿文件。',
+    0, () => { clearMid(); bg('补偿扫描', 'ok'); note('后台任务一览', `<ul><li>调度扫描 2 秒、轮询扫描 2 秒、结果下载 2 秒</li><li>补结算 5 秒：<code>recover()</code> 只按事实补消费 / 释放</li><li>孤儿文件清理 10 分钟</li></ul>`, 182); }),
+]);
+
+scene('总结与思考', [
+  step('回顾：提交一个事务完成冻结和交接；调度短事务公平认领，不碰网络；上游的五种回应各有去处，超时只核对不退款；终态只能写一次；结算只有一个入口。',
+    0, () => ov(`<div class="kp">本集回顾</div><h1 style="font-size:32px">生成调度的关键点</h1><ol style="margin-top:14px">
+      <li>提交：请求键 → 锁素材 → 候选包 <b>FOR UPDATE NOWAIT</b> + 复核 → 两个名额 → QUEUED/FROZEN → 冻结 → 交接行 + 唤醒事件</li>
+      <li>调度：唤醒 + 2 秒扫描，<b>AtomicBoolean</b>；清理 → 暂停判断 → <b>min(batch, 上限 − 在途)</b> → 公平挑选 → claimOne</li>
+      <li>公平：<b>在途 ÷ 权重</b>最小优先，交叉相乘；AIMD：跑满 +1，<b>429 减半并暂停</b></li>
+      <li>五种结果：受理 / 同步结果 / 429 回队 / 拒绝释放 / <b>超时 → RECONCILING</b></li>
+      <li>终态：只许非终态 → 终态；轮询校验 <b>owner + generation</b>；结算 <b>finish 抢占 + UNIQUE(task_id)</b></li></ol>`)),
+  step('暂停思考第 1 题：调用上游超时了，为什么不能直接把任务判失败、把冻结的额度退给用户？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 1 / 3</div><div class="q">提交上游时超时了。为什么不能直接把任务判为失败、释放冻结额度？系统接下来怎么处理？</div>`)),
+  step('参考答案：超时只说明不知道结果，上游可能已经受理甚至完成。判失败退款，上游再成功就成了白送，还会出现“已退款却有结果”的矛盾。所以进 RECONCILING，冻结和在途都保留，由轮询查明真相，必要时用同一个 attemptKey 安全重提。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 1 / 3</div><div class="a"><ul>
+      <li>超时 = <b>结果未知</b>，不是失败；上游可能已经受理或完成</li>
+      <li>尝试改 <code>RECONCILING</code>，任务同步；<b>冻结、在途名额都保留</b></li>
+      <li>轮询加租约后 <code>query</code>：成功 → RESULT_PENDING；失败 → 唯一释放入口</li>
+      <li>查不到且渠道支持幂等提交：复用<b>同一个 attemptKey</b> 重提，上游只会有一个任务；否则 REVIEW</li></ul></div>`)),
+  step('暂停思考第 2 题：回调和轮询同时拿到同一个任务的终态，怎么保证终态动作只做一次？为什么回调不校验 owner，轮询却要？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 2 / 3</div><div class="q">回调和轮询几乎同时拿到同一个任务的失败终态。怎么保证“释放在途、释放名额、退回冻结”只做一次？为什么回调不校验 owner，轮询却必须校验 owner + generation？</div>`)),
+  step('参考答案：两边都用条件更新“只允许非终态 → 终态”，只有影响 1 行的一方执行终态动作，另一方影响 0 行直接停止。轮询持有租约，可能已过期被别人接管，所以要校验 owner + generation；回调来自上游、不持租约，它的可信性靠签名和 inbox 去重。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 2 / 3</div><div class="a"><ul>
+      <li>终态写回：<code>WHERE state IN (非终态…)</code>，<b>影响 0 行就不执行 confirmedTerminal</b></li>
+      <li>轮询 / 提交写回带 <code>owner AND generation</code>：租约过期被接管后，旧执行者的写入全部落空</li>
+      <li>回调不持租约：靠 <b>HMAC 签名</b> + 回调 inbox (渠道, 事件键) 去重 + 冲突表</li>
+      <li>结算再兜底：finish 抢占 <code>accounting_state = FROZEN</code> + <code>UNIQUE(task_id)</code></li></ul></div>`)),
+  step('暂停思考第 3 题：用户 42 一次提交了 3 个任务，用户 77、88 各有任务在排，渠道只有 3 个空位。公平调度怎么分？收到 429 后系统怎么反应？',
+    0, () => ov(`<div class="cd">⏸ 暂停思考 · 3 / 3</div><div class="q">渠道只有 3 个空位：用户 42 排了 3 个，77 排了 1 个，88（权重 2）排了 2 个。公平调度怎么分配？其中一个收到 429，系统怎么调整并发、这个任务的额度和名额怎么处理？</div>`)),
+  step('参考答案：每个空位都重新按“在途 ÷ 权重”最小挑人，结果 42、77、88 各一个，有第 4 个空位时再给 88。429 时生效并发减半并暂停，暂停期内不重复减半；被限流的任务回到排队，冻结和用户名额保留，排队时限不重置。',
+    0, () => ov(`<div class="cd">✅ 参考答案 · 3 / 3</div><div class="a"><ul>
+      <li>第 1 位：都为 0 → 最早排队的 42；第 2 位：77 和 88 并列 → 77；第 3 位：88（0/2）</li>
+      <li>交叉相乘比较份额；第 4 位会给 88（1/2 &lt; 1/1）</li>
+      <li>429：<code>effective = max(1, effective / 2)</code> + <code>dispatch_paused_until</code>；暂停中不再减半</li>
+      <li>任务：尝试 → SUBMIT_PENDING、任务 → QUEUED、在途 −1、交接行 RETRY；<b>冻结、用户名额保留</b>，<code>enqueued_at</code> 不变</li></ul></div>`)),
+]);
+
+startPlayer();
+</script>
+</body>
+</html>

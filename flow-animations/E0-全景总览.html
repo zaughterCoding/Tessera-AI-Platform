@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>E0 全景总览</title>
+<link rel="stylesheet" href="lib/engine.css?v=6">
+<style>
+.nd{border-radius:10px;border:1px solid var(--line);background:var(--panel2);padding:8px 12px;font-size:14px;line-height:1.35;opacity:.35;transition:opacity .5s,border-color .5s,box-shadow .5s,background-color .5s}
+.nd b{display:block;color:#fff;font-size:15px}
+.nd small{color:var(--muted);font-size:12px}
+.nd .ep{float:right;font-size:11px;padding:1px 7px;border-radius:9px;background:#2a5ca8;color:#fff;margin-left:6px}
+.nd.on{opacity:1}
+.nd.hot{opacity:1;border-color:var(--yellow);box-shadow:0 0 0 2px rgba(255,200,87,.35);background:#24294a}
+.nd.redis{border-left:4px solid #ff8f8f}.nd.mysql{border-left:4px solid #7cc0ff}
+#map{z-index:0}
+#map path{fill:none;stroke:#56607e;stroke-width:2;transition:stroke .5s,opacity .5s}
+#map path.on{stroke:#9fb2d8}
+#map path.hot{stroke:var(--yellow);stroke-width:3}
+.pipe{border-radius:12px;border:1px dashed #6b5fb3;background:rgba(181,140,255,.08);padding:8px 14px;opacity:.35;transition:opacity .5s}
+.pipe.on{opacity:1}
+.pipe .t{color:var(--purple);font-weight:700;font-size:14px;margin-bottom:6px}
+.chip{display:inline-block;font-family:var(--mono);font-size:11.5px;padding:2px 8px;border-radius:6px;background:#2b2450;color:#e4dcff;margin:3px 4px 0 0;border:1px solid #4a3f86}
+.cards{display:flex;gap:14px}
+.cards .c{flex:1;background:#1b2440;border:1px solid #2e3a60;border-radius:12px;padding:14px 16px;font-size:16px;line-height:1.7;color:#dfe6f5}
+.cards .c h3{margin:0 0 6px;font-size:18px;color:var(--yellow)}
+.eps{display:grid;grid-template-columns:1fr 1fr;gap:10px 22px;font-size:16.5px;line-height:1.55}
+.eps div{background:#1b2440;border:1px solid #2e3a60;border-radius:10px;padding:8px 14px}
+.eps b{color:var(--yellow);margin-right:8px}
+.eps .todo{opacity:.55}
+</style>
+</head>
+<body>
+<script src="lib/engine.js?v=6"></script>
+<script>
+setEpisode({ alt: 'en/E0-overview.html', home: 'index.html', title: 'E0 · 全景总览', docTitle: 'E0 全景总览', example: '用户 42 的一天：登录 → 买包 → 支付 → 到账 → 出图', lanes: [['', ''], ['', ''], ['', '']], noLanes: true });
+
+/* ============ 剧本 ============ */
+// 节点：id, x, y, w, 标题, 说明, 集数, 存储类型
+const NODES = [
+  ['login', 30, 120, 160, '登录', 'Redis 会话 · HttpOnly Cookie', '', ''],
+  ['browse', 220, 120, 170, '浏览商品', '五层目录缓存', 'E7', ''],
+  ['buy', 430, 74, 200, '普通购买', '同步只碰 MySQL', 'E2', 'mysql'],
+  ['seckill', 430, 168, 200, '限量秒杀', '同步只碰 Redis，异步建单', 'E3', 'redis'],
+  ['order', 680, 120, 170, 'purchase_order', '两种购买落到同一张表', '', 'mysql'],
+  ['pay', 890, 120, 140, '支付', 'PAID + 支付事实', 'E2', 'mysql'],
+  ['grant', 1070, 120, 180, '权益到账', '两跳 outbox · 流水', 'E5', 'mysql'],
+  ['close', 680, 270, 170, '超时 / 取消关单', '同一把行锁', 'E2', 'mysql'],
+  ['release', 430, 270, 200, '活动库存回补', 'MySQL 先还，Redis 后还', 'E3·E4', 'redis'],
+  ['gen1', 1070, 236, 180, '提交生成任务', '冻结 1 次额度', 'E6', 'mysql'],
+  ['gen2', 1070, 326, 180, '公平调度 → 上游', '短事务 · 租约', 'E6', 'mysql'],
+  ['gen3', 1070, 416, 180, '落盘 → 结算', '消费 或 释放，只一次', 'E6', 'mysql'],
+];
+// 连线：id, 路径
+const EDGES = [
+  ['e1', 'M190,150 L220,150'], ['e2', 'M390,150 L430,104'], ['e3', 'M390,150 L430,198'],
+  ['e4', 'M630,104 L680,140'], ['e5', 'M630,198 L680,160'], ['e6', 'M850,150 L890,150'],
+  ['e7', 'M1030,150 L1070,150'], ['e8', 'M765,180 L765,270'], ['e9', 'M680,300 L630,300'],
+  ['e10', 'M1160,180 L1160,236'], ['e11', 'M1160,296 L1160,326'], ['e12', 'M1160,386 L1160,416'],
+];
+function drawMap() {
+  put('map', '', `<svg width="1280" height="520" viewBox="0 0 1280 520">
+    <defs><marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0L10,5L0,10z" fill="#9fb2d8"/></marker></defs>
+    ${EDGES.map(([id, d]) => `<path id="${id}" d="${d}" marker-end="url(#ah)"/>`).join('')}</svg>`, 0, 0, 1280, 520);
+  NODES.forEach(([id, x, y, w, t, s, ep, kind]) =>
+    put('n_' + id, 'nd ' + kind, `${ep ? `<span class="ep">${ep}</span>` : ''}<b>${t}</b><small>${s}</small>`, x, y, w));
+}
+function on(...ids) { ids.forEach(id => { const n = $('n_' + id); if (n) n.classList.add('on'); }); }
+function hot(...ids) {
+  stage.querySelectorAll('.nd.hot').forEach(n => n.classList.remove('hot'));
+  ids.forEach(id => { const n = $('n_' + id); if (n) n.classList.add('on', 'hot'); });
+}
+function edge(cls, ...ids) { ids.forEach(id => { const e = $(id); if (e) { e.classList.remove('on', 'hot'); e.classList.add(cls); } }); }
+function token(from, to, text = '用户 42') { fly(text, from, to, 'blue'); }
+function pipe(chips, open = false) {
+  put('pipe', 'pipe' + (open ? ' on' : ''), `<div class="t">business_outbox · 所有链路共用的可靠管道（E1）</div>` +
+    chips.map(c => `<span class="chip">${c}</span>`).join(''), 30, 480, 1220, null);
+}
+const ALL_EVENTS = ['ORDER_CREATED', 'ORDER_EXPIRE', 'ORDER_PAID', 'ORDER_CLOSED', 'ENTITLEMENT_GRANT', 'CAMPAIGN_FULFILL', 'CAMPAIGN_STOCK_RELEASED', 'GENERATION_DISPATCH', 'PRODUCT_INVALIDATE', 'MEDIA_DELETE', 'CREATION_PUBLISH'];
+
+scene('片头', [
+  step('这是链路动画的总览。后面六集分别拆开讲每条链路，这一集先把它们<em>串成一张地图</em>：用户 42 从登录到出图的一整天，经过了哪些链路、数据落在哪里、谁把它们连起来。',
+    0, () => ov(`<div class="kp">链路动画 · 第 0 集</div><h1>全景总览</h1><h2>一张地图看清五条核心链路如何首尾相接</h2>
+      <ol><li>用户 42 的一天：登录 → 浏览 → 买包 → 支付 → 到账 → 出图</li><li>两种购买、一张订单表</li><li><b>outbox</b>：所有链路共用的可靠管道</li><li>MySQL、Redis、RocketMQ 各自的角色</li><li>三条最容易说混的地方</li></ol>`)),
+]);
+
+scene('用户 42 的一天', [
+  step('先看整张地图。蓝色左边框的节点只写 MySQL，红色左边框的节点同步阶段只碰 Redis；右上角标着讲它的那一集。底部紫色虚线框是 outbox，后面会看到它连着几乎每一步。',
+    0, () => { ovOff(); },
+    300, () => { drawMap(); pipe([]); }),
+  step('用户 42 登录：令牌是 64 位随机串，存在 Redis 会话里，通过 HttpOnly Cookie 下发。然后浏览商品，目录走五层缓存（请求作用域 → Caffeine → Memcache → Redis → MySQL）。',
+    0, () => { hot('login'); edge('hot', 'e1'); },
+    600, () => token([60, 150], [240, 150]),
+    1300, () => { hot('browse'); on('login'); edge('on', 'e1'); }),
+  step('买积分包有两条路。<em>普通购买</em>（E2）在一个 MySQL 事务里完成，请求键 + 唯一键防重复；<em>限量秒杀</em>（E3）同步阶段只碰 Redis，Lua 原子受理，再经 Stream 异步建单。两条路<em>最后落到同一张订单表</em>。',
+    0, () => { hot('buy', 'seckill'); edge('hot', 'e2', 'e3'); },
+    500, () => { token([300, 150], [450, 100]); },
+    700, () => { token([300, 150], [450, 190], '用户 77'); },
+    1500, () => { hot('order'); edge('on', 'e2', 'e3'); edge('hot', 'e4', 'e5'); },
+    2200, () => edge('on', 'e4', 'e5')),
+  step('付款：支付事务只写 PAID、支付事实和 <code>ORDER_PAID</code>，<em>不加额度</em>。积分要经过两跳 outbox：ORDER_PAID 登记发放任务，ENTITLEMENT_GRANT 真正建权益包、记流水（E5）。',
+    0, () => { hot('pay'); edge('hot', 'e6'); token([700, 150], [900, 150]); },
+    1100, () => { hot('grant'); edge('on', 'e6'); edge('hot', 'e7'); pipe(['ORDER_PAID', 'ENTITLEMENT_GRANT'], true); },
+    1900, () => edge('on', 'e7')),
+  step('如果不付款：订单在截止时间被关闭，延迟事件、5 秒扫描、用户取消三条路，支付和关单靠<em>同一把行锁 + 互补的时间条件</em>只有一方能赢。秒杀订单关单时，<em>数据库先还库存</em>，Redis 再由事件异步回补（E3），两边是否一致由对账判断（E4）。',
+    0, () => { hot('close'); edge('hot', 'e8'); pipe(['ORDER_PAID', 'ENTITLEMENT_GRANT', 'ORDER_EXPIRE', 'ORDER_CLOSED'], true); },
+    1100, () => { hot('release', 'close'); edge('hot', 'e9'); pipe(['ORDER_PAID', 'ENTITLEMENT_GRANT', 'ORDER_EXPIRE', 'ORDER_CLOSED', 'CAMPAIGN_STOCK_RELEASED'], true); },
+    2200, () => edge('on', 'e8', 'e9')),
+  step('积分到账后，用户 42 提交出图任务：一个事务里冻结 1 次额度；调度短事务按“在途 ÷ 权重”公平认领，事务外调上游；成功落盘后<em>消费</em>，失败就<em>释放</em>，结算只有一次（E6）。',
+    0, () => { hot('gen1'); edge('hot', 'e10'); token([1150, 160], [1150, 250]); pipe(['ORDER_PAID', 'ENTITLEMENT_GRANT', 'ORDER_EXPIRE', 'ORDER_CLOSED', 'CAMPAIGN_STOCK_RELEASED', 'GENERATION_DISPATCH'], true); },
+    1000, () => { hot('gen2'); edge('on', 'e10'); edge('hot', 'e11'); },
+    1900, () => { hot('gen3'); edge('on', 'e11'); edge('hot', 'e12'); },
+    2700, () => { edge('on', 'e12'); hot(); on(...NODES.map(n => n[0])); }),
+]);
+
+scene('公共管道 outbox', [
+  step('回头看底部：几乎每一次“这个事务做完了，另一件事还要可靠地发生”，都是靠 <code>business_outbox</code> 交接的。它和业务修改<em>同一个事务</em>写入，中继在事务外投递，消费端靠 DONE 和 inbox 去重。',
+    0, () => pipe(ALL_EVENTS, true),
+    500, () => { ['n_buy', 'n_pay', 'n_close', 'n_gen1'].forEach((id, i) => { const n = $(id); if (n) later(i * 300, () => fly('INSERT outbox', [n.offsetLeft + 40, n.offsetTop + 30], [200 + i * 260, 500], '')); }); }),
+  step('一句话记住 outbox 的语义：<em>至少一次投递 + 恰好一次效果</em>。投递可能重复（租约过期、重驱动、Broker 重投），所以每个消费端都要幂等：锁库里的 outbox 行核对、DONE / inbox 判重、投影本身也按业务键幂等。',
+    0, () => note2('outbox 的四个关键词', `<ul><li><b>同事务写入</b>：MANDATORY，回滚就不存在</li><li><b>认领</b>：RC + FOR UPDATE SKIP LOCKED + 30 秒租约</li><li><b>投递</b>：事务外；失败指数退避，超限进 REVIEW</li><li><b>消费</b>：五步一个事务，DONE + inbox 两道去重</li></ul>`, 230, 30, 380)),
+]);
+
+scene('存储的角色', [
+  step('三种基础设施的角色要分清：<em>MySQL 是事实</em>，订单、预约、权益、任务、outbox 都以它为准；<em>Redis 是入口副本和缓存</em>，只在秒杀受理和目录缓存里出现；<em>RocketMQ 是可选的传输层</em>，默认配置是本地同步调用。',
+    0, () => { clearNotes(); ov(`<div class="kp">谁是事实，谁是副本</div><div class="cards">
+      <div class="c"><h3>MySQL · 事实</h3>订单、支付、预约、权益包与流水、生成任务、outbox。所有判断最终都回到数据库行锁和条件更新。</div>
+      <div class="c"><h3>Redis · 入口副本</h3>秒杀受理（Lua + Stream）、登录会话、目录缓存。坏了就关入口，按数据库<b>换代重建</b>。</div>
+      <div class="c"><h3>RocketMQ · 可选传输</h3>只是 outbox 的另一种投递方式（<code>transport=rocketmq</code>）。默认 <code>local</code>：中继在进程内同步调用消费者。</div></div>`); }),
+]);
+
+scene('三条不要混', [
+  step('最后，面试里最容易说混的三件事。第一，<em>普通购买的同步阶段只碰 MySQL，秒杀的同步阶段只碰 Redis</em>。第二，“待确认的消息被别人接管”：秒杀 Stream 用的是 <em>PEL + XCLAIM</em>，outbox 用的是 <em>SENDING 租约过期后被认领 SQL 重新选中</em>。第三，<em>Canal 只用于缓存失效</em>，和库存、订单、outbox 投递都无关。',
+    0, () => ov(`<div class="kp">三条不要混</div><div class="cards">
+      <div class="c"><h3>① 同步阶段碰什么</h3>普通购买：只有 MySQL 事务<br>秒杀受理：只有 Redis（Lua）<br>建单在 Stream 消费线程里异步落库</div>
+      <div class="c"><h3>② 谁来接管</h3>Stream：<b>PEL</b> 空闲 5 秒 → <b>XCLAIM</b><br>outbox：<b>SENDING</b> 租约过期 → 同一条认领 SQL 选中<br>两者不是一个机制</div>
+      <div class="c"><h3>③ Canal 的范围</h3>只做目录<b>缓存失效</b>（路线 B）<br>不参与库存、订单、outbox<br>RocketMQ 也不是默认传输</div></div>`)),
+]);
+
+scene('观看顺序', [
+  step('建议的观看顺序：先看 E1 理解公共管道，再按“买 → 秒杀 → 重建 → 到账 → 出图”的顺序看 E2 到 E6，最后看 E7 缓存。每集结尾都有三道暂停思考题，可以用来自测。',
+    0, () => ov(`<div class="kp">分集导航</div><div class="eps">
+      <div><b>E1</b>可靠消息 outbox：同事务写入、认领租约、五步消费、SENT ≠ DONE</div>
+      <div><b>E2</b>普通购买：请求键、订单快照、结果未知、支付与关单竞争</div>
+      <div><b>E3</b>限量秒杀：Lua 受理、register / fulfill、XCLAIM、关单释放</div>
+      <div><b>E4</b>重建对账：方向不变量、对账公式、入口守卫、换代重建</div>
+      <div><b>E5</b>权益账务：两跳发放、只信快照、恒等式、迟到补发、到期</div>
+      <div><b>E6</b>生成调度：NOWAIT 选包、公平挑选、AIMD、终态竞争、唯一结算</div>
+      <div><b>E7</b>目录缓存：五层读取、单飞与互斥、版本号失效、降级、Canal</div>
+      <div><b>入口</b>同目录下的 <code>index.html</code> 可以跳转到每一集</div></div>`)),
+]);
+
+function clearNotes() { ['note', 'note2'].forEach(gone); }
+
+startPlayer();
+</script>
+</body>
+</html>
